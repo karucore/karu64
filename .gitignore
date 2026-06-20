@@ -42,6 +42,7 @@ clockInfo.txt
 tight_setup_hold_pins.txt
 iter_*_CongestedCLBsAndNets.txt
 cong/
+flow/boot/fuboot_blobs.h
 
 # Prerequisites
 *.d
