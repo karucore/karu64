@@ -1,0 +1,9 @@
+name: karu64-rv64gc
+compiler_exe: riscv64-unknown-elf-gcc   # on $PATH
+objdump_exe: riscv64-unknown-elf-objdump
+ref_model_type: sail
+ref_model_exe: sail_riscv_sim           # ~/rv/riscv/bin (on $PATH)
+udb_config: karu64-rv64gc.yaml
+linker_script: link.ld
+dut_include_dir: .                       # holds rvmodel_macros.h + rvtest_config.h
+include_priv_tests: False

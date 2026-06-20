@@ -1,0 +1,13 @@
+[submodule "test/riscv-tests"]
+	path = test/riscv-tests
+	url = https://github.com/riscv-software-src/riscv-tests.git
+[submodule "test/riscv-arch-test"]
+	path = test/riscv-arch-test
+	url = https://github.com/riscv/riscv-arch-test
+	branch = act4
+[submodule "test/SoftFloat-3e"]
+	path = test/SoftFloat-3e
+	url = https://github.com/ucb-bar/berkeley-softfloat-3
+[submodule "test/TestFloat-3e"]
+	path = test/TestFloat-3e
+	url = https://github.com/ucb-bar/berkeley-testfloat-3

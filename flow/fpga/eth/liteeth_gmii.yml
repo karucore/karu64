@@ -1,0 +1,35 @@
+# LiteEth standalone core config for the karu64 VCU118 SGMII DATAPATH (E3 slice D2).
+#
+# Same MAC as the loopback core (liteeth_sim.yml) but with a real GMII PHY so the MAC
+# drives the Xilinx gig_ethernet_pcs_pma (SGMII/LVDS) instead of the internal MII
+# loopback. Regenerate into a SEPARATE file so the MII loopback core (liteeth_core.v,
+# used by eth-sim / linux_tb / the lean loopback bit) is preserved:
+#
+#     flow/fpga/eth/regen.sh flow/fpga/eth/liteeth_gmii.yml liteeth_core_gmii
+#
+# -> flow/fpga/eth/liteeth_core_gmii.v (+ liteeth_core_gmii_csr.csv/json). The datapath
+# synth build reads this core; the loopback flows keep reading liteeth_core.v. Both
+# define module `liteeth_core`, so a given build must read exactly one of them.
+#
+# clk_freq = 75e6 = the datapath core (CSR/buffer) clock; the GMII side runs at the
+# PCS clk125_out (125 MHz). LiteEth's GMII PHY owns the GMII<->sys CDC -- we do NOT add
+# our own packet-data CDC.
+phy        : LiteEthPHYGMII
+vendor     : xilinx
+# device/toolchain so the LiteX XilinxPlatform knows the family and can lower GMII's
+# DDR clock-forwarding (gmii.py gtx ODDR -> UltraScale+ ODDRE1). Without a device the
+# standalone gen fails: "platform does not support DDR output". (The gtx clock pad is
+# unused when connected to the on-chip PCS/PMA, but generation still needs the device.)
+device     : xcvu9p-flga2104-2L-e
+toolchain  : vivado
+core       : wishbone
+clk_freq   : 75e6
+endianness : little
+nrxslots   : 2
+ntxslots   : 2
+# byte-granular slot-SRAM writes (memcpy_toio emits byte stores for the frame tail).
+full_memory_we : True
+soc:
+    mem_map:
+        csr    : 0x11000000
+        ethmac : 0x11010000

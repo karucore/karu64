@@ -1,0 +1,97 @@
+# project specific
+#
+# Current build rules emit generated artifacts under _build. The broader file
+# globs below are defensive for stale/manual outputs in the repository root.
+
+xtest
+__pycache__
+
+# assistant / non-release files (not part of the published tree)
+CLAUDE.md
+.claude/
+
+_build
+_prof
+*.vvp
+*.log
+*.drc
+*.bgn
+*.bit
+*.ltx
+*.mmi
+*.jou
+xvlog.*
+build
+firmware.*
+config.h
+obj_dir/*
+test/**/obj/
+prof
+pqse
+syn_out
+*.bin
+*.rpt
+.Xil
+.gen/
+.srcs/
+.tmpCRC/
+*.pb
+*.dcp
+usage_statistics_webtalk.*
+clockInfo.txt
+tight_setup_hold_pins.txt
+iter_*_CongestedCLBsAndNets.txt
+cong/
+
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf

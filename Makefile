@@ -1,0 +1,2128 @@
+#	Makefile
+#	Markku-Juhani O. Saarinen <mjos@iki.fi>.  See LICENSE.
+
+BUILD	=	_build
+VFLAGS	=	-Irtl
+
+XCHAIN	?=	riscv64-unknown-elf-
+KARUDEB	?=	../karudeb
+
+#	default: build the freestanding hello firmware and run it on spike.
+all:	spike
+
+#	==========================================================
+#	Spike / HTIF hello firmware (rv64ic, freestanding,
+#	no libc/libgcc/crt).
+#	==========================================================
+
+HTIF_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/main.c
+HTIF_CFLAGS	=	-O2 -Wall -g \
+					-mabi=lp64 -march=rv64ic_zicsr -mcmodel=medany \
+					-ffreestanding -fno-builtin -nostdlib -static \
+					-Itest/fw
+
+HELLO_ELF	=	$(BUILD)/hello.elf
+HELLO_BIN	=	$(BUILD)/hello.bin
+HELLO_HEX	=	$(BUILD)/hello.hex
+HELLO_UART_ELF	=	$(BUILD)/hello_uart.elf
+HELLO_UART_BIN	=	$(BUILD)/hello_uart.bin
+HELLO_UART_HEX	=	$(BUILD)/hello_uart.hex
+
+.PHONY: hello.elf hello.bin hello.hex hello_uart.elf hello_uart.bin hello_uart.hex
+hello.elf:	$(HELLO_ELF)
+hello.bin:	$(HELLO_BIN)
+hello.hex:	$(HELLO_HEX)
+hello_uart.elf:	$(HELLO_UART_ELF)
+hello_uart.bin:	$(HELLO_UART_BIN)
+hello_uart.hex:	$(HELLO_UART_HEX)
+
+$(HELLO_ELF):	$(HTIF_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(HTIF_SRCS)
+	$(XCHAIN)size $@
+
+spike:	$(HELLO_ELF)
+	spike $(HELLO_ELF)
+
+$(HELLO_BIN):	$(HELLO_ELF)
+	$(XCHAIN)objcopy -O binary $< $@
+
+$(HELLO_HEX):	$(HELLO_BIN)
+	hexdump -v -e '1/8 "%016x\n"' $< > $@
+
+#	NS16550-console hello (test/fw/ns16550.c instead of HTIF console). The same
+#	binary prints on spike's builtin ns16550 and on the VCU118 FPGA target.
+HELLO_UART_SRCS	=	test/fw/htif_start.S test/fw/ns16550.c test/fw/main.c
+
+$(HELLO_UART_ELF):	$(HELLO_UART_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(HELLO_UART_SRCS)
+	$(XCHAIN)size $@
+
+$(HELLO_UART_BIN):	$(HELLO_UART_ELF)
+	$(XCHAIN)objcopy -O binary $< $@
+
+$(HELLO_UART_HEX):	$(HELLO_UART_BIN)
+	hexdump -v -e '1/8 "%016x\n"' $< > $@
+
+spike-uart:	$(HELLO_UART_ELF)
+	spike $(HELLO_UART_ELF)
+
+DDR_MEMTEST_SRCS =	test/fw/htif_start.S test/fw/ns16550.c test/fw/ddr_memtest.c
+
+$(BUILD)/ddr_memtest.elf:	$(DDR_MEMTEST_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(DDR_MEMTEST_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/ddr_memtest.bin:	$(BUILD)/ddr_memtest.elf
+	$(XCHAIN)objcopy -O binary $< $@
+
+ddr-memtest-bin:	$(BUILD)/ddr_memtest.bin
+
+VCU118_FUBOOT_SRCS = flow/boot/vcu118_crt0.S flow/boot/vcu118_fuboot.c flow/boot/fugzip.c
+VCU118_FUBOOT_CFLAGS = -O2 -Wall -g \
+					-mabi=lp64 -march=rv64imac_zicsr_zifencei -mcmodel=medany \
+					-ffreestanding -fno-builtin -nostdlib -static \
+					-DFUBOOT_VER='"vcu118-0.1"' \
+					-Iflow/boot -Wl,-Bstatic,-T,flow/boot/vcu118_fuboot.ld,--no-relax
+VCU118_FUBOOT_HEX = $(BUILD)/vcu118_fuboot.hex
+
+$(BUILD)/vcu118_fuboot.elf:	$(VCU118_FUBOOT_SRCS) flow/boot/fugzip.h flow/boot/vcu118_fuboot.ld | $(BUILD)
+	$(XCHAIN)gcc $(VCU118_FUBOOT_CFLAGS) -o $@ $(VCU118_FUBOOT_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/vcu118_fuboot.bin:	$(BUILD)/vcu118_fuboot.elf
+	$(XCHAIN)objcopy -O binary $< $@
+
+.PHONY: vcu118_fuboot.hex
+vcu118_fuboot.hex:	$(VCU118_FUBOOT_HEX)
+
+$(VCU118_FUBOOT_HEX):	$(BUILD)/vcu118_fuboot.bin | $(BUILD)
+	hexdump -v -e '1/8 "%016x\n"' $< > $@
+
+vcu118-fuboot-hex:	$(VCU118_FUBOOT_HEX)
+
+#	---- U-Boot-in-ROM: a self-contained 1 MiB boot ROM image ----
+#	[ fu-boot | OpenSBI | U-Boot | control-DTB ] baked into the bitstream. fu-boot
+#	(built -DFUBOOT_AUTOBOOT) copies each image to DDR and jumps into OpenSBI, which
+#	chains to U-Boot, whose baked bootcmd TFTP-netboots Linux -- no JTAG/host stage.
+#	Override the blob sources if they live elsewhere. One shared OpenSBI fw_jump
+#	(M-mode, ISA-agnostic) serves EVERY ROM profile -- the scalar rv64imac here and the
+#	GC/vec ROMs below -- so it has a single source path; build it in karudeb with
+#	`make karu-opensbi`. Only the control DTB differs per profile.
+KARUDEB_OPENSBI ?= $(KARUDEB)/build/karu64/opensbi/fw_jump.bin
+FUBOOT_OPENSBI ?= $(KARUDEB_OPENSBI)
+FUBOOT_UBOOT   ?= ../u-boot/u-boot.bin
+FUBOOT_ROM_DTB ?= $(KARUDEB)/build/karu64/karu64-rv64imac-ddr.dtb
+#	ROM offsets (source of truth -- mirrored into flow/boot/fuboot_blobs.h AND the assembler)
+FUBOOT_OPENSBI_OFF = 0x10000
+FUBOOT_UBOOT_OFF   = 0x60000
+FUBOOT_DTB_OFF     = 0xF0000
+
+#	FORCE-regenerated every build. The prerequisites are the blob FILES, but a caller
+#	(e.g. vcu118-ddr-sgmii-rom-vec) repoints FUBOOT_* to a different image; if those
+#	files are OLDER than a stale header, plain timestamp logic SKIPS regeneration and
+#	fu-boot is compiled with the WRONG sizes -- it then copies FUBOOT_DTB_SIZE bytes of
+#	a differently-sized baked DTB and TRUNCATES the device tree (silent boot failure).
+#	Regenerating unconditionally keeps the compiled-in sizes in lockstep with the blobs
+#	build_fuboot_rom.sh actually bakes into the ROM (the two MUST agree exactly).
+flow/boot/fuboot_blobs.h:	$(FUBOOT_OPENSBI) $(FUBOOT_UBOOT) $(FUBOOT_ROM_DTB) FORCE
+	@printf '// generated by `make` -- boot ROM blob offsets + sizes (do not edit)\n' > $@
+	@printf '#define FUBOOT_OPENSBI_OFF  %sUL\n' $(FUBOOT_OPENSBI_OFF) >> $@
+	@printf '#define FUBOOT_OPENSBI_SIZE %sUL\n' $$(stat -c%s $(FUBOOT_OPENSBI)) >> $@
+	@printf '#define FUBOOT_UBOOT_OFF    %sUL\n' $(FUBOOT_UBOOT_OFF) >> $@
+	@printf '#define FUBOOT_UBOOT_SIZE   %sUL\n' $$(stat -c%s $(FUBOOT_UBOOT)) >> $@
+	@printf '#define FUBOOT_DTB_OFF      %sUL\n' $(FUBOOT_DTB_OFF) >> $@
+	@printf '#define FUBOOT_DTB_SIZE     %sUL\n' $$(stat -c%s $(FUBOOT_ROM_DTB)) >> $@
+	@cat $@
+
+.PHONY: FORCE
+FORCE:
+
+$(BUILD)/vcu118_fuboot_rom.elf:	$(VCU118_FUBOOT_SRCS) flow/boot/fugzip.h flow/boot/vcu118_fuboot.ld flow/boot/fuboot_blobs.h | $(BUILD)
+	$(XCHAIN)gcc $(VCU118_FUBOOT_CFLAGS) -DFUBOOT_AUTOBOOT -o $@ $(VCU118_FUBOOT_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/vcu118_fuboot_rom.bin:	$(BUILD)/vcu118_fuboot_rom.elf
+	$(XCHAIN)objcopy -O binary $< $@
+
+#	Assemble the ROM image into _build/vcu118_fuboot.hex. Vivado is launched
+#	from _build, so karu_boot_mem reads this file relative to Vivado's cwd.
+vcu118-fuboot-rom-hex:	$(BUILD)/vcu118_fuboot_rom.bin flow/boot/fuboot_blobs.h flow/build_fuboot_rom.sh
+	flow/build_fuboot_rom.sh $(BUILD)/vcu118_fuboot_rom.bin \
+		$(FUBOOT_OPENSBI) $(FUBOOT_OPENSBI_OFF) \
+		$(FUBOOT_UBOOT)   $(FUBOOT_UBOOT_OFF) \
+		$(FUBOOT_ROM_DTB) $(FUBOOT_DTB_OFF) \
+		$(VCU118_FUBOOT_HEX)
+
+#	==========================================================
+#	karu64 (the core) -- iverilog HTIF simulation
+#	==========================================================
+
+HTIF_SRC =	rtl/htif_tb.v \
+			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
+			rtl/karu_sv39.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v \
+			rtl/karu_m.v \
+			rtl/karu_fregfile.v rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
+			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v \
+			rtl/karu_fdiv.v rtl/karu_fsqrt.v rtl/karu_fcvt.v rtl/karu_fmisc.v \
+			rtl/karu_ffma.v \
+			rtl/karu_fmul_d.v rtl/karu_fadd_d.v rtl/karu_fdiv_d.v \
+			rtl/karu_fsqrt_d.v rtl/karu_fcvt_d.v rtl/karu_fcvt_hs.v rtl/karu_fzfa.v rtl/karu_ffma_d.v \
+			rtl/karu_assert.v rtl/karu_vrf_assert.v
+HTIF_IVL_FLAGS ?=	$(VFLAGS) -DKARU_NO_V
+
+ZVK_FLAGS ?= -DKARU_ZVK
+ZVK_RTL =	rtl/zvk/sboxes.v \
+			rtl/zvk/aes_encdec.v rtl/zvk/aes_key_expansion.v \
+			rtl/zvk/sha2_compression.v rtl/zvk/sha2_msg_schedule.v rtl/zvk/karu_sha2_iter.v \
+			rtl/zvk/sm4_encdec.v rtl/zvk/sm4_key_expansion.v rtl/zvk/karu_sm4_iter.v \
+			rtl/zvk/sm3_compression.v rtl/zvk/sm3_msg_expansion.v rtl/zvk/karu_sm3_iter.v \
+			rtl/zvk/karu_ghash.v rtl/zvk/karu_vcrypto.v
+ZVK_TB_FLAGS =	--binary --timing $(VFLAGS) \
+			-Wno-TIMESCALEMOD -Wno-UNOPTFLAT -Wno-WIDTH -Wno-UNUSEDSIGNAL \
+			-Wno-DECLFILENAME -Wno-UNUSEDPARAM -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND
+
+$(BUILD)/htif_tb.vvp:	$(HTIF_SRC) | $(BUILD)
+	iverilog $(HTIF_IVL_FLAGS) -DSIM_TB -DCORE_COMMIT_LOG -s clk_gen -o $@ $(HTIF_SRC)
+
+htif-sim:	$(BUILD)/htif_tb.vvp $(HELLO_HEX)
+	vvp -N $(BUILD)/htif_tb.vvp +hex=$(HELLO_HEX) +commit_log=$(BUILD)/karu.log
+
+#	==========================================================
+#	karu64 -- verilator build (~30x faster than iverilog)
+#	==========================================================
+
+VERI_DIR	=	$(BUILD)/Vhtif
+VERI_BIN	=	$(VERI_DIR)/Vhtif_tb
+
+veri:	$(VERI_BIN) $(HELLO_HEX)
+	$(VERI_BIN) +hex=$(HELLO_HEX) +tohost=1000 +commit_log=$(BUILD)/karu.log
+
+$(VERI_BIN): $(VERI_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_DIR) -f Vhtif_tb.mk
+
+$(VERI_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DCORE_COMMIT_LOG \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+
+#	==========================================================
+#	riscv-tests harness
+#	==========================================================
+
+#	NOTE: the riscv-tests targets build the VERILATOR sim (the runner
+#	auto-picks it). Iverilog does not elaborate the full-vector core, so
+#	htif-sim builds the scalar NO_V core via HTIF_IVL_FLAGS.
+test:	$(VERI_BIN)
+	flow/run_all_tests.sh
+
+test-one:	$(VERI_BIN)
+	@test -n "$(T)" || { echo "usage: make test-one T=<test-name>"; exit 2; }
+	flow/run_test.sh $(T)
+
+test-diff:	$(BUILD)/htif_tb.vvp
+	@test -n "$(T)" || { echo "usage: make test-diff T=<test-name>"; exit 2; }
+	flow/diff_test.sh $(T)
+
+#	==========================================================
+#	Berkeley TestFloat-3e harness
+#	==========================================================
+#	TestFloat/SoftFloat sources live in test/{TestFloat-3e,SoftFloat-3e}
+#	but their build/ subdirs are not writable for us. We copy the
+#	platform-specific Makefile + platform.h into _build/ and build there.
+#
+#	The "fp-test" target runs one TestFloat operation through karu64:
+#	  testfloat_gen <type> | sim (test/fw/fp_subj.c) | testfloat_ver <op>
+#
+#	The sim uses a separate, larger-RAM testbench (4 MiB) so a full
+#	level-1 vector batch (46464 vectors) fits in one shot.
+
+TF_SRC		=	test/TestFloat-3e/source
+SF_SRC		=	test/SoftFloat-3e/source
+TF_DIR		=	$(BUILD)/TestFloat-3e
+SF_DIR		=	$(BUILD)/SoftFloat-3e
+TF_GEN		=	$(TF_DIR)/testfloat_gen
+TF_VER		=	$(TF_DIR)/testfloat_ver
+
+$(SF_DIR)/softfloat.a:	| $(BUILD)
+	mkdir -p $(SF_DIR)
+	cp test/SoftFloat-3e/build/Linux-x86_64-GCC/Makefile   $(SF_DIR)/
+	cp test/SoftFloat-3e/build/Linux-x86_64-GCC/platform.h $(SF_DIR)/
+	$(MAKE) -C $(SF_DIR) -j SOURCE_DIR=$(CURDIR)/$(SF_SRC)
+
+$(TF_GEN):	$(SF_DIR)/softfloat.a
+	mkdir -p $(TF_DIR)
+	cp test/TestFloat-3e/build/Linux-x86_64-GCC/Makefile   $(TF_DIR)/
+	cp test/TestFloat-3e/build/Linux-x86_64-GCC/platform.h $(TF_DIR)/
+	$(MAKE) -C $(TF_DIR) -j \
+		SOURCE_DIR=$(CURDIR)/$(TF_SRC) \
+		SOFTFLOAT_LIB=$(CURDIR)/$(SF_DIR)/softfloat.a \
+		SOFTFLOAT_INCLUDE_DIR=$(CURDIR)/$(SF_SRC)/include
+
+testfloat-build:	$(TF_GEN)
+
+#	------------------------------------------------------------------
+#	FP microbench: measures cycles/op via rdcycle.
+#	------------------------------------------------------------------
+FP_CYC_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/fp_cycles.c
+
+$(BUILD)/fp_cycles.elf:	$(FP_CYC_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc -O2 -Wall -g -mabi=lp64d -march=rv64imfdc -mcmodel=medany \
+		-ffreestanding -fno-builtin -nostdlib -static -Itest/fw \
+		-T flow/fp_subj.ld -o $@ $(FP_CYC_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/fp_cycles.hex:	$(BUILD)/fp_cycles.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/fp_cycles.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/fp_cycles.bin > $@
+
+fp-cycles:	$(BUILD)/htif_tb.vvp $(BUILD)/fp_cycles.hex
+	vvp -N $(BUILD)/htif_tb.vvp \
+		+hex=$(BUILD)/fp_cycles.hex +tohost=8000 +max_cycles=2000000 \
+		+commit_log=$(BUILD)/fp_cycles.karu.log
+
+#	The fp-test firmware: same toolchain options as hello but built with
+#	rv64imfc so the FP insns are accepted.
+FP_SUBJ_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/fp_subj.c
+FP_SUBJ_CFLAGS	=	-O2 -Wall -g \
+					-mabi=lp64d -march=rv64imfdc -mcmodel=medany \
+					-ffreestanding -fno-builtin -nostdlib -static \
+					-Itest/fw
+
+#	Per-rounding-mode firmware variants: rne/rtz/rdn/rup/rmm/dyn.
+#	rne is the regression default; the others are built for fp-test-all
+#	and the DYN sanity test.
+FP_SUBJ_RMS	=	rne rtz rdn rup rmm dyn
+FP_SUBJ_ELFS	=	$(FP_SUBJ_RMS:%=$(BUILD)/fp_subj_%.elf)
+FP_SUBJ_HEXES	=	$(FP_SUBJ_RMS:%=$(BUILD)/fp_subj_%.hex)
+
+#	Per-target define: dyn variant needs the additional KARU_DYN flag
+#	so the firmware writes the frm CSR at startup.
+$(BUILD)/fp_subj_dyn.elf: FP_EXTRA_CFLAGS = -DKARU_DYN
+$(BUILD)/fp_subj_%.elf: FP_EXTRA_CFLAGS ?=
+$(BUILD)/fp_subj_%.elf: $(FP_SUBJ_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(FP_SUBJ_CFLAGS) -DKARU_RM_TOK=$* $(FP_EXTRA_CFLAGS) \
+		-T flow/fp_subj.ld -o $@ $(FP_SUBJ_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/fp_subj_%.hex: $(BUILD)/fp_subj_%.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/fp_subj_$*.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/fp_subj_$*.bin > $@
+
+#	Default firmware ('fp_subj.elf' without an rm suffix) is the rne
+#	variant. flow/run_fp_test.sh resolves the right hex from $RM.
+$(BUILD)/fp_subj.elf:	$(BUILD)/fp_subj_rne.elf
+	cp $< $@
+$(BUILD)/fp_subj.hex:	$(BUILD)/fp_subj_rne.hex
+	cp $< $@
+
+#	4 MiB-RAM verilator testbench for the fp-test harness. iverilog's
+#	reg-array compile time scales poorly, but verilator handles a
+#	multi-megabyte ram[] as a plain C array.
+VERI_FP_DIR	=	$(BUILD)/Vhtif_fp
+VERI_FP_BIN	=	$(VERI_FP_DIR)/Vhtif_tb
+
+$(VERI_FP_BIN): $(VERI_FP_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_FP_DIR) -f Vhtif_tb.mk
+
+$(VERI_FP_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_FP_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+
+#	---- I-cache build (same as the FP sim + KARU_ICACHE) + latency A/B demo ----
+#	The I-cache hides imem latency (FPGA/DDR); on the htif_tb 1-cycle RAM it is a
+#	small loss, so simulator builds keep it opt-in (KARU_ICACHE). DDR Vivado
+#	builds enable it by default in flow/fpga/xcvu9p-ddr-synth.tcl.
+#	coremark-icache-demo runs CoreMark on both sims across a sweep of +imem_lat
+#	to show where it pays off.
+VERI_IC_DIR	=	$(BUILD)/Vhtif_ic
+VERI_IC_BIN	=	$(VERI_IC_DIR)/Vhtif_tb
+$(VERI_IC_BIN): $(VERI_IC_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_IC_DIR) -f Vhtif_tb.mk
+$(VERI_IC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_IC_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_ICACHE \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+.PHONY: veri-icache coremark-icache-demo
+veri-icache:	$(VERI_IC_BIN)
+coremark-icache-demo:	$(VERI_FP_BIN) $(VERI_IC_BIN) $(COREMARK_HEX)
+	@echo "CoreMark timed-region cycles (CRC must stay 0xe714); imem_lat = first-access read latency"
+	@printf "%-9s %-14s %-14s %s\n" "imem_lat" "no-cache" "I-cache" "speedup"
+	@for lat in 0 10 20 40; do \
+		nc=$$($(VERI_FP_BIN) +hex=$(COREMARK_HEX) +tohost=40000 +max_cycles=400000000 +imem_lat=$$lat 2>&1 | grep -oE 'rdcycle_delta : [0-9]+' | grep -oE '[0-9]+'); \
+		ic=$$($(VERI_IC_BIN) +hex=$(COREMARK_HEX) +tohost=40000 +max_cycles=400000000 +imem_lat=$$lat 2>&1 | grep -oE 'rdcycle_delta : [0-9]+' | grep -oE '[0-9]+'); \
+		printf "%-9s %-14s %-14s %s\n" "$$lat" "$$nc" "$$ic" "$$(awk "BEGIN{printf \"%.2fx\",$$nc/$$ic}")"; \
+	done
+
+#	---- 2-stage lane pipeline build (KARU_V_LANE_PIPE) + directed validation ----
+#	KARU_V_LANE_PIPE splits the karu_vlane vsew->res_chunk cone into two stages
+#	(registered SEW-decoded operands), the lever that closes 75 MHz on the DDR
+#	vector bitstream (doc/fpga.md Run 10). It is opt-in and the
+#	default build is byte-identical, so it gets its own verilator binary (mirrors
+#	the Vhtif_ic precedent) rather than a VFLAGS override. `vpipe-test` runs the
+#	directed suites that exercise the is_grp lane writeback path (the one the warm
+#	cycle gates) on it; INV19b in karu_assert checks the warm-cycle handshake.
+#	The full DDR datapath additionally sets KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64.
+VERI_VP_DIR	=	$(BUILD)/Vhtif_vpipe
+VERI_VP_BIN	=	$(VERI_VP_DIR)/Vhtif_tb
+$(VERI_VP_BIN): $(VERI_VP_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_VP_DIR) -f Vhtif_tb.mk
+$(VERI_VP_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_VP_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_V_LANE_PIPE \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+.PHONY: veri-vpipe vpipe-test
+veri-vpipe:	$(VERI_VP_BIN)
+vpipe-test:	$(VERI_VP_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vfp_subj.hex \
+		$(BUILD)/vidx_subj.hex $(BUILD)/vperm_subj.hex $(BUILD)/vsvlenb_subj.hex
+	@echo "== KARU_V_LANE_PIPE directed suites (is_grp lane path; INV19b active) =="
+	@for s in vint vfp vidx vperm vsvlenb; do \
+		echo "-- $$s --"; \
+		$(VERI_VP_BIN) +hex=$(BUILD)/$${s}_subj.hex +tohost=8000 +max_cycles=4000000 || exit 1; \
+	done
+
+#	---- cold-funnel writeback stage build (KARU_V_CWB_STAGE) + directed validation ----
+#	KARU_V_CWB_STAGE decouples the COLD whole-register assembly (ext_res/wide_res/
+#	narrow_merge/red_wdata/perm_res) into a dedicated cwb_asm register + a one-cycle
+#	S_CSTAGE hop, breaking the route-bound vsew_q->cwb_buf cone (the full-vector DDR
+#	bit's sole core limiter, -2.195 ns @75 MHz). Opt-in, default byte-identical, so
+#	it gets its own binary (the Vhtif_vpipe precedent). `vcwb-test` runs the directed
+#	suites that exercise the cold funnel: vint (ext/widen/narrow/reduce), vperm
+#	(gather/slide), plus vfp/vidx for regression. The full DDR datapath pairs this
+#	with KARU_V_LANE_PIPE + KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64.
+VERI_CWB_DIR	=	$(BUILD)/Vhtif_vcwb
+VERI_CWB_BIN	=	$(VERI_CWB_DIR)/Vhtif_tb
+$(VERI_CWB_BIN): $(VERI_CWB_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_CWB_DIR) -f Vhtif_tb.mk
+$(VERI_CWB_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_CWB_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_V_CWB_STAGE \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+.PHONY: veri-vcwb vcwb-test
+veri-vcwb:	$(VERI_CWB_BIN)
+vcwb-test:	$(VERI_CWB_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vfp_subj.hex \
+		$(BUILD)/vidx_subj.hex $(BUILD)/vperm_subj.hex
+	@echo "== KARU_V_CWB_STAGE directed suites (cold whole-register writeback funnel) =="
+	@for s in vint vperm vfp vidx; do \
+		echo "-- $$s --"; \
+		$(VERI_CWB_BIN) +hex=$(BUILD)/$${s}_subj.hex +tohost=8000 +max_cycles=4000000 || exit 1; \
+	done
+
+#	---- permute-buffers-in-LUTRAM build (KARU_V_PERM_RAM) + directed validation ----
+#	KARU_V_PERM_RAM moves the VPERM pbuf/ibuf into distributed RAM (deletes ~4096 flops +
+#	the two GBUF barrel shifters) and serializes the window to 1 elem/cycle -- an area /
+#	congestion-relief lever for the full-vector bit. Opt-in; own binary (Vhtif_vcwb
+#	precedent), built with the bit's structural vector knobs (CWB_STAGE + LANE_PIPE) so
+#	the validated config matches the synth. `vpermram-test` exercises the VPERM engine.
+VERI_PRAM_DIR	=	$(BUILD)/Vhtif_vpermram
+VERI_PRAM_BIN	=	$(VERI_PRAM_DIR)/Vhtif_tb
+$(VERI_PRAM_BIN): $(VERI_PRAM_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_PRAM_DIR) -f Vhtif_tb.mk
+$(VERI_PRAM_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_PRAM_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 \
+		-DKARU_V_PERM_RAM -DKARU_V_CWB_STAGE -DKARU_V_LANE_PIPE \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+.PHONY: veri-vpermram vpermram-test
+veri-vpermram:	$(VERI_PRAM_BIN)
+vpermram-test:	$(VERI_PRAM_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vidx_subj.hex $(BUILD)/vperm_subj.hex
+	@echo "== KARU_V_PERM_RAM directed suites (VPERM engine in distributed RAM) =="
+	@for s in vperm vidx vint; do \
+		echo "-- $$s --"; \
+		$(VERI_PRAM_BIN) +hex=$(BUILD)/$${s}_subj.hex +tohost=8000 +max_cycles=4000000 || exit 1; \
+	done
+
+fp-test:	$(VERI_FP_BIN) $(FP_SUBJ_HEXES) $(TF_GEN)
+	@test -n "$(OP)" || { echo "usage: make fp-test OP=<f32_add|...> [RM=<rne|rtz|rdn|rup|rmm|dyn>] [FRM=<rne|rtz|rdn|rup|rmm>]"; exit 2; }
+	RM=$${RM:-rne} FRM=$${FRM:-rne} flow/run_fp_test.sh $(OP) $(CHUNK)
+
+#	Regression: RNE only, all 17 ops. ~5 min including FMA.
+fp-test-regression:	$(VERI_FP_BIN) $(FP_SUBJ_HEXES) $(TF_GEN)
+	flow/run_fp_all.sh
+
+#	Comprehensive: 5 static rounding modes x 17 ops, plus DYN sanity.
+#	~25 min including FMA across modes. Only run when actually needed.
+fp-test-all:	$(VERI_FP_BIN) $(FP_SUBJ_HEXES) $(TF_GEN)
+	flow/run_fp_modes.sh
+	flow/run_fp_dyn.sh
+
+fp-test-dyn:	$(VERI_FP_BIN) $(FP_SUBJ_HEXES) $(TF_GEN)
+	flow/run_fp_dyn.sh
+
+#	==========================================================
+#	VPERM directed test (slides / gather / compress / iota).
+#	Self-checking against scalar references derived from the RVV
+#	spec; the SAME ELF passes on spike (rv64gcv, golden) and karu64,
+#	so a karu64 PASS means the VPERM datapath matches spike. Covers
+#	e8/m4, e32/m2, e64/m1, fractional LMUL, masking, out-of-range
+#	gather indices and the vl-shrink tail. ACT4 would be the formal
+#	gate but its act/sail toolchain is not installed on this host.
+#	==========================================================
+VPERM_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vperm_subj.c
+VPERM_CFLAGS	=	-O2 -Wall -g -fno-tree-vectorize \
+					-mabi=lp64d -march=rv64gcv -mcmodel=medany \
+					-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+
+$(BUILD)/vperm_subj.elf: $(VPERM_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VPERM_SRCS)
+
+$(BUILD)/vperm_subj.hex: $(BUILD)/vperm_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vperm_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vperm_subj.bin > $@
+
+#	Run on karu64 (the Vhtif_fp 4 MiB-RAM TB). Exit 0 = all VPERM cases pass.
+vperm-test:	$(VERI_FP_BIN) $(BUILD)/vperm_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vperm_subj.hex +tohost=8000 +max_cycles=4000000
+
+#	Cross-check the same ELF on spike (rv64gcv golden reference).
+vperm-test-spike:	$(BUILD)/vperm_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vperm_subj.elf
+
+#	---- standard Zvk decode smoke test (OP-VE encodings only) ----
+zvk-decode-test:
+	@mkdir -p $(BUILD)/Vzvk_decode
+	verilator --binary --top-module tb_zvk_decode -Mdir $(BUILD)/Vzvk_decode $(VFLAGS) \
+		-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-WIDTH -Wno-CASEINCOMPLETE \
+		$(ZVK_FLAGS) rtl/karu_dec.v test/zvk/tb_zvk_decode.sv
+	$(BUILD)/Vzvk_decode/Vtb_zvk_decode
+
+zvk-decode-leaf-test:
+	for cfg in KARU_ZVKNED KARU_ZVKNHA KARU_ZVKNHB KARU_ZVKSED KARU_ZVKSH KARU_ZVKG KARU_ZVKB; do \
+		dir="$(BUILD)/Vzvk_decode_$$cfg"; \
+		mkdir -p "$$dir"; \
+		verilator --binary --top-module tb_zvk_decode -Mdir "$$dir" $(VFLAGS) \
+			-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-WIDTH -Wno-CASEINCOMPLETE \
+			-D$$cfg rtl/karu_dec.v test/zvk/tb_zvk_decode.sv && \
+		"$$dir"/Vtb_zvk_decode || exit $$?; \
+	done
+
+#	---- standard Zvk leaf + aggregate known-answer tests ----
+zvk-kat:
+	@mkdir -p $(BUILD)/Vzvk_aes $(BUILD)/Vzvk_sha2 $(BUILD)/Vzvk_sha2ms \
+		$(BUILD)/Vzvk_sm4 $(BUILD)/Vzvk_sm3 $(BUILD)/Vzvk_ghash $(BUILD)/Vzvk_vcrypto
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_aes \
+		rtl/zvk/sboxes.v rtl/zvk/aes_encdec.v rtl/zvk/aes_key_expansion.v \
+		test/zvk/tb_aes_kat.sv --top-module tb_aes_kat
+	$(BUILD)/Vzvk_aes/Vtb_aes_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_sha2 \
+		rtl/zvk/sha2_compression.v test/zvk/tb_sha2_kat.sv --top-module tb_sha2_kat
+	$(BUILD)/Vzvk_sha2/Vtb_sha2_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_sha2ms \
+		rtl/zvk/sha2_msg_schedule.v test/zvk/tb_sha2ms_kat.sv --top-module tb_sha2ms_kat
+	$(BUILD)/Vzvk_sha2ms/Vtb_sha2ms_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_sm4 \
+		rtl/zvk/sboxes.v rtl/zvk/sm4_encdec.v rtl/zvk/sm4_key_expansion.v \
+		test/zvk/tb_sm4_kat.sv --top-module tb_sm4_kat
+	$(BUILD)/Vzvk_sm4/Vtb_sm4_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_sm3 \
+		rtl/zvk/sm3_compression.v rtl/zvk/sm3_msg_expansion.v \
+		test/zvk/tb_sm3_kat.sv --top-module tb_sm3_kat
+	$(BUILD)/Vzvk_sm3/Vtb_sm3_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_ghash \
+		rtl/zvk/karu_ghash.v test/zvk/tb_ghash_kat.sv --top-module tb_ghash_kat
+	$(BUILD)/Vzvk_ghash/Vtb_ghash_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vzvk_vcrypto $(ZVK_FLAGS) \
+		$(ZVK_RTL) test/zvk/tb_vcrypto_kat.sv --top-module tb_vcrypto_kat
+	$(BUILD)/Vzvk_vcrypto/Vtb_vcrypto_kat
+
+#	---- standard Zvk full-core instruction smoke test ----
+VERI_ZVK_DIR	=	$(BUILD)/Vhtif_zvk
+VERI_ZVK_BIN	=	$(VERI_ZVK_DIR)/Vhtif_tb
+ZVK_SRCS		=	test/fw/htif_start.S test/fw/htif.c test/fw/zvk_subj.c
+$(VERI_ZVK_BIN): $(VERI_ZVK_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_ZVK_DIR) -f Vhtif_tb.mk
+$(VERI_ZVK_DIR)/Vhtif_tb.mk: $(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_ZVK_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 $(ZVK_FLAGS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-VARHIDDEN \
+		$(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp
+$(BUILD)/zvk_subj.elf: $(ZVK_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZVK_SRCS)
+$(BUILD)/zvk_subj.hex: $(BUILD)/zvk_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zvk_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zvk_subj.bin > $@
+zvk-test:	$(VERI_ZVK_BIN) $(BUILD)/zvk_subj.hex
+	$(VERI_ZVK_BIN) +hex=$(BUILD)/zvk_subj.hex +tohost=8000 +max_cycles=4000000
+
+#	---- Zvkb leaf directed test (vandn/vrol/vror/vbrev8/vrev8) ----
+#	Runs on the same -DKARU_ZVK full-core build (the umbrella includes Zvkb);
+#	the -spike variant cross-checks the identical ELF on spike with +zvkb.
+ZVKB_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/zvkb_subj.c
+ZVKB_CFLAGS	=	-O2 -Wall -g -fno-tree-vectorize \
+				-mabi=lp64d -march=rv64gcv_zvkb -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+$(BUILD)/zvkb_subj.elf: $(ZVKB_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(ZVKB_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZVKB_SRCS)
+$(BUILD)/zvkb_subj.hex: $(BUILD)/zvkb_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zvkb_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zvkb_subj.bin > $@
+zvkb-test:	$(VERI_ZVK_BIN) $(BUILD)/zvkb_subj.hex
+	$(VERI_ZVK_BIN) +hex=$(BUILD)/zvkb_subj.hex +tohost=8000 +max_cycles=4000000
+zvkb-test-spike:	$(BUILD)/zvkb_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr_zvkb $(BUILD)/zvkb_subj.elf
+
+#	---- directed indexed load/store test (vluxei/vsuxei) ----
+VIDX_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vidx_subj.c
+$(BUILD)/vidx_subj.elf: $(VIDX_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VIDX_SRCS)
+$(BUILD)/vidx_subj.hex: $(BUILD)/vidx_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vidx_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vidx_subj.bin > $@
+vidx-test:	$(VERI_FP_BIN) $(BUILD)/vidx_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vidx_subj.hex +tohost=8000 +max_cycles=4000000
+vidx-test-spike:	$(BUILD)/vidx_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr_zicclsm $(BUILD)/vidx_subj.elf
+
+#	---- directed vstart test (RVV 3.7: prestart honor + clear-on-retire) ----
+#	One ELF, both sims: memory ops honor vstart identically on karu64 and
+#	spike; the arith case tolerates the fork (karu64 traps illegal -- the
+#	spec-permitted choice -- while spike executes prestart-undisturbed).
+VSTART_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vstart_subj.c
+$(BUILD)/vstart_subj.elf: $(VSTART_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VSTART_SRCS)
+$(BUILD)/vstart_subj.hex: $(BUILD)/vstart_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vstart_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vstart_subj.bin > $@
+vstart-test:	$(VERI_FP_BIN) $(BUILD)/vstart_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vstart_subj.hex +tohost=8000 +max_cycles=4000000
+vstart-test-spike:	$(BUILD)/vstart_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vstart_subj.elf
+
+#	---- directed reserved-encoding test (vill execution + indexed overlap) ----
+#	karu64 and spike must agree: same cases trap (cause 2), same legal
+#	overlap shapes execute with identical data.
+VRESV_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vresv_subj.c
+$(BUILD)/vresv_subj.elf: $(VRESV_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VRESV_SRCS)
+$(BUILD)/vresv_subj.hex: $(BUILD)/vresv_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vresv_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vresv_subj.bin > $@
+vresv-test:	$(VERI_FP_BIN) $(BUILD)/vresv_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vresv_subj.hex +tohost=8000 +max_cycles=4000000
+vresv-test-spike:	$(BUILD)/vresv_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vresv_subj.elf
+
+#	---- mstatus.FS/VS gating test (Linux FP/vector context prerequisite) ----
+#	FS/VS Off -> FP/vector ops + their CSRs trap cause 2; enabled -> execute
+#	and harden to Dirty (+ derived SD). Same gating/dirty model as spike.
+FSVS_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/fsvs_subj.c
+$(BUILD)/fsvs_subj.elf: $(FSVS_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(FSVS_SRCS)
+$(BUILD)/fsvs_subj.hex: $(BUILD)/fsvs_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/fsvs_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/fsvs_subj.bin > $@
+fsvs-test:	$(VERI_FP_BIN) $(BUILD)/fsvs_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/fsvs_subj.hex +tohost=8000 +max_cycles=4000000
+fsvs-test-spike:	$(BUILD)/fsvs_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/fsvs_subj.elf
+
+#	---- sstatus.VS -> vlenb sequencing + vle8/vse8 usercopy repro (Linux RVV bring-up) ----
+VSVLENB_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vsvlenb_subj.c
+$(BUILD)/vsvlenb_subj.elf: $(VSVLENB_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VSVLENB_SRCS)
+$(BUILD)/vsvlenb_subj.hex: $(BUILD)/vsvlenb_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vsvlenb_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vsvlenb_subj.bin > $@
+vsvlenb-test:	$(VERI_FP_BIN) $(BUILD)/vsvlenb_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vsvlenb_subj.hex +tohost=8000 +max_cycles=4000000
+vsvlenb-test-spike:	$(BUILD)/vsvlenb_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vsvlenb_subj.elf
+
+#	---- Zvfhmin directed test (RVA23 FP16 conversions: vfwcvt.f.f.v /
+#	     vfncvt.f.f.w) + the e16/e8 FP-op trap. Needs _zvfhmin in march/isa. ----
+VFH_CFLAGS	=	-O2 -Wall -g -fno-tree-vectorize \
+				-mabi=lp64d -march=rv64gcv_zvfhmin -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+VFH_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vfh_subj.c
+$(BUILD)/vfh_subj.elf: $(VFH_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VFH_CFLAGS) -T flow/fp_subj.ld -o $@ $(VFH_SRCS)
+$(BUILD)/vfh_subj.hex: $(BUILD)/vfh_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vfh_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vfh_subj.bin > $@
+vfh-test:	$(VERI_FP_BIN) $(BUILD)/vfh_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vfh_subj.hex +tohost=8000 +max_cycles=4000000
+vfh-test-spike:	$(BUILD)/vfh_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr_zvfhmin $(BUILD)/vfh_subj.elf
+
+#	---- scalar bitmanip Zba/Zbb/Zbs directed test (RVA23-mandatory) ----
+BM_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=rv64gc_zba_zbb_zbs -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+BM_SRCS		=	test/fw/htif_start.S test/fw/htif.c test/fw/bitmanip_subj.c
+$(BUILD)/bitmanip_subj.elf: $(BM_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(BM_CFLAGS) -T flow/fp_subj.ld -o $@ $(BM_SRCS)
+$(BUILD)/bitmanip_subj.hex: $(BUILD)/bitmanip_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/bitmanip_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/bitmanip_subj.bin > $@
+bitmanip-test:	$(VERI_FP_BIN) $(BUILD)/bitmanip_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/bitmanip_subj.hex +tohost=8000 +max_cycles=2000000
+bitmanip-test-spike:	$(BUILD)/bitmanip_subj.elf
+	spike --isa=rv64gc_zba_zbb_zbs_zicntr $(BUILD)/bitmanip_subj.elf
+
+#	---- CoreMark scalar benchmark harness ----
+#	Default is a one-iteration profiling run, not an official 10s CoreMark
+#	score. Override COREMARK_ITERATIONS and COREMARK_MAX_CYCLES for longer runs.
+COREMARK_DIR		?=	$(BUILD)/CoreMark
+COREMARK_STAMP		=	$(COREMARK_DIR)/.karu-fetched
+COREMARK_ITERATIONS	?=	1
+COREMARK_MAX_CYCLES	?=	200000000
+COREMARK_ISA		=	rv64imac_zicsr_zicntr_zba_zbb_zbs
+COREMARK_NAME		=	coremark_i$(COREMARK_ITERATIONS)
+COREMARK_ELF		=	$(BUILD)/$(COREMARK_NAME).elf
+COREMARK_HEX		=	$(BUILD)/$(COREMARK_NAME).hex
+COREMARK_BIN		=	$(BUILD)/$(COREMARK_NAME).bin
+COREMARK_SPIKE_OUT	=	$(BUILD)/$(COREMARK_NAME).spike.out
+COREMARK_SPIKE_LOG	=	$(BUILD)/$(COREMARK_NAME).spike.log
+COREMARK_SPIKE_HIST	=	$(BUILD)/$(COREMARK_NAME).spike.hist
+COREMARK_CFLAGS		=	-O3 -Wall -g -fno-tree-vectorize \
+						-mabi=lp64 -march=$(COREMARK_ISA) -mcmodel=medany \
+						-ffreestanding -fno-builtin -nostdlib -static \
+						-DCOREMARK_ITERATIONS=$(COREMARK_ITERATIONS) \
+						-Itest/coremark -Itest/fw -I$(COREMARK_DIR)
+COREMARK_SRCS		=	$(COREMARK_DIR)/core_main.c \
+						$(COREMARK_DIR)/core_list_join.c \
+						$(COREMARK_DIR)/core_matrix.c \
+						$(COREMARK_DIR)/core_state.c \
+						$(COREMARK_DIR)/core_util.c \
+						test/coremark/core_portme.c
+
+$(COREMARK_STAMP):	| $(BUILD)
+		@test -f "$(COREMARK_DIR)/core_main.c" || { \
+			mkdir -p "$$(dirname "$(COREMARK_DIR)")"; \
+			git clone --depth 1 https://github.com/eembc/coremark.git "$(COREMARK_DIR)"; \
+		}
+		@touch $@
+
+$(COREMARK_DIR)/core_main.c \
+$(COREMARK_DIR)/core_list_join.c \
+$(COREMARK_DIR)/core_matrix.c \
+$(COREMARK_DIR)/core_state.c \
+$(COREMARK_DIR)/core_util.c:	$(COREMARK_STAMP)
+
+.PHONY: coremark-fetch
+coremark-fetch:	$(COREMARK_STAMP)
+
+$(COREMARK_ELF):	$(COREMARK_SRCS) test/fw/htif_start.S test/fw/htif.c \
+						test/coremark/core_portme.h flow/coremark.ld | $(BUILD)
+		$(XCHAIN)gcc $(COREMARK_CFLAGS) -T flow/coremark.ld -o $@ \
+			test/fw/htif_start.S test/fw/htif.c $(COREMARK_SRCS)
+		$(XCHAIN)size $@
+
+$(COREMARK_HEX):	$(COREMARK_ELF)
+		$(XCHAIN)objcopy -O binary $< $(COREMARK_BIN)
+		hexdump -v -e '1/8 "%016x\n"' $(COREMARK_BIN) > $@
+
+coremark-run:	$(VERI_FP_BIN) $(COREMARK_HEX)
+		$(VERI_FP_BIN) +hex=$(COREMARK_HEX) +tohost=40000 +max_cycles=$(COREMARK_MAX_CYCLES)
+
+coremark-spike:	$(COREMARK_ELF)
+		spike --isa=$(COREMARK_ISA) $<
+
+HIST_TOP ?= 40
+coremark-spike-hist:	$(COREMARK_ELF) flow/spike_hist.py
+		spike --isa=$(COREMARK_ISA) --log-commits $< > $(COREMARK_SPIKE_OUT) 2> $(COREMARK_SPIKE_LOG)
+		flow/spike_hist.py --objdump $(XCHAIN)objdump --top $(HIST_TOP) \
+			--from-symbol start_time --to-symbol stop_time \
+			$< $(COREMARK_SPIKE_LOG) | tee $(COREMARK_SPIKE_HIST)
+
+#	---- scalar Zfhmin directed test (RVA23-mandatory FP16 minimal) ----
+#	Converter math is exhaustively validated vs SoftFloat by fcvt-hs-test; this
+#	exercises the core decode/datapath/NaN-box/load-store, cross-checked on spike.
+ZFH_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=rv64gc_zfhmin -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+ZFH_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/zfhmin_subj.c
+$(BUILD)/zfhmin_subj.elf: $(ZFH_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(ZFH_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZFH_SRCS)
+$(BUILD)/zfhmin_subj.hex: $(BUILD)/zfhmin_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zfhmin_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zfhmin_subj.bin > $@
+zfhmin-test:	$(VERI_FP_BIN) $(BUILD)/zfhmin_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/zfhmin_subj.hex +tohost=8000 +max_cycles=4000000
+zfhmin-test-spike:	$(BUILD)/zfhmin_subj.elf
+	spike --isa=rv64gc_zfhmin_zicntr $(BUILD)/zfhmin_subj.elf
+
+#	---- RVA23 small-extension batch: Zicond/Zimop/Zcmop/Zawrs/Zihintntl ----
+RVAH_ISA	=	rv64gc_zicond_zimop_zcmop_zawrs_zihintntl
+RVAH_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=$(RVAH_ISA) -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+RVAH_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/rva_hints_subj.c
+$(BUILD)/rva_hints_subj.elf: $(RVAH_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(RVAH_CFLAGS) -T flow/fp_subj.ld -o $@ $(RVAH_SRCS)
+$(BUILD)/rva_hints_subj.hex: $(BUILD)/rva_hints_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/rva_hints_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/rva_hints_subj.bin > $@
+rva-hints-test:	$(VERI_FP_BIN) $(BUILD)/rva_hints_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/rva_hints_subj.hex +tohost=8000 +max_cycles=2000000
+rva-hints-test-spike:	$(BUILD)/rva_hints_subj.elf
+	spike --isa=$(RVAH_ISA)_zicntr $(BUILD)/rva_hints_subj.elf
+
+#	---- Zcb: compressed byte/half load-store + bitmanip helpers ----
+ZCB_ISA		=	rv64gc_zba_zbb_zbs_zcb
+ZCB_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=$(ZCB_ISA) -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+ZCB_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/zcb_subj.c
+$(BUILD)/zcb_subj.elf: $(ZCB_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(ZCB_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZCB_SRCS)
+$(BUILD)/zcb_subj.hex: $(BUILD)/zcb_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zcb_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zcb_subj.bin > $@
+zcb-test:	$(VERI_FP_BIN) $(BUILD)/zcb_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/zcb_subj.hex +tohost=8000 +max_cycles=2000000
+zcb-test-spike:	$(BUILD)/zcb_subj.elf
+	spike --isa=$(ZCB_ISA)_zicntr $(BUILD)/zcb_subj.elf
+
+#	---- Zicbom/Zicbop/Zicboz: CBO + prefetch (cbo.zero is the real datapath) ----
+ZICBO_ISA	=	rv64gc_zicbom_zicbop_zicboz
+ZICBO_CFLAGS=	-O2 -Wall -g -mabi=lp64d -march=$(ZICBO_ISA) -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+ZICBO_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/zicbo_subj.c
+$(BUILD)/zicbo_subj.elf: $(ZICBO_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(ZICBO_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZICBO_SRCS)
+$(BUILD)/zicbo_subj.hex: $(BUILD)/zicbo_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zicbo_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zicbo_subj.bin > $@
+zicbo-test:	$(VERI_FP_BIN) $(BUILD)/zicbo_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/zicbo_subj.hex +tohost=8000 +max_cycles=2000000
+zicbo-test-spike:	$(BUILD)/zicbo_subj.elf
+	spike --isa=$(ZICBO_ISA)_zicntr $(BUILD)/zicbo_subj.elf
+
+#	---- standalone bitmanip unit cross-check vs C model ----
+.PHONY: bitmanip-unit-test
+bitmanip-unit-test:
+	rm -rf $(BUILD)/bitmanip
+	verilator -Irtl -Mdir $(BUILD)/bitmanip --cc --exe --build --top-module bm_tb \
+		-Wno-WIDTH -Wno-UNUSED -Wno-TIMESCALEMOD \
+		rtl/karu_bitmanip.v test/bitmanip/tb.v test/bitmanip/sim.cpp
+	./$(BUILD)/bitmanip/Vbm_tb
+
+#	---- standalone FP16<->FP32 converter cross-check vs SoftFloat-3e ----
+#	Validates rtl/karu_fcvt_hs.v rtl/karu_fzfa.v (both directions) exhaustively for widen and
+#	over a structured ~3.95M-vector x6-rounding-mode (incl ROD) narrow sweep, 0-error.
+SF3E		=	test/SoftFloat-3e
+SF3E_INC	=	$(SF3E)/source/include
+SF3E_PLAT	=	$(SF3E)/build/Linux-x86_64-GCC
+SF3E_LIB	=	_build/SoftFloat-3e/softfloat.a
+.PHONY: fcvt-hs-test
+#	verilator output goes under $(BUILD) (= _build) so it is gitignored and
+#	removed by `make clean`; only test/fcvt_hs/{tb.v,sim.cpp} are sources.
+fcvt-hs-test:	$(SF3E_LIB)
+	rm -rf $(BUILD)/fcvt_hs
+	verilator -Irtl -Mdir $(BUILD)/fcvt_hs --cc --exe --build --top-module fcvt_hs_tb \
+		-CFLAGS "-I$(CURDIR)/$(SF3E_INC) -I$(CURDIR)/$(SF3E_PLAT)" \
+		-LDFLAGS "$(CURDIR)/$(SF3E_LIB)" \
+		-Wno-WIDTH -Wno-UNUSED -Wno-TIMESCALEMOD \
+		rtl/karu_fcvt_hs.v rtl/karu_fzfa.v test/fcvt_hs/tb.v test/fcvt_hs/sim.cpp
+	./$(BUILD)/fcvt_hs/Vfcvt_hs_tb
+
+#	---- vector Sv39 directed test (V2 preflight gate, doc/architecture.md) ----
+#	Vector LS through real mappings (incl. a VA-adjacent / phys-non-adjacent
+#	page pair), page-fault precision (no side effects), vle*ff trim, and a
+#	demand-map retry. Same ELF cross-checks on spike.
+$(BUILD)/karu_vmmu_test.elf: test/karu_vmmu_test.S test/karu_vmmu_test.ld | $(BUILD)
+	$(XCHAIN)gcc -O2 -mabi=lp64d -march=rv64gcv -mcmodel=medany \
+		-ffreestanding -nostdlib -static \
+		-T test/karu_vmmu_test.ld -o $@ test/karu_vmmu_test.S
+$(BUILD)/karu_vmmu_test.hex: $(BUILD)/karu_vmmu_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_vmmu_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_vmmu_test.bin > $@
+vmmu-test:	$(VERI_FP_BIN) $(BUILD)/karu_vmmu_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_vmmu_test.hex +tohost=1000 +max_cycles=8000000
+vmmu-test-spike:	$(BUILD)/karu_vmmu_test.elf
+	spike --isa=rv64gcv_zvl256b_zicntr_zicclsm_svadu $(BUILD)/karu_vmmu_test.elf
+
+#	---- scalar misaligned cross-page Sv39 probe ----
+#	A misaligned scalar load/store that straddles a 4 KiB page boundary in
+#	S-mode (Sv39 ON) must translate BOTH pages. karu_lsu instead splits in
+#	physical space (beat-2 = (PA & ~7)+8) off a single translation, so beat-2
+#	hits the physically-adjacent frame, not translate(VA+page). Two VA-adjacent
+#	pages are mapped to NON-adjacent frames so the divergence is observable.
+#	Exit code is a bitmask of failed checks (0 = pass). Same ELF on spike
+#	(golden, re-translates beat-2) => 0; buggy karu64 => 0x0E. See
+#	doc/fpga.md ("second candidate").
+$(BUILD)/karu_xpage_test.elf: test/karu_xpage_test.S test/karu_xpage_test.ld | $(BUILD)
+	$(XCHAIN)gcc -O2 -mabi=lp64d -march=rv64gc -mcmodel=medany \
+		-ffreestanding -nostdlib -static \
+		-T test/karu_xpage_test.ld -o $@ test/karu_xpage_test.S
+$(BUILD)/karu_xpage_test.hex: $(BUILD)/karu_xpage_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_xpage_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_xpage_test.bin > $@
+xpage-test:	$(VERI_FP_BIN) $(BUILD)/karu_xpage_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_xpage_test.hex +tohost=1000 +max_cycles=4000000
+xpage-test-spike:	$(BUILD)/karu_xpage_test.elf
+	spike --isa=rv64gc_zicclsm $(BUILD)/karu_xpage_test.elf
+
+#	---- scalar Sv39/FENCE.I/SRET probe (the I-cache coherence + arbitration test) ----
+$(BUILD)/karu_mmu_test.elf: test/karu_mmu_test.S test/karu_mmu_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_mmu_test.ld -o $@ test/karu_mmu_test.S
+$(BUILD)/karu_mmu_test.hex: $(BUILD)/karu_mmu_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_mmu_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_mmu_test.bin > $@
+mmu-test:	$(VERI_FP_BIN) $(BUILD)/karu_mmu_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_mmu_test.hex +tohost=1000 +max_cycles=4000000
+
+#	---- I-cache regression (build with KARU_ICACHE; cover coherence + firmware) ----
+#	The cache is opt-in, so plain regression never instantiates it. This target
+#	runs the FENCE.I/self-modify + Sv39-fetch + IMMU<->cache arbitration probe
+#	(mmu-test) and a vector-fetch probe (vmmu-test) on the I-cache build, at both
+#	0 and a nonzero imem latency, with the assertion harness + the cache's own
+#	protocol checks live.
+.PHONY: icache-test
+icache-test:	$(VERI_IC_BIN) $(BUILD)/karu_mmu_test.hex $(BUILD)/karu_vmmu_test.hex $(COREMARK_HEX)
+	@echo "[icache] FENCE.I/Sv39/arbitration (mmu-test), lat 0 + 20:"
+	@for lat in 0 20; do $(VERI_IC_BIN) +hex=$(BUILD)/karu_mmu_test.hex +tohost=1000 +max_cycles=4000000 +imem_lat=$$lat 2>&1 | grep -iE "exit|ASSERT|TIMEOUT" | sed "s/^/  lat=$$lat /"; done
+	@echo "[icache] vector fetch through Sv39 (vmmu-test), lat 20:"
+	@$(VERI_IC_BIN) +hex=$(BUILD)/karu_vmmu_test.hex +tohost=1000 +max_cycles=8000000 +imem_lat=20 2>&1 | grep -iE "exit|ASSERT|TIMEOUT" | sed 's/^/  /'
+	@echo "[icache] CoreMark CRC through the cache (must be 0xe714):"
+	@$(VERI_IC_BIN) +hex=$(COREMARK_HEX) +tohost=40000 +max_cycles=400000000 +imem_lat=20 2>&1 | grep -iE "crcfinal|ASSERT" | sed 's/^/  /'
+
+#	---- directed 7-bit estimate test (vfrec7.v / vfrsqrt7.v, e32 + e64) ----
+#	C reference is a verbatim port of spike's recip7/rsqrte7, so the same ELF
+#	self-checks on karu64 (`vest-test`) and cross-checks on spike (`vest-test-spike`).
+VEST_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vest_subj.c
+$(BUILD)/vest_subj.elf: $(VEST_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VEST_SRCS)
+$(BUILD)/vest_subj.hex: $(BUILD)/vest_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vest_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vest_subj.bin > $@
+vest-test:	$(VERI_FP_BIN) $(BUILD)/vest_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vest_subj.hex +tohost=8000
+vest-test-spike:	$(BUILD)/vest_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vest_subj.elf
+
+#	---- directed integer-vector arithmetic test (the karu_vlane blast radius) ----
+#	Self-checks on karu64 (`vint-test`) and cross-checks on spike (`vint-test-spike`);
+#	the C reference is spec-derived, so spike validates it before karu64 is trusted.
+VINT_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vint_subj.c
+$(BUILD)/vint_subj.elf: $(VINT_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VINT_SRCS)
+$(BUILD)/vint_subj.hex: $(BUILD)/vint_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vint_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vint_subj.bin > $@
+vint-test:	$(VERI_FP_BIN) $(BUILD)/vint_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vint_subj.hex +tohost=8000 +max_cycles=4000000
+vint-test-spike:	$(BUILD)/vint_subj.elf
+	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vint_subj.elf
+
+#	---- experimental Zvknhk single-instruction Keccak-f1600 (vkeccak) ----
+#	Gated by -DKARU_KECCAK (opt-in), so it gets its own verilator TB; the
+#	default fp-test binary is unaffected.
+VERI_KEC_DIR	=	$(BUILD)/Vhtif_kec
+VERI_KEC_BIN	=	$(VERI_KEC_DIR)/Vhtif_tb
+$(VERI_KEC_BIN): $(VERI_KEC_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_KEC_DIR) -f Vhtif_tb.mk
+$(VERI_KEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_KEC_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_KECCAK \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+
+#	The old keccak-xrv bare-metal KAT harness is no longer carried in this repo.
+.PHONY: keccak-test
+keccak-test:
+	@echo "ERROR: keccak-test KAT sources moved out of this repo; no in-tree harness remains." >&2
+	@exit 1
+
+#	---- directed vector-FP test (vfadd/vfmul/.../FMA/cmp, e32 + e64) ----
+VFP_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vfp_subj.c
+$(BUILD)/vfp_subj.elf: $(VFP_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(VFP_SRCS)
+$(BUILD)/vfp_subj.hex: $(BUILD)/vfp_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/vfp_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vfp_subj.bin > $@
+vfp-test:	$(VERI_FP_BIN) $(BUILD)/vfp_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/vfp_subj.hex +tohost=8000 +max_cycles=2000000
+
+#	---- unit test: BRAM-backed VRF (karu_vrf_bram) + passive checker ----
+#	Standalone iverilog TB; the karu_vrf_assert checker is wired in and
+#	cross-checks every read-back (VRF5b) + polices the access protocol.
+#	See doc/architecture.md. (Module/checker also lint-clean under verilator.)
+.PHONY: vrf-bram-test
+vrf-bram-test:	| $(BUILD)
+	iverilog -g2012 -Irtl -o $(BUILD)/vrf_bram_tb \
+		test/karu_vrf_bram_tb.v rtl/karu_vrf_bram.v rtl/karu_vrf_assert.v
+	$(BUILD)/vrf_bram_tb
+
+#	---- macro-VRF regression aliases ----
+#	The flop VRF is DELETED (2026-06-12 collapse): the BRAM macro-VRF +
+#	exact byte-enable writeback (the former KARU_VRF_BRAM/KARU_VRF_BWE
+#	builds) are now the ONLY datapath, compiled unconditionally. The old
+#	A/B targets are kept as thin aliases over the standard verilator build
+#	so scripts and habits keep working. See doc/architecture.md.
+.PHONY: vrf-bram-core-test bwe-core-test
+vrf-bram-core-test bwe-core-test:	$(VERI_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vperm_subj.hex \
+					$(BUILD)/vidx_subj.hex $(BUILD)/vfp_subj.hex $(BUILD)/vest_subj.hex
+	@fail=0; for t in vint vperm vidx vfp vest; do \
+		printf '%-7s ' "$$t"; \
+		out=`$(VERI_BIN) +hex=$(BUILD)/$${t}_subj.hex +tohost=8000 +max_cycles=8000000 2>&1`; \
+		echo "$$out" | grep -qE "ALL PASS" && ! echo "$$out" | grep -qE "FAIL|TIMEOUT|ASSERT|INV[0-9]" \
+			&& echo "PASS" || { echo "FAIL"; fail=1; echo "$$out" | grep -E "FAIL|TIMEOUT|ASSERT|INV[0-9]" | head -3; }; \
+	done; exit $$fail
+
+#	==========================================================
+#	FPGA target -- VCU118 (xcvu9p-flga2104-2L-e). See doc/fpga.md.
+#	==========================================================
+#	Vivado is deliberately NOT on the default PATH (its settings drag a
+#	legacy verilator into the environment that shadows the one used for
+#	the sims above). Bring it in first with the `xilinx` shell alias:
+#	    xilinx                 # source $HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh
+#	    make vcu118.bit        # synth + place + route -> _build/vcu118.bit
+#	    make prog_vcu118       # program a connected board over JTAG
+#
+#	Vivado is always launched from _build so its journals, logs, .Xil state,
+#	generated IP/project state, reports, checkpoints, and bitstreams stay out
+#	of the repo root. The same firmware that runs on spike (NS16550 console,
+#	test/fw/ns16550.c) is baked into the on-chip BRAM as _build/firmware.hex.
+
+#	core RTL minus the sim-only testbench + assertion checker
+CORE_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v \
+			rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
+			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
+			rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
+			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v rtl/karu_fdiv.v \
+			rtl/karu_fsqrt.v rtl/karu_fcvt.v rtl/karu_fmisc.v rtl/karu_ffma.v \
+			rtl/karu_fmul_d.v rtl/karu_fadd_d.v rtl/karu_fdiv_d.v \
+			rtl/karu_fsqrt_d.v rtl/karu_fcvt_d.v rtl/karu_fcvt_hs.v rtl/karu_fzfa.v rtl/karu_ffma_d.v
+
+FPGA_RTL =	flow/fpga/fpga_top.v flow/fpga/karu_axi_mem.v flow/fpga/karu_ns16550.v \
+			rtl/karu_clint.v rtl/karu_plic.v \
+			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v
+
+#	_build/firmware.hex (BRAM image) -- source is FW_HEX (default the NS16550 hello).
+#	Override FW_HEX to bake a different image into the BRAM for synth.
+FIRMWARE_HEX = $(BUILD)/firmware.hex
+FW_HEX ?= $(HELLO_UART_HEX)
+.PHONY: firmware.hex
+firmware.hex:	$(FIRMWARE_HEX)
+
+$(FIRMWARE_HEX):	$(FW_HEX) | $(BUILD)
+	cp $< $@
+
+#	verilator sim of fpga_top: boots _build/firmware.hex from BRAM, prints over
+#	the modeled NS16550, stops on the firmware's tohost exit.
+FPGA_SIM_DIR =	$(BUILD)/Vfpga
+FPGA_SIM_BIN =	$(FPGA_SIM_DIR)/Vfpga_tb
+
+fpga-sim:	$(FPGA_SIM_BIN) $(FIRMWARE_HEX)
+	$(FPGA_SIM_BIN) +hex=$(FIRMWARE_HEX) +max_cycles=2000000
+
+$(FPGA_SIM_BIN): $(FPGA_SIM_DIR)/Vfpga_tb.mk
+	$(MAKE) -C $(FPGA_SIM_DIR) -f Vfpga_tb.mk
+
+#	==========================================================
+#	Directed interrupt test (Phase 4: CLINT + PLIC on fpga_top)
+#	==========================================================
+#	M-mode bare-metal firmware that arms the CLINT timer (MTIP) and the
+#	PLIC/NS16550 external line (MEIP), driven on the verilator fpga_top sim.
+#	The UART RX byte 'K' is injected via +uart_in. PASS = HTIF exit 0.
+IRQ_TEST_SRCS =	test/fw/htif_start.S test/fw/irq_trap.S test/fw/ns16550.c test/fw/irq_test.c
+
+#	-march override: the directed test uses M-mode CSR ops (Zicsr) and a vector
+#	FP op (the interrupt-during-vector-op drain subtest), so it needs the full
+#	rv64gcv ISA, which the plain rv64ic march of HTIF_CFLAGS does not enable.
+$(BUILD)/irq_test.elf:	$(IRQ_TEST_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -march=rv64gcv_zicsr -T flow/spike.ld -o $@ $(IRQ_TEST_SRCS)
+	$(XCHAIN)size $@
+
+$(BUILD)/irq_test.hex:	$(BUILD)/irq_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/irq_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/irq_test.bin > $@
+
+$(BUILD)/irq_rx.bin: | $(BUILD)
+	printf 'K' > $@
+
+irq-test:	$(FPGA_SIM_BIN) $(BUILD)/irq_test.hex $(BUILD)/irq_rx.bin
+	@out=`$(FPGA_SIM_BIN) +hex=$(BUILD)/irq_test.hex +uart_in=$(BUILD)/irq_rx.bin \
+		+tohost=1000 +max_cycles=2000000 2>&1`; echo "$$out"; \
+	echo "$$out" | grep -q "\[irq-test\] PASS" || { echo "irq-test: FAIL"; exit 1; }; \
+	echo "$$out" | grep -q "\[irq-obs\] TEST4: interrupt pending DURING in-flight strided-store VLSU" \
+		|| { echo "irq-test: TEST 4 did NOT prove irq-pending-during-VLSU (no [irq-obs])"; exit 1; }; \
+	echo "irq-test: PASS (incl. observed irq-pending during in-flight VLSU)"
+
+#	==========================================================
+#	DDR4/MIG bridge sim (Phase 4 second half): fpga_ddr_top
+#	==========================================================
+#	Main memory served through karu_ddr_xbar -> behavioral karu_axi4_ram (the
+#	MIG user-AXI stand-in), with CLINT/PLIC/UART as on-chip MMIO. Boots the same
+#	firmware through the bridge; `ddr-irq-test` reruns the interrupt suite over
+#	the DDR path (exercises imem fetch + dmem load/store + MMIO + IRQs through
+#	the merge). Validates the bridge functionally without the board.
+DDR_RTL =	flow/fpga/fpga_ddr_top.v flow/fpga/karu_ddr_xbar.v flow/fpga/assert/karu_ddr_xbar_assert.v flow/fpga/karu_axi4_ram.v \
+			flow/fpga/karu_boot_mem.v flow/fpga/karu_qspi_mmio.v flow/fpga/karu_ns16550.v \
+			rtl/karu_clint.v rtl/karu_plic.v \
+			flow/fpga/eth/karu_eth.v flow/fpga/eth/liteeth_core.v \
+			flow/fpga/eth/eth_mii_loopback.v flow/fpga/eth/eth_sim_prims.v \
+			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v
+
+DDR_SIM_DIR =	$(BUILD)/Vfpga_ddr
+DDR_SIM_BIN =	$(DDR_SIM_DIR)/Vfpga_ddr_tb
+DDR_DEFINES =	KARU_ICACHE $(KARU_DEFINES)
+
+$(DDR_SIM_BIN): $(DDR_SIM_DIR)/Vfpga_ddr_tb.mk
+	$(MAKE) -C $(DDR_SIM_DIR) -f Vfpga_ddr_tb.mk
+
+$(DDR_SIM_DIR)/Vfpga_ddr_tb.mk: flow/fpga/fpga_ddr_tb.v $(DDR_RTL) $(CORE_RTL) flow/fpga_ddr_sim.cpp Makefile
+	@mkdir -p $(DDR_SIM_DIR)
+	verilator $(VFLAGS) -Iflow/fpga -Mdir $(DDR_SIM_DIR) --cc --exe \
+		--top-module fpga_ddr_tb -DSIM_TB $(addprefix -D,$(DDR_DEFINES)) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/fpga_ddr_tb.v $(DDR_RTL) $(CORE_RTL) flow/fpga_ddr_sim.cpp
+
+ddr-sim:	$(DDR_SIM_BIN) $(HELLO_UART_HEX)
+	$(DDR_SIM_BIN) +hex=$(HELLO_UART_HEX) +tohost=1000 +max_cycles=2000000
+
+ddr-irq-test:	$(DDR_SIM_BIN) $(BUILD)/irq_test.hex $(BUILD)/irq_rx.bin
+	$(DDR_SIM_BIN) +hex=$(BUILD)/irq_test.hex +uart_in=$(BUILD)/irq_rx.bin \
+		+tohost=1000 +max_cycles=2000000
+
+#	==========================================================
+#	Linux boot sim: OpenSBI -> Linux from the karudeb RV64IMAC flat image.
+#	==========================================================
+#	Self-contained karu64 harness (flow/fpga/linux_tb.v, ported from ../ecp5karu):
+#	behavioral boot ROM @0x1000 (sets a1=FDT, jumps 0x80000000), CLINT
+#	(mtime=cycle counter), karu_plic, NS16550 console (TX -> stdout, RX <- stdin
+#	via the linux_tb.cpp DPI getchar -- interactive, NO HTIF), 32 MiB RAM loaded
+#	raw from +img. The DTB is loaded separately at FDT_ADDR (0x81c00000, =
+#	OpenSBI FW_JUMP_FDT_OFFSET). Built IMAFDC (KARU_NO_V) to match the rv64imac
+#	soft-float kernel and keep the build small/fast. Console streams live.
+#	Override: KARUDEB_RV64IMAC_IMAGE=<dir> LINUX_IMG=<flat.img>
+#	          LINUX_DTB=<board.dtb>
+#	          LINUX_MAX_CYCLES=<n>
+LINUX_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
+			rtl/karu_sv39.v rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v \
+			rtl/karu_csr.v rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
+			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v rtl/karu_fdiv.v \
+			rtl/karu_fsqrt.v rtl/karu_fcvt.v rtl/karu_fmisc.v rtl/karu_ffma.v \
+			rtl/karu_fmul_d.v rtl/karu_fadd_d.v rtl/karu_fdiv_d.v \
+			rtl/karu_fsqrt_d.v rtl/karu_fcvt_d.v rtl/karu_fcvt_hs.v rtl/karu_fzfa.v rtl/karu_ffma_d.v \
+			rtl/karu_plic.v \
+			flow/fpga/eth/karu_eth.v flow/fpga/eth/liteeth_core.v \
+			flow/fpga/eth/eth_mii_loopback.v flow/fpga/eth/eth_sim_prims.v \
+			flow/fpga/eth/karu_eth_assert.v flow/fpga/eth/karu_eth_caller_assert.v \
+			rtl/karu_plic_assert.v
+
+LINUX_V_RTL =	$(LINUX_RTL) \
+			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
+			rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/zvk/keccak.v rtl/zvk/keccak_round.v $(ZVK_RTL)
+
+LINUX_DIR  =	$(BUILD)/Vlinux
+LINUX_BIN  =	$(LINUX_DIR)/Vlinux_tb
+LINUX_ASSERT_DIR =	$(BUILD)/Vlinux_assert
+LINUX_ASSERT_BIN =	$(LINUX_ASSERT_DIR)/Vlinux_tb
+KARUDEB_RV64IMAC_IMAGE ?= $(KARUDEB)/build/karu64-rv64imac-image
+LINUX_IMG  ?=	$(KARUDEB_RV64IMAC_IMAGE)/flat.img
+LINUX_DTB  ?=	$(KARUDEB_RV64IMAC_IMAGE)/board.dtb
+LINUX_MAX_CYCLES ?= 200000000
+LINUX_DEFS  ?=							# extra -D flags, e.g. LINUX_DEFS=-DKARU_DBG_TRAP
+LINUX_PLUS  ?=							# extra +plusargs, e.g. LINUX_PLUS=+heartbeat=20000000
+#	Verilator threading was tried (LINUX_THREADS=4) and made the boot *slower*:
+#	the single-issue scalar core has too little fine-grain parallelism, so the
+#	per-cycle thread-barrier sync costs more than it saves. Keep the model
+#	single-threaded; the speed win is instead from -O3 on the generated model
+#	(verilator's default OPT_FAST is -Os, i.e. optimised for size, not speed).
+LINUX_THREADS ?= 1
+LINUX_VL_OPT ?= -O3
+
+linux-sim:	$(LINUX_BIN)
+	$(LINUX_BIN) +img=$(LINUX_IMG) +dtb=$(LINUX_DTB) \
+		+max_cycles=$(LINUX_MAX_CYCLES) $(LINUX_PLUS)
+
+#	--- Bare-metal LiteEth loopback smoke (E1 datapath check, no Linux) ---
+#	Runs on the linux_tb harness (the eth core is wired in there) as a flat
+#	+img loaded at 0x8000_0000 and entered in M-mode -- validates the karu_eth
+#	wishbone bridge + liteeth_core + sim MII loopback in seconds, vs a ~25 min
+#	Linux boot. (+dtb defaults to board.dtb; the bare-metal code ignores it.)
+ETH_LOOPBACK_SRCS = test/fw/htif_start.S test/fw/ns16550.c test/fw/eth_loopback.c
+ETH_SIM_MAX_CYCLES ?= 5000000
+$(BUILD)/eth_loopback.elf:	$(ETH_LOOPBACK_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(ETH_LOOPBACK_SRCS)
+$(BUILD)/eth_loopback.bin:	$(BUILD)/eth_loopback.elf
+	$(XCHAIN)objcopy -O binary $< $@
+
+eth-sim:	$(LINUX_BIN) $(BUILD)/eth_loopback.bin
+	$(LINUX_BIN) +img=$(BUILD)/eth_loopback.bin +max_cycles=$(ETH_SIM_MAX_CYCLES) +require_exit=1
+
+#	--- Bare-metal LiteEth loopback for the VCU118 DDR board (monitor `go`) ---
+#	Same MAC TX->RX loopback as eth_loopback.c, minus the sim-only SIM_EXIT write
+#	(0x2000 is read-only boot ROM on the DDR SoC): prints PASS/FAIL over NS16550
+#	and parks. Load to DDR + run from fu-boot: make load_vcu118_ddr
+#	KARU_LOAD_BIN=_build/eth_board.bin KARU_LOAD_ADDR=0x80000000 ; (monitor) go 0x80000000.
+.PHONY: eth-board-bin
+ETH_BOARD_SRCS = test/fw/htif_start.S test/fw/ns16550.c test/fw/eth_board.c
+$(BUILD)/eth_board.elf:	$(ETH_BOARD_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(ETH_BOARD_SRCS)
+	$(XCHAIN)size $@
+$(BUILD)/eth_board.bin:	$(BUILD)/eth_board.elf
+	$(XCHAIN)objcopy -O binary $< $@
+eth-board-bin:	$(BUILD)/eth_board.bin
+
+#	--- SGMII datapath HW trial: broadcast TX blaster (frames out the real DP83867) ---
+#	For the KARU_ETH_SGMII bitstream: TX-only (no loopback), so a host tcpdump confirms
+#	frames crossing the PHY. Load to DDR + `go 0x80000000`.
+.PHONY: eth-txblast-bin
+ETH_TXBLAST_SRCS = test/fw/htif_start.S test/fw/ns16550.c test/fw/eth_txblast.c
+$(BUILD)/eth_txblast.elf:	$(ETH_TXBLAST_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(ETH_TXBLAST_SRCS)
+	$(XCHAIN)size $@
+$(BUILD)/eth_txblast.bin:	$(BUILD)/eth_txblast.elf
+	$(XCHAIN)objcopy -O binary $< $@
+eth-txblast-bin:	$(BUILD)/eth_txblast.bin
+
+#	--- SGMII RX-path proof: bare-metal LiteEth MAC RX dumper (host -> PHY -> MAC -> CPU) ---
+#	Proves the receive half (eth_txblast proves TX). Load to DDR + `go 0x80000000`, then
+#	`ping 192.168.42.99` from the host (ARP broadcasts) and watch the console dump frames.
+.PHONY: eth-rxdump-bin
+ETH_RXDUMP_SRCS = test/fw/htif_start.S test/fw/ns16550.c test/fw/eth_rxdump.c
+$(BUILD)/eth_rxdump.elf:	$(ETH_RXDUMP_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(ETH_RXDUMP_SRCS)
+	$(XCHAIN)size $@
+$(BUILD)/eth_rxdump.bin:	$(BUILD)/eth_rxdump.elf
+	$(XCHAIN)objcopy -O binary $< $@
+eth-rxdump-bin:	$(BUILD)/eth_rxdump.bin
+
+#	--- CSR-time / CLINT-mtime domain regression (the Linux timer-domain bug) ---
+#	Asserts rdtime (CSR 0xC01) and the CLINT mtime (0x0200BFF8) are one counter domain.
+#	Load to DDR + `go 0x80000000`; PASS on the EXT_TIME=1 (mtime->rdtime) RTL.
+.PHONY: timedom-test-bin
+TIMEDOM_SRCS = test/fw/htif_start.S test/fw/ns16550.c test/fw/timedom_test.c
+$(BUILD)/timedom_test.elf:	$(TIMEDOM_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -T flow/spike.ld -o $@ $(TIMEDOM_SRCS)
+	$(XCHAIN)size $@
+$(BUILD)/timedom_test.bin:	$(BUILD)/timedom_test.elf
+	$(XCHAIN)objcopy -O binary $< $@
+timedom-test-bin:	$(BUILD)/timedom_test.bin
+
+#	--- DP83867 SGMII MDIO-init FSM unit test (E3 front-end, iverilog) ---
+#	Behavioral Clause-22 MDIO slave checks the FSM frames every init write
+#	(preamble/ST/OP/PHYAD/REGAD/TA/DATA) + the PHY-ID read. Validates the MDIO
+#	*mechanism*; the DP83867 register VALUES need datasheet+board confirmation.
+mdio-test:	| $(BUILD)
+	iverilog -g2012 -Wall -o $(BUILD)/mdio_tb flow/fpga/eth/karu_dp83867_mdio.v flow/fpga/eth/karu_mdio_tb.v
+	vvp $(BUILD)/mdio_tb
+
+#	--- U-Boot bring-up sim (Ethernet phase E2a/E2b): OpenSBI -> U-Boot (S-mode) ---
+#	Reuses the karudeb shared OpenSBI fw_jump with u-boot.bin placed at the
+#	fw_jump payload address instead of the Linux Image, the karudeb DTB, and the
+#	linux_tb harness. U-Boot reads the DT, brings up ns16550 + CLINT + LiteEth, and
+#	reaches its prompt (`Net: eth0: ethernet@11001000`). flow/build_uboot.sh builds
+#	u-boot.bin (clones U-Boot if ../u-boot is absent).
+UBOOT_DIR      ?= ../u-boot
+UBOOT_BIN      ?= $(UBOOT_DIR)/u-boot.bin
+OPENSBI_FWJUMP ?= $(KARUDEB_OPENSBI)
+UBOOT_FLAT      = $(BUILD)/uboot_flat.img
+#	The generic ../u-flow/boot/u-boot.bin stays INTERACTIVE (BOOTDELAY=-1): the sim
+#	targets (uboot-sim/uboot-net-sim) drive U-Boot over stdin. The hands-off
+#	auto-netboot variant (BOOTDELAY=2 + a baked bootcmd) is built in a SEPARATE tree
+#	(UBOOT_NETBOOT_DIR) by the HW boot-ROM targets and baked as FUBOOT_UBOOT, so it
+#	never clobbers this interactive one (which make would not rebuild on its own).
+UBOOT_NETBOOT_DIR ?= $(UBOOT_DIR)-netboot
+UBOOT_NETBOOT_BIN  = $(UBOOT_NETBOOT_DIR)/u-boot.bin
+
+$(UBOOT_BIN):
+	flow/build_uboot.sh
+
+#	The netboot U-Boot has no standalone build rule -- the per-target *-rom-{gc,vec}
+#	recipes build it (each with its OWN bootcmd) into UBOOT_NETBOOT_DIR before the
+#	fuboot-rom-hex sub-make consumes it as FUBOOT_UBOOT. This stub completes the
+#	dependency graph (so `make -n` of the ROM targets works and fuboot_blobs.h finds
+#	its prereq) and errors clearly if the file is requested without a ROM target
+#	having built it. At runtime the recipe always builds it first, so this never fires.
+$(UBOOT_NETBOOT_BIN):
+	@echo "ERROR: $@ is built by vcu118-ddr-sgmii-rom-{gc,vec} (per-target netboot bootcmd), not directly." >&2; exit 1
+
+$(UBOOT_FLAT):	$(UBOOT_BIN) $(OPENSBI_FWJUMP) | $(BUILD)
+	dd if=$(OPENSBI_FWJUMP) of=$@ bs=1M conv=notrunc status=none
+	dd if=$(UBOOT_BIN) of=$@ bs=1M seek=2 conv=notrunc status=none
+
+uboot-sim:	$(LINUX_BIN) $(UBOOT_FLAT)
+	$(LINUX_BIN) +img=$(UBOOT_FLAT) +dtb=$(LINUX_DTB) \
+		+max_cycles=$(LINUX_MAX_CYCLES) $(LINUX_PLUS)
+
+#	--- U-Boot net bring-up (E2c/E2d): DPI host packet backend ---
+#	Same harness as uboot-sim, but KARU_ETH_DPI swaps the MII loopback for the
+#	host packet backend (flow/fpga/eth/eth_mii_dpi.v + flow/eth_backend.cpp), so
+#	U-Boot's arp/ping/tftp have a responder. Separate binary ($(BUILD)/Vuboot).
+#	TFTP_DIR holds the files served to `tftpboot`. The in-process backend is
+#	TFTP/ARP/ICMP only; NFS-root Linux needs ETH_TAP=<dev> to reach a host NFS
+#	export.
+UBOOT_NET_DIR = $(BUILD)/Vuboot
+UBOOT_NET_BIN = $(UBOOT_NET_DIR)/Vlinux_tb
+UBOOT_NET_V_DIR = $(BUILD)/Vuboot_v
+UBOOT_NET_V_BIN = $(UBOOT_NET_V_DIR)/Vlinux_tb
+TFTP_DIR     ?= $(BUILD)/tftp
+KARUDEB      ?= ../karudeb
+KARUDEB_DTB_VARIANT ?= sim
+KARUDEB_TFTP_DIR ?= $(BUILD)/tftp-v
+VLINUX_MAX_CYCLES ?= 1500000000
+
+$(UBOOT_NET_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp Makefile
+	@mkdir -p $(UBOOT_NET_DIR)
+	verilator $(VFLAGS) -Mdir $(UBOOT_NET_DIR) --cc --exe \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB -DKARU_NO_V -DKARU_ETH_DPI $(LINUX_DEFS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp
+
+#	depend on the C++ too: a backend-only change doesn't rewrite the .mk (verilator
+#	sees no RTL change), so list it here to force the sub-make to recompile/relink.
+$(UBOOT_NET_BIN): $(UBOOT_NET_DIR)/Vlinux_tb.mk flow/linux_tb.cpp flow/eth_backend.cpp
+	$(MAKE) -C $(UBOOT_NET_DIR) -f Vlinux_tb.mk
+
+$(UBOOT_NET_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp Makefile
+	@mkdir -p $(UBOOT_NET_V_DIR)
+	verilator $(VFLAGS) -Mdir $(UBOOT_NET_V_DIR) --cc --exe \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB -DKARU_ETH_DPI $(LINUX_DEFS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp
+
+$(UBOOT_NET_V_BIN): $(UBOOT_NET_V_DIR)/Vlinux_tb.mk flow/linux_tb.cpp flow/eth_backend.cpp
+	$(MAKE) -C $(UBOOT_NET_V_DIR) -f Vlinux_tb.mk
+
+.PHONY: karudeb-stage uboot-net-v-sim linux-v-sim linux-v-irfs-sim
+karudeb-stage:
+	DTB_VARIANT=$(KARUDEB_DTB_VARIANT) OUT_DIR=$(abspath $(KARUDEB_TFTP_DIR)) \
+		$(KARUDEB)/scripts/stage-karu64-tftp.sh
+
+#	ETH_TAP=<dev>  : bridge to a host TAP (real host stack) instead of the
+#	                 in-process responder (needs a persistent user-owned TAP).
+#	ETH_PCAP=<f>   : dump every frame to a pcap for Wireshark.
+ETH_TAP  ?=
+ETH_PCAP ?=
+uboot-net-sim:	$(UBOOT_NET_BIN) $(UBOOT_FLAT)
+	@mkdir -p $(TFTP_DIR)
+	$(UBOOT_NET_BIN) +img=$(UBOOT_FLAT) +dtb=$(LINUX_DTB) +tftp_dir=$(TFTP_DIR) \
+		+eth_verbose $(if $(ETH_TAP),+eth_tap=$(ETH_TAP)) $(if $(ETH_PCAP),+eth_pcap=$(ETH_PCAP)) \
+		+max_cycles=$(LINUX_MAX_CYCLES) $(LINUX_PLUS)
+
+uboot-net-v-sim:	karudeb-stage $(UBOOT_NET_V_BIN) $(UBOOT_FLAT)
+	$(UBOOT_NET_V_BIN) +img=$(UBOOT_FLAT) +dtb=$(KARUDEB_TFTP_DIR)/board.dtb \
+		+tftp_dir=$(KARUDEB_TFTP_DIR) \
+		+eth_verbose $(if $(ETH_TAP),+eth_tap=$(ETH_TAP)) $(if $(ETH_PCAP),+eth_pcap=$(ETH_PCAP)) \
+		+max_cycles=$(VLINUX_MAX_CYCLES) $(LINUX_PLUS)
+
+#	--- V-enabled direct OpenSBI -> Linux boot (RV64GCV, misa.V=1) ---
+#	Like linux-sim but the FULL vector core (NO KARU_NO_V), so the core reports
+#	misa.V=1, OpenSBI enables mstatus.VS, and the kernel detects+uses V. Boots
+#	the karudeb RV64GCV kernel directly through the shared karudeb OpenSBI fw_jump
+#	(entry 0x8000_0000, jumps the kernel at 0x8020_0000, FDT target 0x81c0_0000 ==
+#	the harness's hardwired a1) with the karudeb karu64-sim DTB (full V isa
+#	string). This kernel is NFS-root (no initramfs): it reaches the V ISA-detection
+#	+ vector context init, then blocks at rootfs mount (no network here) -- this
+#	target proves OpenSBI/kernel *vector detection*, not userspace. Reaching a
+#	busybox shell needs the NFS netboot path (uboot-net-v-sim + ETH_TAP + host NFS).
+LINUX_V_DIR   = $(BUILD)/Vlinux_v
+LINUX_V_BIN   = $(LINUX_V_DIR)/Vlinux_tb
+OPENSBI_FW    ?= $(KARUDEB_OPENSBI)
+KARUDEB_VK    ?= $(KARUDEB)/build/linux-riscv64-karu64/arch/riscv/boot/Image
+KARUDEB_VDTB  ?= $(KARUDEB)/build/karu64/karu64-sim.dtb
+LINUX_V_IMG    = $(BUILD)/flat-v.img
+LINUX_V_MAX_CYCLES ?= 300000000
+
+#	flat image: OpenSBI fw_jump @0, kernel Image @0x20_0000.
+$(LINUX_V_IMG): $(OPENSBI_FW) $(KARUDEB_VK) | $(BUILD)
+	cp $(OPENSBI_FW) $@
+	dd if=$(KARUDEB_VK) of=$@ bs=4096 seek=512 conv=notrunc status=none
+
+$(LINUX_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/linux_tb.cpp Makefile
+	@mkdir -p $(LINUX_V_DIR)
+	verilator $(VFLAGS) -Mdir $(LINUX_V_DIR) --cc --exe \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB $(LINUX_DEFS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/linux_tb.cpp
+
+$(LINUX_V_BIN): $(LINUX_V_DIR)/Vlinux_tb.mk flow/linux_tb.cpp
+	$(MAKE) -C $(LINUX_V_DIR) -f Vlinux_tb.mk
+
+linux-v-sim:	$(LINUX_V_BIN) $(LINUX_V_IMG)
+	$(LINUX_V_BIN) +img=$(LINUX_V_IMG) +dtb=$(KARUDEB_VDTB) \
+		+max_cycles=$(LINUX_V_MAX_CYCLES) $(LINUX_PLUS)
+
+#	--- V-enabled *userspace* boot: busybox initramfs + userspace RVV smoke ---
+#	Self-contained (no NFS / no network). flow/virfs_boot.sh assembles a combined
+#	initrd (karudeb busybox + the freestanding rv64gcv test/fw/vectest.c via /init) and
+#	rebuilds the karudeb karu64 V-kernel with CONFIG_BLK_DEV_INITRD (into a copy,
+#	non-destructive to the NFS-root kernel), then boots it directly. Reaches PID1
+#	/init -> runs /vectest in U-mode (vsetvli+vle32+vadd.vv+vse32) -> [VECTEST] PASS,
+#	proving Linux grants userspace the vector unit. Needs the riscv64-unknown-linux-
+#	gnu toolchain (see flow/virfs_boot.sh for path/source overrides).
+LINUX_V_IRFS_IMG = $(BUILD)/flat-v-irfs.img
+LINUX_V_IRFS_DTB = $(BUILD)/karu64-irfs.dtb
+LINUX_V_IRFS_MAX_CYCLES ?= 220000000
+
+$(LINUX_V_IRFS_IMG): flow/virfs_boot.sh flow/virfs_init.sh test/fw/vectest.c $(LINUX_V_BIN)
+	flow/virfs_boot.sh
+
+linux-v-irfs-sim:	$(LINUX_V_BIN) $(LINUX_V_IRFS_IMG)
+	$(LINUX_V_BIN) +img=$(LINUX_V_IRFS_IMG) +dtb=$(LINUX_V_IRFS_DTB) \
+		+max_cycles=$(LINUX_V_IRFS_MAX_CYCLES) +heartbeat=10000000 $(LINUX_PLUS)
+
+linux-assert:	$(LINUX_ASSERT_BIN)
+	$(LINUX_ASSERT_BIN) +img=$(LINUX_IMG) +dtb=$(LINUX_DTB) \
+		+max_cycles=$(LINUX_MAX_CYCLES) $(LINUX_PLUS)
+
+$(LINUX_BIN): $(LINUX_DIR)/Vlinux_tb.mk
+	$(MAKE) -C $(LINUX_DIR) -f Vlinux_tb.mk
+
+$(LINUX_ASSERT_BIN): $(LINUX_ASSERT_DIR)/Vlinux_tb.mk
+	$(MAKE) -C $(LINUX_ASSERT_DIR) -f Vlinux_tb.mk
+
+$(LINUX_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp Makefile
+	@mkdir -p $(LINUX_DIR)
+	verilator $(VFLAGS) -Mdir $(LINUX_DIR) --cc --exe \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB -DKARU_NO_V $(LINUX_DEFS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp
+
+$(LINUX_ASSERT_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) rtl/karu_assert.v flow/linux_tb.cpp Makefile
+	@mkdir -p $(LINUX_ASSERT_DIR)
+	verilator $(VFLAGS) -Mdir $(LINUX_ASSERT_DIR) --cc --exe \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB -DKARU_NO_V -DKARU_ASSERT_BIND $(LINUX_DEFS) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_RTL) rtl/karu_assert.v flow/linux_tb.cpp
+
+#	== checkpoint/restore + windowed-VCD build of the same bench ==
+#	Built --savable --trace with -DLINUX_TRACE in the harness. Boot ONCE to a
+#	checkpoint just before "Run /init", then restore+trace the userspace window
+#	in seconds. Example (cf. doc/fpga.md):
+#	  # 1. boot once, checkpoint a bit before the userspace transition:
+#	  $(LINUX_TRACE_BIN) +img=.. +dtb=.. +utrace=1 +save_at=280000000 \
+#	      +save_file=_build/initck.bin +max_cycles=310000000
+#	  # 2. restore + full VCD + utrace over the transition (seconds):
+#	  $(LINUX_TRACE_BIN) +restore=_build/initck.bin +restore_at=280000000 \
+#	      +utrace=1 +trace_file=_build/init.vcd +trace_from=280000000 \
+#	      +trace_to=305000000 +max_cycles=310000000
+LINUX_TRACE_DIR =	$(BUILD)/Vlinux_trace
+LINUX_TRACE_BIN =	$(LINUX_TRACE_DIR)/Vlinux_tb
+
+linux-trace:	$(LINUX_TRACE_BIN)
+	@echo "built $(LINUX_TRACE_BIN) (--savable --trace). Plusargs:"
+	@echo "  +save_at=N +save_file=F   |  +restore=F +restore_at=N"
+	@echo "  +trace_file=F +trace_from=A +trace_to=B  |  +utrace=1"
+
+$(LINUX_TRACE_BIN): $(LINUX_TRACE_DIR)/Vlinux_tb.mk
+	$(MAKE) -C $(LINUX_TRACE_DIR) -f Vlinux_tb.mk
+
+$(LINUX_TRACE_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp Makefile
+	@mkdir -p $(LINUX_TRACE_DIR)
+	verilator $(VFLAGS) -Mdir $(LINUX_TRACE_DIR) --cc --exe --savable --trace \
+		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
+		--top-module linux_tb -DSIM_TB -DKARU_NO_V $(LINUX_DEFS) \
+		-CFLAGS -DLINUX_TRACE \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp
+
+#	KARU_DEFINES (e.g. KARU_NO_F for the IMAC bring-up core) are forwarded as
+#	verilator -D flags so the sim matches the synthesized ISA config. Switching
+#	config needs a clean rebuild: rm -rf $(FPGA_SIM_DIR).
+$(FPGA_SIM_DIR)/Vfpga_tb.mk: flow/fpga/fpga_tb.v $(FPGA_RTL) $(CORE_RTL) flow/fpga_sim.cpp Makefile
+	@mkdir -p $(FPGA_SIM_DIR)
+	verilator $(VFLAGS) -Iflow/fpga -Mdir $(FPGA_SIM_DIR) --cc --exe \
+		--top-module fpga_tb -DSIM_TB $(addprefix -D,$(KARU_DEFINES)) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
+		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+		flow/fpga/fpga_tb.v $(FPGA_RTL) $(CORE_RTL) flow/fpga_sim.cpp
+
+#	bitstream + program (require the `xilinx` alias to be sourced first)
+#	KARU_DEFINES adds flags on top of the karu_cfg.vh defaults. BALANCED-FAST
+#	(MUL=4 DIV=64 V_MUL=16 V_DIV=64 V_PERM=2 => F_FMA=4 D_FMA=53) is now the
+#	NO-FLAGS default for synth builds (sim builds default combinational), so this
+#	is empty -- only set it to DEPART from balanced: e.g. KARU_NO_V for an IMAFDC
+#	bring-up, or KARU_MUL_CYCLES=1 KARU_DIV_CYCLES=1 for the all-combinational
+#	max-performance baseline. Structural flags are set per build via KARU_DEFINES.
+#	The macro-VRF (BRAM + exact byte-enable writeback) is now UNCONDITIONAL --
+#	the flop VRF and the KARU_VRF_BRAM/KARU_VRF_BWE knobs were deleted in the
+#	2026-06-12 collapse. So the full vector bitstream is just
+#	KARU_DEFINES="KARU_ZVK KARU_KECCAK" (+ optional knobs).
+KARU_DEFINES ?=
+#	OOM guard: cap Vivado's address space (KB) so a runaway gets killed
+#	instead of taking the whole box down via swap-thrash. ~72 GB on an 86 GB
+#	host (leaves ~14 GB for the OS + buffers). The FULL-vector synth peaks
+#	well above the old 32 GB host's reach, so it is gated to a big box; this
+#	default is sized for one. On a 32 GB host, override VIVADO_VMEM_KB=26000000
+#	and stick to the KARU_NO_V (IMAFDC) build.
+VIVADO_VMEM_KB ?= 72000000
+#	Vivado worker threads: fewer = lower peak RAM (and slower). 8 on a 14-core
+#	host; Vivado scales poorly past 8 and more threads raise peak RAM.
+VIVADO_THREADS ?= 8
+#	Clock-period target override (ns). Empty = use the XDC's 8 ns (125 MHz).
+#	Set e.g. KARU_CLK_PERIOD=12.0 for an ~83 MHz feasibility run.
+KARU_CLK_PERIOD ?=
+
+#	SYNTH_ONLY=1 -> feasibility pass: stop after synth_design (post-synth util +
+#	estimated-route timing + worst paths + .dcp), skip the multi-hour P&R.
+SYNTH_ONLY ?=
+#	SYNTH_DIRECTIVE -> synth_design -directive (e.g. RuntimeOptimized to skip the
+#	slow timing-driven opt for a fast feasibility read). Empty = Vivado default.
+SYNTH_DIRECTIVE ?=
+#	DDR implementation directive hooks. Empty = Vivado default. These are mainly for
+#	the route-dominated VCU118 DDR/MIG closure tail without changing RTL/IP behavior.
+KARU_OPT_DIRECTIVE ?=
+KARU_PLACE_DIRECTIVE ?=
+KARU_PHYS_OPT_DIRECTIVE ?=
+KARU_ROUTE_DIRECTIVE ?=
+KARU_POST_ROUTE_PHYS_OPT ?=
+KARU_DDR4_CUSTOM_2133 ?=
+#	KARU_REPORT_TAG -> label for the auto-archived reports under
+#	_build/fpga_rpt/ (<tag>__<reportname>). Empty = the tcl falls back to
+#	the design top. Override for a specific config, e.g.
+#	    make vcu118-vec KARU_DEFINES="... KARU_ZVK KARU_KECCAK" \
+#	                    KARU_REPORT_TAG=zvk_keccak SYNTH_ONLY=1
+KARU_REPORT_TAG ?=
+VIVADO_REPO_ROOT := $(CURDIR)
+VIVADO_BUILD_DIR := $(abspath $(BUILD))
+VIVADO_ENV := KARU_REPO_ROOT="$(VIVADO_REPO_ROOT)" KARU_BUILD_DIR="$(VIVADO_BUILD_DIR)"
+VIVADO_RUN := cd "$(VIVADO_BUILD_DIR)" && $(VIVADO_ENV)
+VIVADO_FPGA_SRC := $(VIVADO_REPO_ROOT)/flow/fpga
+
+.PHONY: vcu118.bit
+vcu118.bit:	$(FIRMWARE_HEX) | $(BUILD)
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" VIVADO_THREADS="$(VIVADO_THREADS)" \
+		KARU_CLK_PERIOD="$(KARU_CLK_PERIOD)" KARU_SYNTH_ONLY="$(SYNTH_ONLY)" \
+		KARU_PLACE_ONLY="$(PLACE_ONLY)" KARU_FLOORPLAN="$(KARU_FLOORPLAN)" \
+		KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" KARU_REPORT_TAG="$(KARU_REPORT_TAG)" \
+		vivado -mode batch -log vcu118_synth.log -journal vcu118_synth.jou \
+			-source "$(VIVADO_FPGA_SRC)/xcvu9p-synth.tcl"
+
+#	I/O bring-up bitstream: IMAFDC (no vector), fits a 32 GB host.
+vcu118-novec:	$(FIRMWARE_HEX)
+	$(MAKE) vcu118.bit KARU_DEFINES="KARU_NO_V" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),imafdc_novec)"
+
+#	Full RV64GCV (RVV 1.0; no Keccak). Vector area is held down with the shared
+#	(one-element-at-a-time) iterative mul/div and a 2-barrel gather crossbar --
+#	both shrink the combinational cones that made the all-parallel default
+#	un-synthesizable on the old 32 GB host. Needs the big-host VIVADO_VMEM_KB
+#	default. The all-element-parallel simple-op arith (VLEN=256 -> 32-wide) has
+#	no cycle knob and is what drives the timing-opt pass long, so pair the
+#	feasibility read with SYNTH_DIRECTIVE=RuntimeOptimized:
+#	    xilinx && make vcu118-vec SYNTH_ONLY=1 SYNTH_DIRECTIVE=RuntimeOptimized
+vcu118-vec:	$(FIRMWARE_HEX)
+	$(MAKE) vcu118.bit KARU_DEFINES="KARU_KECCAK" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),vec_keccak)"
+
+#	Out-of-context (per-module) synthesis for diagnostics. Synthesizes ONE
+#	module standalone -> its area + logic depth + worst paths, in isolation
+#	(small memory/runtime). Pinpoints which vector module owns the wall.
+#	    xilinx && make ooc OOC_TOP=karu_varith
+#	Knobs: OOC_DEFINES (verilog defines), OOC_PERIOD (clk ns, default 16),
+#	SYNTH_DIRECTIVE. Reports: ooc_<mod>_{util,timing,worstpaths}.rpt + .dcp
+OOC_TOP     ?= karu_varith
+OOC_DEFINES ?= KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_PERM_LANES=2
+OOC_PERIOD  ?= 16.0
+.PHONY: ooc
+ooc:	| $(BUILD)
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_OOC_TOP="$(OOC_TOP)" KARU_DEFINES="$(OOC_DEFINES)" \
+		KARU_OOC_PERIOD="$(OOC_PERIOD)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
+		KARU_REPORT_TAG="$(KARU_REPORT_TAG)" VIVADO_THREADS="$(VIVADO_THREADS)" \
+		vivado -mode batch -log ooc_$(OOC_TOP).log -journal ooc_$(OOC_TOP).jou \
+			-source "$(VIVADO_FPGA_SRC)/ooc-synth.tcl"
+
+#	==========================================================
+#	DDR4 / MIG (VCU118) -- Phase 4 second half. Board-gated: source the
+#	`xilinx` alias first (these run Vivado). `elab-ddr` is the no-board
+#	RTL-elaboration check of the bridge; `mig-vcu118` generates the DDR4 IP
+#	(needs the VCU118 board files, not the board). The full bitstream
+#	(vcu118_ddr_top + generated IP via P&R) is the on-hardware step.
+#	==========================================================
+.PHONY: elab elab-ddr elab-eth mig-vcu118 gen-pcspma vcu118_ddr.bit vcu118-ddr vcu118-ddr-eth vcu118-ddr-sgmii vcu118-ddr-sgmii-taxi vcu118-ddr-sgmii-rom vcu118-ddr-sgmii-rom-gc vcu118-ddr-sgmii-rom-vec vcu118-ddr-ila-writepath vcu118-ddr-eth-probe-75 vcu118-ddr-eth-probe-100 prog_vcu118_ddr load_vcu118_ddr release_vcu118_ddr flash_payload_mcs flash_data_mcs prog_cfgmem vcu118-fuboot-hex vcu118-fuboot-rom-hex hw-server hw-server-status hw-server-stop
+
+#	JTAG hardware server (localhost:3121) for the prog/load/release flows.
+#	The script self-sources the Vivado env, so these need no `xilinx` first.
+hw-server:
+	flow/hw_server.sh start
+
+hw-server-status:
+	flow/hw_server.sh status
+
+hw-server-stop:
+	flow/hw_server.sh stop
+
+elab:	$(FIRMWARE_HEX) | $(BUILD)
+	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" \
+		vivado -mode batch -log elab.log -journal elab.jou \
+			-source "$(VIVADO_FPGA_SRC)/elab-check.tcl"
+
+elab-ddr:	$(VCU118_FUBOOT_HEX) | $(BUILD)
+	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" \
+		vivado -mode batch -log elab_ddr.log -journal elab_ddr.jou \
+			-source "$(VIVADO_FPGA_SRC)/elab-check-ddr.tcl"
+
+#	RTL-elaboration check of the Ethernet PHY front-end: karu_eth_phy_fe (the DP83867
+#	MDIO management FSM + post-reset auto-start + MDIO IOBUF, as instantiated in
+#	vcu118_ddr_top under KARU_ETH_PHY). IP-free; the MAC datapath is covered by
+#	elab-ddr. Slice 1 = MDIO/reset management; the SGMII PCS/PMA datapath is later.
+elab-eth:	| $(BUILD)
+	$(VIVADO_RUN) \
+		vivado -mode batch -log elab_eth.log -journal elab_eth.jou \
+			-source "$(VIVADO_FPGA_SRC)/elab-check-eth.tcl"
+
+mig-vcu118:	| $(BUILD)
+	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" KARU_DDR_HOST_DBG="$(KARU_DDR_HOST_DBG)" \
+		KARU_DDR4_CUSTOM_2133="$(KARU_DDR4_CUSTOM_2133)" \
+		vivado -mode batch -log mig_vcu118.log -journal mig_vcu118.jou \
+			-source "$(VIVADO_FPGA_SRC)/mig_vcu118.tcl"
+
+#	Generate the 1G Ethernet PCS/PMA IP for VCU118 SGMII-over-LVDS (Ethernet datapath
+#	slice D1). SGMIICLK = the DP83867's 625 MHz output (UG1224 AT22 = PHY1_SGMIICLK_P)
+#	=> LvdsRefClk=625; shared-logic-in-core owns the LVDS ref/MMCM/reset. Output:
+#	_build/ip/gig_ethernet_pcs_pma_0 (wired into the datapath in a later slice).
+gen-pcspma:	| $(BUILD)
+	$(VIVADO_RUN) \
+		vivado -mode batch -log gen_pcspma.log -journal gen_pcspma.jou \
+			-source "$(VIVADO_FPGA_SRC)/eth/gen_pcspma.tcl"
+
+vcu118_ddr.bit:	mig-vcu118 $(VCU118_FUBOOT_HEX) | $(BUILD)
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" VIVADO_THREADS="$(VIVADO_THREADS)" \
+		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
+		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(KARU_PLACE_DIRECTIVE)" \
+		KARU_PHYS_OPT_DIRECTIVE="$(KARU_PHYS_OPT_DIRECTIVE)" KARU_ROUTE_DIRECTIVE="$(KARU_ROUTE_DIRECTIVE)" \
+		KARU_POST_ROUTE_PHYS_OPT="$(KARU_POST_ROUTE_PHYS_OPT)" \
+		KARU_DDR4_CUSTOM_2133="$(KARU_DDR4_CUSTOM_2133)" \
+		KARU_REPORT_TAG="$(KARU_REPORT_TAG)" \
+		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
+			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+
+vcu118-ddr:
+	$(MAKE) vcu118_ddr.bit KARU_DEFINES="KARU_NO_V" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_novec)"
+
+#	Lean Ethernet-PHY bring-up bitstream: rv64imac (KARU_NO_F drops F/D/V/K -- the
+#	leanest core, fastest P&R, smallest area/memory) PLUS the DP83867 MDIO management
+#	front-end (KARU_ETH_PHY). Privilege (M/S/U), Sv39 MMU and CLINT/PLIC are NOT
+#	ISA-gated, so all Linux/MMU features remain. cpu_clk = MIG/4 = 75 MHz
+#	(KARU_DDR_CPU_DIV=4) to MATCH the deployed full-vector config's clock (so the
+#	bring-up bit is a faithful analog -- same UART/CLINT divisors, same timing target).
+#	Full P&R. On a 32 GB host pass VIVADO_VMEM_KB=26000000 VIVADO_THREADS=4.
+vcu118-ddr-eth:
+	$(MAKE) vcu118_ddr.bit KARU_DEFINES="KARU_NO_F KARU_ETH_PHY KARU_DDR_CPU_DIV=4" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_eth_75)"
+
+#	Full SGMII Ethernet datapath bitstream (E3 D2b): rv64imac + the DP83867 MDIO
+#	front-end + the 1G PCS/PMA (SelectIO/LVDS) + the LiteEth GMII core. KARU_ETH_SGMII
+#	requires KARU_ETH_PHY (passed here AND asserted in flow/fpga/xcvu9p-ddr-synth.tcl).
+#	Depends on gen-pcspma (the PCS IP). cpu_clk = 75 MHz (matches the deployed config).
+#	For the clock/timing verification pass (report_clocks + check_timing, no P&R):
+#	    make vcu118-ddr-sgmii SYNTH_ONLY=1
+#	On a 32 GB host add VIVADO_VMEM_KB=26000000 VIVADO_THREADS=4.
+vcu118-ddr-sgmii: gen-pcspma
+	$(MAKE) vcu118_ddr.bit KARU_DEFINES="KARU_NO_F KARU_ETH_PHY KARU_ETH_SGMII KARU_DDR_CPU_DIV=4" \
+		SYNTH_ONLY="$(SYNTH_ONLY)" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_sgmii_75)"
+
+#	SGMII bring-up config that WORKS on hardware (2026-06-15): the fpganinja/taxi VCU118
+#	DP83867 MDIO init (KARU_ETH_PHY_TAXI_INIT) -- three MMD/extended writes (CFG4
+#	0x0031<=0x0070, SGMIICTL1 0x00D3<=0x4000 SGMII clock-out, 10M_SGMII_CFG 0x016F<=0x0015)
+#	via REGCR/ADDAR -- plus the AN-fixed PCS constants (configuration_vector[4]=1,
+#	an_adv=0xD801). DIFF_TERM_ADV TERM_100 on the RX/SGMIICLK pairs is now ON in
+#	flow/fpga/eth/sgmii_pins.xdc (signal-integrity margin; the link was proven to come up WITHOUT
+#	it -- that no-term isolation proof bit is banked at _build/imac_sgmii_taxi_LINKED.bit).
+vcu118-ddr-sgmii-taxi: gen-pcspma
+	$(MAKE) vcu118_ddr.bit KARU_DEFINES="KARU_NO_F KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4" \
+		SYNTH_ONLY="$(SYNTH_ONLY)" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_sgmii_75_taxi)"
+
+#	Standalone (U-Boot-in-ROM) SGMII bitstream: identical RTL config to
+#	vcu118-ddr-sgmii-taxi, but the 1 MiB boot ROM holds the whole boot chain
+#	(fu-boot + OpenSBI + U-Boot + control DTB), so the board netboots Linux with NO
+#	JTAG/host stage. Builds the ROM image into _build/vcu118_fuboot.hex then synthesizes
+#	directly (bypassing the vcu118_ddr.bit rule so the monitor hex rule cannot clobber
+#	the ROM image). DRAM is 2 GiB. On a 32 GB host add VIVADO_VMEM_KB=26000000 VIVADO_THREADS=4.
+vcu118-ddr-sgmii-rom: gen-pcspma mig-vcu118 vcu118-fuboot-rom-hex | $(BUILD)
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_DEFINES="KARU_NO_F KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4" \
+		VIVADO_THREADS="$(VIVADO_THREADS)" \
+		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
+		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(KARU_PLACE_DIRECTIVE)" \
+		KARU_PHYS_OPT_DIRECTIVE="$(KARU_PHYS_OPT_DIRECTIVE)" KARU_ROUTE_DIRECTIVE="$(KARU_ROUTE_DIRECTIVE)" \
+		KARU_POST_ROUTE_PHYS_OPT="$(KARU_POST_ROUTE_PHYS_OPT)" \
+		KARU_DDR4_CUSTOM_2133="$(KARU_DDR4_CUSTOM_2133)" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_sgmii_75_rom)" \
+		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
+			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+
+#	SCALAR RV64GC standalone (U-Boot-in-ROM) SGMII bitstream at 75 MHz: identical
+#	full-Linux infrastructure as vcu118-ddr-sgmii-rom (SGMII Ethernet + 1 MiB
+#	U-Boot-in-ROM boot chain + 2 GiB DRAM, scalar RV64GC boot images), but the
+#	FULL-SCALAR RV64GC core (IMAFDC -- KARU_NO_V keeps F/D, drops only V/K, so no
+#	vector instability) at cpu_clk = MIG/4 = 75 MHz (KARU_DDR_CPU_DIV=4), the
+#	proven-stable DDR clock (same target as the deployed vector/IMAC bits). Iterative
+#	integer + FP-mantissa mul and integer div (KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64)
+#	keep the multiply/divide cones short for comfortable margin. The RV64GC
+#	kernel/DTB match the IMAFDC core and Debian hard-float rootfs. A 100 MHz
+#	(KARU_DDR_CPU_DIV=3) trial closed every clock EXCEPT the core cpu_clk, which missed
+#	by -0.646 ns on one route-dominated FP-converter cone (cvt_op1_q -> res_reg); MIG
+#	300 MHz met +0.198. 75 MHz clears that cone with ~2.6 ns to spare. On a 32 GB host
+#	pass VIVADO_VMEM_KB=26000000 VIVADO_THREADS=4 (IMAFDC fits; full-vector does not).
+#	Per-profile control DTB for the GC ROM (shared OpenSBI = KARUDEB_OPENSBI, defined
+#	in the top fuboot section). Generate the matching netboot bootcmd in karudeb with
+#	`make karu64-rv64gc-tftp` (and `make karu64-zvk-tftp` for the vec ROM).
+FUBOOT_RV64GC_DTB ?= $(KARUDEB)/build/karu64/karu64-rv64gc-ddr.dtb
+#	Auto-netboot bootcmd for the HW boot ROM: read the full inline TFTP+booti netboot
+#	one-liner from karudeb's generated PER-DEPLOYMENT file, so the IPs/kernel/dtb/
+#	nfsroot live in one place (karudeb) and are not duplicated here. Per-target so a
+#	scalar ROM never inherits the vector deployment's kernel/DTB/NFS intent.
+#	Absent/empty => U-Boot drops to its prompt (BOOTDELAY=-1, recoverable). The netboot
+#	U-Boot is rebuilt in UBOOT_NETBOOT_DIR on every ROM build so it never goes stale.
+VCU118_NETBOOT_FILE_GC  ?= $(KARUDEB)/build/karu64/tftp/rv64gc-ddr/uboot-netboot-one-line.txt
+#	VEC netboot bootcmd comes from karudeb's generated per-deployment file too (built
+#	by `make karu64-zvk-tftp`). Absent/empty => U-Boot drops to its prompt. To freeze a
+#	deployment's serverip/ipaddr/nfsroot in-repo instead, override
+#	VCU118_NETBOOT_FILE_VEC=flow/boot/vcu118_netboot_vec.txt (a git-tracked example).
+VCU118_NETBOOT_FILE_VEC ?= $(KARUDEB)/build/karu64/tftp/zvk-ddr/uboot-netboot-one-line.txt
+
+vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
+	@if [ -s "$(VCU118_NETBOOT_FILE_GC)" ]; then echo "== ROM U-Boot: baking auto-netboot bootcmd from $(VCU118_NETBOOT_FILE_GC) =="; else echo "== ROM U-Boot: no $(VCU118_NETBOOT_FILE_GC) -- U-Boot will drop to its => prompt =="; fi
+	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_GC) 2>/dev/null)" flow/build_uboot.sh
+	$(MAKE) vcu118-fuboot-rom-hex \
+		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
+		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
+		FUBOOT_ROM_DTB="$(FUBOOT_RV64GC_DTB)"
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_DEFINES="KARU_NO_V KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64" \
+		VIVADO_THREADS="$(VIVADO_THREADS)" \
+		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
+		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(KARU_PLACE_DIRECTIVE)" \
+		KARU_PHYS_OPT_DIRECTIVE="$(KARU_PHYS_OPT_DIRECTIVE)" KARU_ROUTE_DIRECTIVE="$(KARU_ROUTE_DIRECTIVE)" \
+		KARU_POST_ROUTE_PHYS_OPT="$(KARU_POST_ROUTE_PHYS_OPT)" \
+		KARU_DDR4_CUSTOM_2133="$(KARU_DDR4_CUSTOM_2133)" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_gc_sgmii_75_rom)" \
+		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
+			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+
+#	FULL-VECTOR standalone (U-Boot-in-ROM) SGMII bitstream: same SGMII + 1 MiB
+#	boot-ROM + 2 GiB DRAM as vcu118-ddr-sgmii-rom, but the FULL RV64GCV + Zvk +
+#	Keccak core (drop KARU_NO_F; add the Run-10 vector knobs: lane pipe + iterative
+#	mul/div). The boot ROM bakes the VECTOR boot chain -- a vector OpenSBI fw_jump +
+#	U-Boot + a vector (riscv,isa=...v..zvl256b) 2 GiB control DTB built in ../karudeb
+#	(build/karu64/karu64-zvk-ddr.dtb). U-Boot itself is unchanged (scalar S-mode payload runs
+#	on the vector core; OpenSBI enables mstatus.VS from misa.V). cpu_clk = 75 MHz.
+#	This box: VIVADO_VMEM_KB=84000000 VIVADO_THREADS=8.
+#	TIMING-CLOSURE RECIPE (baked in below so a plain `make vcu118-ddr-sgmii-rom-vec`
+#	reproduces the closing bit): the full-vector cpu_clk cone needs the KARU_V_PERM_RAM
+#	congestion-relief knob (frees ~16.5k LUT in varith: 380.6k -> 364.1k) PLUS the P&R
+#	directives place=ExtraTimingOpt / phys_opt=AggressiveExplore / post-route phys_opt,
+#	which biased the placer onto the recovered, less-congested cone. Together they
+#	recovered cpu_clk WNS -0.456 -> +0.022 (post-route, 0 failing endpoints). The three
+#	directives default here but stay overridable on the command line.
+#	Counter-filtering extensions Smcntrpmf (mcyclecfg/minstretcfg) + Sscofpmf
+#	(mhpmevent OF/inhibit + scountovf + the LCOFI interrupt) are enabled for the
+#	user-only perf counts + sampling story. Both reset permissive/inert (no inhibit,
+#	OF/mie[13]=0) so they do not change boot behaviour; the kernel/OpenSBI must still
+#	advertise them in the DTB isa string + drive the filters to use them. Smstateen is
+#	deliberately NOT enabled here: mstateen0 resets to DENY, which would trap S-mode
+#	senvcfg (Supm) unless a stateen-aware OpenSBI opens mstateen0 first.
+FUBOOT_VEC_DTB ?= $(KARUDEB)/build/karu64/karu64-zvk-ddr.dtb
+vcu118-ddr-sgmii-rom-vec: gen-pcspma mig-vcu118 | $(BUILD)
+	@if [ -s "$(VCU118_NETBOOT_FILE_VEC)" ]; then echo "== ROM U-Boot: baking auto-netboot bootcmd from $(VCU118_NETBOOT_FILE_VEC) =="; else echo "== ROM U-Boot: no $(VCU118_NETBOOT_FILE_VEC) -- U-Boot will drop to its => prompt =="; fi
+	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_VEC) 2>/dev/null)" flow/build_uboot.sh
+	$(MAKE) vcu118-fuboot-rom-hex \
+		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
+		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
+		FUBOOT_ROM_DTB="$(FUBOOT_VEC_DTB)"
+	ulimit -v $(VIVADO_VMEM_KB); \
+	$(VIVADO_RUN) KARU_DEFINES="KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_ZVK KARU_KECCAK KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_V_PERM_RAM KARU_SMCNTRPMF KARU_SSCOFPMF" \
+		VIVADO_THREADS="$(VIVADO_THREADS)" \
+		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
+		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(if $(KARU_PLACE_DIRECTIVE),$(KARU_PLACE_DIRECTIVE),ExtraTimingOpt)" \
+		KARU_PHYS_OPT_DIRECTIVE="$(if $(KARU_PHYS_OPT_DIRECTIVE),$(KARU_PHYS_OPT_DIRECTIVE),AggressiveExplore)" KARU_ROUTE_DIRECTIVE="$(KARU_ROUTE_DIRECTIVE)" \
+		KARU_POST_ROUTE_PHYS_OPT="$(if $(KARU_POST_ROUTE_PHYS_OPT),$(KARU_POST_ROUTE_PHYS_OPT),1)" KARU_FLOORPLAN="$(KARU_FLOORPLAN)" \
+		KARU_DDR4_CUSTOM_2133="$(KARU_DDR4_CUSTOM_2133)" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_vec_sgmii_75_rom)" \
+		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
+			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+
+#	Post-synth write-path ILA insertion. This starts from an existing
+#	vcu118_ddr_synth.dcp so the protected board-top RTL does not need edits.
+#	Set ILA_IMPL=1 to continue through P&R and emit vcu118_ddr_ila.bit/.ltx.
+#	Default is the lean threshold catcher: mig_awaddr/handshake plus context
+#	flags, 2 ILA input pipe stages, 1024 samples. Set ILA_PROFILE=full for
+#	c_* + data/strobe correlation after threshold capture closes timing.
+vcu118-ddr-ila-writepath:	| $(BUILD)
+	$(VIVADO_RUN) ILA_IN_DCP="$(if $(ILA_IN_DCP),$(ILA_IN_DCP),vcu118_ddr_synth.dcp)" \
+		ILA_OUT_DCP="$(if $(ILA_OUT_DCP),$(ILA_OUT_DCP),vcu118_ddr_ila_synth.dcp)" \
+		ILA_DEPTH="$(if $(ILA_DEPTH),$(ILA_DEPTH),1024)" \
+		ILA_INPUT_PIPE_STAGES="$(if $(ILA_INPUT_PIPE_STAGES),$(ILA_INPUT_PIPE_STAGES),2)" \
+		ILA_PROFILE="$(if $(ILA_PROFILE),$(ILA_PROFILE),threshold)" \
+		ILA_MIG_WDATA_BITS="$(if $(ILA_MIG_WDATA_BITS),$(ILA_MIG_WDATA_BITS),64)" \
+		ILA_IMPL="$(ILA_IMPL)" \
+		vivado -mode batch -log vcu118_ddr_ila_writepath.log -journal vcu118_ddr_ila_writepath.jou \
+			-source "$(VIVADO_FPGA_SRC)/ila_writepath_insert.tcl"
+
+#	Ethernet hardware timing probes. These stop after synth by default and archive
+#	timing summary plus full expanded worst-path reports under
+#	_build/fpga_rpt/<tag>__*. Use DDR_ETH_PROBE_SYNTH_ONLY= to force full P&R.
+DDR_ETH_PROBE_SYNTH_ONLY ?= 1
+DDR_ETH_PROBE_DIRECTIVE ?= RuntimeOptimized
+vcu118-ddr-eth-probe-75:
+	$(MAKE) vcu118_ddr.bit \
+		KARU_DEFINES="KARU_NO_V KARU_DDR_CPU_DIV=4" \
+		SYNTH_ONLY="$(DDR_ETH_PROBE_SYNTH_ONLY)" \
+		SYNTH_DIRECTIVE="$(if $(SYNTH_DIRECTIVE),$(SYNTH_DIRECTIVE),$(DDR_ETH_PROBE_DIRECTIVE))" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_eth_75)"
+
+vcu118-ddr-eth-probe-100:
+	$(MAKE) vcu118_ddr.bit \
+		KARU_DEFINES="KARU_NO_V KARU_DDR_CPU_DIV=3" \
+		SYNTH_ONLY="$(DDR_ETH_PROBE_SYNTH_ONLY)" \
+		SYNTH_DIRECTIVE="$(if $(SYNTH_DIRECTIVE),$(SYNTH_DIRECTIVE),$(DDR_ETH_PROBE_DIRECTIVE))" \
+		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_eth_100)"
+
+prog_vcu118_ddr:
+	@test -f "$(VIVADO_BUILD_DIR)/vcu118_ddr.bit" || { echo "ERROR: $(VIVADO_BUILD_DIR)/vcu118_ddr.bit not found -- run make vcu118-ddr first"; exit 1; }
+	$(VIVADO_RUN) vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/prog_vcu118_ddr.tcl"
+
+load_vcu118_ddr:	| $(BUILD)
+	@test -n "$(KARU_LOAD_BIN)" || { echo "ERROR: set KARU_LOAD_BIN=/path/to/image"; exit 1; }
+	$(VIVADO_RUN) KARU_LOAD_BIN="$(KARU_LOAD_BIN)" KARU_LOAD_ADDR="$(KARU_LOAD_ADDR)" KARU_LOAD_MAX="$(KARU_LOAD_MAX)" \
+		KARU_LOAD_BURST="$(KARU_LOAD_BURST)" \
+		vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/load_vcu118_ddr.tcl"
+
+release_vcu118_ddr:	| $(BUILD)
+	$(VIVADO_RUN) vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/release_vcu118_ddr.tcl"
+
+#	Payload-only cfgmem image (no bitstream) + program it. Used to exercise the
+#	monitor `flashgz` path: payload must sit in the low 16 MiB (3-byte flash read).
+flash_data_mcs:	| $(BUILD)
+	@test -n "$(KARU_FLASH_PAYLOAD)" || { echo "ERROR: set KARU_FLASH_PAYLOAD=/path/to/payload"; exit 1; }
+	@test -n "$(KARU_FLASH_OFFSET)" || { echo "ERROR: set KARU_FLASH_OFFSET=0x..."; exit 1; }
+	@test -n "$(KARU_CFGMEM_SIZE_MB)" || { echo "ERROR: set KARU_CFGMEM_SIZE_MB=<power-of-two MiB>"; exit 1; }
+	$(VIVADO_RUN) KARU_FLASH_PAYLOAD="$(KARU_FLASH_PAYLOAD)" KARU_FLASH_OFFSET="$(KARU_FLASH_OFFSET)" \
+		KARU_CFGMEM_SIZE_MB="$(KARU_CFGMEM_SIZE_MB)" KARU_FLASH_MCS="$(KARU_FLASH_MCS)" \
+		KARU_CFGMEM_INTERFACE="$(KARU_CFGMEM_INTERFACE)" \
+		vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/write_vcu118_flash_data.tcl"
+
+prog_cfgmem:	| $(BUILD)
+	@test -n "$(KARU_FLASH_MCS)" || { echo "ERROR: set KARU_FLASH_MCS=/path/to/file.mcs"; exit 1; }
+	$(VIVADO_RUN) KARU_FLASH_MCS="$(KARU_FLASH_MCS)" KARU_CFGMEM_PART="$(KARU_CFGMEM_PART)" \
+		vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/prog_vcu118_cfgmem.tcl"
+
+flash_payload_mcs:	| $(BUILD)
+	@test -n "$(KARU_FLASH_PAYLOAD)" || { echo "ERROR: set KARU_FLASH_PAYLOAD=/path/to/payload"; exit 1; }
+	@test -n "$(KARU_FLASH_OFFSET)" || { echo "ERROR: set KARU_FLASH_OFFSET=0x..."; exit 1; }
+	@test -n "$(KARU_CFGMEM_SIZE_MB)" || { echo "ERROR: set KARU_CFGMEM_SIZE_MB=<power-of-two MiB>"; exit 1; }
+	$(VIVADO_RUN) KARU_FLASH_PAYLOAD="$(KARU_FLASH_PAYLOAD)" KARU_FLASH_OFFSET="$(KARU_FLASH_OFFSET)" \
+		KARU_CFGMEM_SIZE_MB="$(KARU_CFGMEM_SIZE_MB)" KARU_BITFILE="$(KARU_BITFILE)" \
+		KARU_FLASH_MCS="$(KARU_FLASH_MCS)" KARU_CFGMEM_INTERFACE="$(KARU_CFGMEM_INTERFACE)" \
+		vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/write_vcu118_flash_payload.tcl"
+
+#	==========================================================
+#	Out-of-tree PQC/FN-DSA benchmark harnesses
+#	==========================================================
+PQC_TOOLS_DIR ?= ../karudeb/tools/pqc
+
+.PHONY: pqc-board-hex pqc-sim-hex fpga-sim-pqc fpga-sim-pqc-reset vcu118-pqc \
+		fp-board-hex fp-board-spike vcu118-fp
+
+pqc-board-hex pqc-sim-hex fpga-sim-pqc fpga-sim-pqc-reset vcu118-pqc \
+fp-board-hex fp-board-spike vcu118-fp:
+	@echo "ERROR: the PQC/FN-DSA board benchmark harnesses moved out of this repo." >&2
+	@echo "       Algorithm sources are now under $(PQC_TOOLS_DIR); no in-tree board harness remains." >&2
+	@exit 1
+
+#	Program the EXISTING _build/vcu118.bit over JTAG. This deliberately does NOT
+#	depend on the vcu118.bit build rule: a prerequisite would let make decide
+#	the bitstream is "stale" (e.g. _build/firmware.hex got regenerated) and silently
+#	kick off a multi-hour resynth. Build explicitly (make vcu118.bit)
+#	first; this target only flashes whatever _build/vcu118.bit is present.
+.PHONY: prog_vcu118
+prog_vcu118:	| $(BUILD)
+	@test -f "$(VIVADO_BUILD_DIR)/vcu118.bit" || { echo "ERROR: $(VIVADO_BUILD_DIR)/vcu118.bit not found -- build it first (e.g. make vcu118.bit)"; exit 1; }
+	$(VIVADO_RUN) vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/prog_vcu118.tcl"
+
+#	==========================================================
+#	misc
+#	==========================================================
+
+$(BUILD):
+	mkdir -p $(BUILD)
+
+clean:
+	$(RM) -f  hello.elf hello.bin hello.hex karu.log
+	$(RM) -f  hello_uart.elf hello_uart.bin hello_uart.hex firmware.hex vcu118_fuboot.hex
+	$(RM) -f  vcu118.bit vcu118_ddr*.bit vcu118_synth*.log vcu118_ddr*.log
+	$(RM) -f  vcu118_*.rpt *.dcp
+	$(RM) -f  vivado*.jou vivado*.log *.jou *.pb usage_statistics_webtalk.*
+	$(RM) -f  hs_err_pid*.log *.backup.log
+	$(RM) -f  clockInfo.txt tight_setup_hold_pins.txt
+	$(RM) -rf $(BUILD) obj_dir .Xil cong flow/syn/syn_out
+	@#	flow/syn/syn_out is the legacy pre-_build location (now _build/syn_out, under $(BUILD))
+
+#	---- Zfa: additional scalar FP (fli/fminm/fmaxm/fleq/fltq/fround/fcvtmod) ----
+ZFA_ISA		=	rv64gc_zfa
+ZFA_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=$(ZFA_ISA) -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+ZFA_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/zfa_subj.c
+$(BUILD)/zfa_subj.elf: $(ZFA_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(ZFA_CFLAGS) -T flow/fp_subj.ld -o $@ $(ZFA_SRCS)
+$(BUILD)/zfa_subj.hex: $(BUILD)/zfa_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/zfa_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/zfa_subj.bin > $@
+zfa-test:	$(VERI_FP_BIN) $(BUILD)/zfa_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/zfa_subj.hex +tohost=8000 +max_cycles=4000000
+zfa-test-spike:	$(BUILD)/zfa_subj.elf
+	spike --isa=$(ZFA_ISA)_zicntr $(BUILD)/zfa_subj.elf
+
+#	---- Supm: pointer masking (Smnpm S-mode + Ssnpm U-mode) ----
+$(BUILD)/karu_supm_test.elf: test/karu_supm_test.S test/karu_supm_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc_ssnpm_smnpm -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_supm_test.ld -o $@ test/karu_supm_test.S
+$(BUILD)/karu_supm_test.hex: $(BUILD)/karu_supm_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_supm_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_supm_test.bin > $@
+supm-test:	$(VERI_FP_BIN) $(BUILD)/karu_supm_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_supm_test.hex +tohost=1000 +max_cycles=2000000
+supm-test-spike:	$(BUILD)/karu_supm_test.elf
+	spike --isa=rv64gc_ssnpm_smnpm $(BUILD)/karu_supm_test.elf
+
+#	---- Zihpm/Zicntr counter-enable (mcounteren/scounteren) gating ----
+$(BUILD)/karu_zihpm_test.elf: test/karu_zihpm_test.S test/karu_zihpm_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc_zicntr_zihpm -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_zihpm_test.ld -o $@ test/karu_zihpm_test.S
+$(BUILD)/karu_zihpm_test.hex: $(BUILD)/karu_zihpm_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_zihpm_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_zihpm_test.bin > $@
+zihpm-test:	$(VERI_FP_BIN) $(BUILD)/karu_zihpm_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_zihpm_test.hex +tohost=1000 +max_cycles=2000000
+zihpm-test-spike:	$(BUILD)/karu_zihpm_test.elf
+	spike --isa=rv64gc_zicntr_zihpm $(BUILD)/karu_zihpm_test.elf
+
+#	---- Zicbom/Zicboz privilege+envcfg gating ----
+$(BUILD)/karu_cbogate_test.elf: test/karu_cbogate_test.S test/karu_cbogate_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc_zicbom_zicboz -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_cbogate_test.ld -o $@ test/karu_cbogate_test.S
+$(BUILD)/karu_cbogate_test.hex: $(BUILD)/karu_cbogate_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_cbogate_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_cbogate_test.bin > $@
+cbogate-test:	$(VERI_FP_BIN) $(BUILD)/karu_cbogate_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_cbogate_test.hex +tohost=1000 +max_cycles=2000000
+cbogate-test-spike:	$(BUILD)/karu_cbogate_test.elf
+	spike --isa=rv64gc_zicbom_zicboz $(BUILD)/karu_cbogate_test.elf
+
+#	---- mstatus TVM/TW/TSR trap-virtualization ----
+$(BUILD)/karu_tvm_test.elf: test/karu_tvm_test.S test/karu_tvm_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_tvm_test.ld -o $@ test/karu_tvm_test.S
+$(BUILD)/karu_tvm_test.hex: $(BUILD)/karu_tvm_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_tvm_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_tvm_test.bin > $@
+tvm-test:	$(VERI_FP_BIN) $(BUILD)/karu_tvm_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_tvm_test.hex +tohost=1000 +max_cycles=2000000
+tvm-test-spike:	$(BUILD)/karu_tvm_test.elf
+	spike --isa=rv64gc $(BUILD)/karu_tvm_test.elf
+
+#	---- Supm pointer masking of vector (VLSU) accesses ----
+$(BUILD)/karu_vsupm_test.elf: test/karu_vsupm_test.S test/karu_vsupm_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gcv_smnpm_ssnpm -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_vsupm_test.ld -o $@ test/karu_vsupm_test.S
+$(BUILD)/karu_vsupm_test.hex: $(BUILD)/karu_vsupm_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_vsupm_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_vsupm_test.bin > $@
+#	karu64-only: the bundled spike does not model pointer masking of vector
+#	accesses, so there is no spike cross (the masking transform itself is the
+#	spike-validated scalar one from supm-test, applied to the VLSU base).
+vsupm-test:	$(VERI_FP_BIN) $(BUILD)/karu_vsupm_test.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/karu_vsupm_test.hex +tohost=1000 +max_cycles=2000000
+
+#	---- Smstateen / Ssstateen state-enable (KARU_SSTATEEN, default-off) ----
+#	mstateen0[62]=ENVCFG gates S-mode senvcfg; [63]=SE0 gates S-mode sstateen0.
+#	The knob is default-OFF (byte-identical alternates), so the test needs a
+#	dedicated -DKARU_SSTATEEN verilator binary (the Vhtif_vpipe precedent).
+VERI_STATEEN_DIR	=	$(BUILD)/Vhtif_stateen
+VERI_STATEEN_BIN	=	$(VERI_STATEEN_DIR)/Vhtif_tb
+$(VERI_STATEEN_BIN): $(VERI_STATEEN_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_STATEEN_DIR) -f Vhtif_tb.mk
+$(VERI_STATEEN_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_STATEEN_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSTATEEN \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+#	full build (-DSTATEEN_FULL): mstateen0 WARL + senvcfg(ENVCFG) + sstateen0(SE0).
+$(BUILD)/karu_stateen_test.elf: test/karu_stateen_test.S test/karu_stateen_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static -DSTATEEN_FULL \
+		-T test/karu_stateen_test.ld -o $@ test/karu_stateen_test.S
+$(BUILD)/karu_stateen_test.hex: $(BUILD)/karu_stateen_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_stateen_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_stateen_test.bin > $@
+#	cross-check subset (no -DSTATEEN_FULL): senvcfg/Smstateen only, so it runs
+#	identically on karu64 and spike (bundled spike supports smstateen, not ssstateen).
+$(BUILD)/karu_stateen_xchk.elf: test/karu_stateen_test.S test/karu_stateen_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_stateen_test.ld -o $@ test/karu_stateen_test.S
+$(BUILD)/karu_stateen_xchk.hex: $(BUILD)/karu_stateen_xchk.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_stateen_xchk.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_stateen_xchk.bin > $@
+.PHONY: veri-stateen stateen-test stateen-test-spike
+veri-stateen:	$(VERI_STATEEN_BIN)
+stateen-test:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_test.hex
+	$(VERI_STATEEN_BIN) +hex=$(BUILD)/karu_stateen_test.hex +tohost=1000 +max_cycles=2000000
+#	the senvcfg/Smstateen subset must match spike bit-for-bit (run on both); the
+#	sstateen0/Ssstateen phases + WARL mask are karu64-only (covered by stateen-test).
+stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/karu_stateen_xchk.elf
+	$(VERI_STATEEN_BIN) +hex=$(BUILD)/karu_stateen_xchk.hex +tohost=1000 +max_cycles=2000000
+	spike --isa=rv64gc_smstateen_smnpm_ssnpm $(BUILD)/karu_stateen_xchk.elf
+
+#	---- Smcntrpmf counter privilege-mode filtering (KARU_SMCNTRPMF, default-off) ----
+#	minstretcfg/mcyclecfg MINH/SINH/UINH freeze the fixed counters per privilege.
+#	Default-off knob -> dedicated -DKARU_SMCNTRPMF binary (the Vhtif_stateen precedent).
+VERI_SMCNTR_DIR	=	$(BUILD)/Vhtif_smcntrpmf
+VERI_SMCNTR_BIN	=	$(VERI_SMCNTR_DIR)/Vhtif_tb
+$(VERI_SMCNTR_BIN): $(VERI_SMCNTR_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_SMCNTR_DIR) -f Vhtif_tb.mk
+$(VERI_SMCNTR_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_SMCNTR_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SMCNTRPMF \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+#	full build (-DSMCNTRPMF_FULL): WARL + instret M/S/U + mcycle (karu64-only).
+$(BUILD)/karu_smcntrpmf_test.elf: test/karu_smcntrpmf_test.S test/karu_smcntrpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static -DSMCNTRPMF_FULL \
+		-T test/karu_smcntrpmf_test.ld -o $@ test/karu_smcntrpmf_test.S
+$(BUILD)/karu_smcntrpmf_test.hex: $(BUILD)/karu_smcntrpmf_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_smcntrpmf_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_smcntrpmf_test.bin > $@
+#	cross-check subset (no -DSMCNTRPMF_FULL): instret M/S/U filtering -> matches spike.
+$(BUILD)/karu_smcntrpmf_xchk.elf: test/karu_smcntrpmf_test.S test/karu_smcntrpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_smcntrpmf_test.ld -o $@ test/karu_smcntrpmf_test.S
+$(BUILD)/karu_smcntrpmf_xchk.hex: $(BUILD)/karu_smcntrpmf_xchk.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_smcntrpmf_xchk.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_smcntrpmf_xchk.bin > $@
+.PHONY: veri-smcntrpmf smcntrpmf-test smcntrpmf-test-spike
+veri-smcntrpmf:	$(VERI_SMCNTR_BIN)
+smcntrpmf-test:	$(VERI_SMCNTR_BIN) $(BUILD)/karu_smcntrpmf_test.hex
+	$(VERI_SMCNTR_BIN) +hex=$(BUILD)/karu_smcntrpmf_test.hex +tohost=1000 +max_cycles=2000000
+#	the instret M/S/U filtering subset must match spike (run on both); mcycle + the
+#	WARL mask are karu64-only (covered by smcntrpmf-test).
+smcntrpmf-test-spike:	$(VERI_SMCNTR_BIN) $(BUILD)/karu_smcntrpmf_xchk.hex $(BUILD)/karu_smcntrpmf_xchk.elf
+	$(VERI_SMCNTR_BIN) +hex=$(BUILD)/karu_smcntrpmf_xchk.hex +tohost=1000 +max_cycles=2000000
+	spike --isa=rv64gc_zicntr_smcntrpmf $(BUILD)/karu_smcntrpmf_xchk.elf
+#	NO_S build: SINH(61) gates an unimplemented mode -> must read-only 0 (mask =
+#	MINH|UINH = 0x5000...). Dedicated KARU_NO_S + KARU_SMCNTRPMF binary; M-only check.
+VERI_SMCNTR_NOS_DIR	=	$(BUILD)/Vhtif_smcntrpmf_nos
+VERI_SMCNTR_NOS_BIN	=	$(VERI_SMCNTR_NOS_DIR)/Vhtif_tb
+$(VERI_SMCNTR_NOS_BIN): $(VERI_SMCNTR_NOS_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_SMCNTR_NOS_DIR) -f Vhtif_tb.mk
+$(VERI_SMCNTR_NOS_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_SMCNTR_NOS_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SMCNTRPMF -DKARU_NO_S \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+$(BUILD)/karu_smcntrpmf_nos.elf: test/karu_smcntrpmf_test.S test/karu_smcntrpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static -DSMCNTRPMF_NOS \
+		-T test/karu_smcntrpmf_test.ld -o $@ test/karu_smcntrpmf_test.S
+$(BUILD)/karu_smcntrpmf_nos.hex: $(BUILD)/karu_smcntrpmf_nos.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_smcntrpmf_nos.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_smcntrpmf_nos.bin > $@
+.PHONY: smcntrpmf-nos-test
+smcntrpmf-nos-test:	$(VERI_SMCNTR_NOS_BIN) $(BUILD)/karu_smcntrpmf_nos.hex
+	$(VERI_SMCNTR_NOS_BIN) +hex=$(BUILD)/karu_smcntrpmf_nos.hex +tohost=1000 +max_cycles=2000000
+
+#	---- Sscofpmf 3a: counter-overflow CSR + LCOFI interrupt (KARU_SSCOFPMF, default-off) ----
+#	Software-driven (matches spike): scountovf reflects SW-set OF; LCOFI (mip/mie 13)
+#	delivers to M and (delegated) S. Default-off knob -> dedicated -DKARU_SSCOFPMF binary.
+VERI_SSCOF_DIR	=	$(BUILD)/Vhtif_sscofpmf
+VERI_SSCOF_BIN	=	$(VERI_SSCOF_DIR)/Vhtif_tb
+$(VERI_SSCOF_BIN): $(VERI_SSCOF_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_SSCOF_DIR) -f Vhtif_tb.mk
+$(VERI_SSCOF_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_SSCOF_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSCOFPMF \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+#	full build (-DSSCOFPMF_FULL): adds the karu64-specific mhpmevent WARL-mask check.
+$(BUILD)/karu_sscofpmf_test.elf: test/karu_sscofpmf_test.S test/karu_sscofpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static -DSSCOFPMF_FULL \
+		-T test/karu_sscofpmf_test.ld -o $@ test/karu_sscofpmf_test.S
+$(BUILD)/karu_sscofpmf_test.hex: $(BUILD)/karu_sscofpmf_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_sscofpmf_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_sscofpmf_test.bin > $@
+#	cross-check subset (no -DSSCOFPMF_FULL): scountovf/OF + LCOFI M/S -> matches spike.
+$(BUILD)/karu_sscofpmf_xchk.elf: test/karu_sscofpmf_test.S test/karu_sscofpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_sscofpmf_test.ld -o $@ test/karu_sscofpmf_test.S
+$(BUILD)/karu_sscofpmf_xchk.hex: $(BUILD)/karu_sscofpmf_xchk.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_sscofpmf_xchk.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_sscofpmf_xchk.bin > $@
+.PHONY: veri-sscofpmf sscofpmf-test sscofpmf-test-spike
+veri-sscofpmf:	$(VERI_SSCOF_BIN)
+sscofpmf-test:	$(VERI_SSCOF_BIN) $(BUILD)/karu_sscofpmf_test.hex
+	$(VERI_SSCOF_BIN) +hex=$(BUILD)/karu_sscofpmf_test.hex +tohost=1000 +max_cycles=2000000
+#	scountovf/OF + LCOFI M/S must match spike (run on both).
+sscofpmf-test-spike:	$(VERI_SSCOF_BIN) $(BUILD)/karu_sscofpmf_xchk.hex $(BUILD)/karu_sscofpmf_xchk.elf
+	$(VERI_SSCOF_BIN) +hex=$(BUILD)/karu_sscofpmf_xchk.hex +tohost=1000 +max_cycles=2000000
+	spike --isa=rv64gc_zicntr_zihpm_sscofpmf $(BUILD)/karu_sscofpmf_xchk.elf
+#	Slice 3b: hardware counter overflow + per-privilege inhibit. karu64-only (spike has
+#	no HW overflow); the htif_tb wires hpm_events[1]=retire under KARU_SSCOFPMF.
+$(BUILD)/karu_sscofpmf_hw_test.elf: test/karu_sscofpmf_hw_test.S test/karu_sscofpmf_hw_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static \
+		-T test/karu_sscofpmf_hw_test.ld -o $@ test/karu_sscofpmf_hw_test.S
+$(BUILD)/karu_sscofpmf_hw_test.hex: $(BUILD)/karu_sscofpmf_hw_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_sscofpmf_hw_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_sscofpmf_hw_test.bin > $@
+.PHONY: sscofpmf-hw-test
+sscofpmf-hw-test:	$(VERI_SSCOF_BIN) $(BUILD)/karu_sscofpmf_hw_test.hex
+	$(VERI_SSCOF_BIN) +hex=$(BUILD)/karu_sscofpmf_hw_test.hex +tohost=1000 +max_cycles=2000000
+#	NO_S build: SINH(61) must be read-only 0 in mhpmevent (mask 0xD000...001F). M-only.
+VERI_SSCOF_NOS_DIR	=	$(BUILD)/Vhtif_sscofpmf_nos
+VERI_SSCOF_NOS_BIN	=	$(VERI_SSCOF_NOS_DIR)/Vhtif_tb
+$(VERI_SSCOF_NOS_BIN): $(VERI_SSCOF_NOS_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_SSCOF_NOS_DIR) -f Vhtif_tb.mk
+$(VERI_SSCOF_NOS_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -Mdir $(VERI_SSCOF_NOS_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSCOFPMF -DKARU_NO_S \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+$(BUILD)/karu_sscofpmf_nos.elf: test/karu_sscofpmf_test.S test/karu_sscofpmf_test.ld | $(BUILD)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -nostartfiles -static -DSSCOFPMF_NOS \
+		-T test/karu_sscofpmf_test.ld -o $@ test/karu_sscofpmf_test.S
+$(BUILD)/karu_sscofpmf_nos.hex: $(BUILD)/karu_sscofpmf_nos.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_sscofpmf_nos.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_sscofpmf_nos.bin > $@
+.PHONY: sscofpmf-nos-test
+sscofpmf-nos-test:	$(VERI_SSCOF_NOS_BIN) $(BUILD)/karu_sscofpmf_nos.hex
+	$(VERI_SSCOF_NOS_BIN) +hex=$(BUILD)/karu_sscofpmf_nos.hex +tohost=1000 +max_cycles=2000000

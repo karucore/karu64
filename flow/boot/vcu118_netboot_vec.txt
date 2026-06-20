@@ -1,0 +1,1 @@
+setenv serverip 192.168.42.1; setenv ipaddr 192.168.42.10; tftpboot 0x80200000 Image; tftpboot 0x84000000 board.dtb; setenv bootargs console=ttyS0,115200 earlycon root=/dev/nfs rw ip=192.168.42.10:192.168.42.1:192.168.42.1:255.255.255.0:karudeb:eth0:off nfsroot=192.168.42.1:/srv/nfs/rootfs-vnc,vers=3,tcp,nolock; booti 0x80200000 - 0x84000000

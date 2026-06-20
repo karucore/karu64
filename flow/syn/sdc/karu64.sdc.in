@@ -1,0 +1,17 @@
+#	flow/syn/sdc/karu64.sdc.in -- karu64 timing constraints for nangate45.
+#	@CLK_NS@ / @IN_NS@ / @OUT_NS@ are substituted by syn_yosys.sh from
+#	KARU_CLK_PS / KARU_IN_PCT / KARU_OUT_PCT before passing to OpenSTA.
+
+create_clock -name clk -period @CLK_NS@ [get_ports clk]
+
+#	Treat reset as ideal -- not part of the timing budget.
+set_false_path -from [get_ports rst]
+
+#	Generic IO budget: every non-clock input arrives @IN_NS@ ns into
+#	the period; every output must settle @OUT_NS@ ns before the end.
+set_input_delay  -clock clk @IN_NS@  [get_ports * -filter {direction == input && full_name != clk}]
+set_output_delay -clock clk @OUT_NS@ [all_outputs]
+
+#	Drive / load assumptions.
+set_driving_cell -lib_cell BUF_X2 [all_inputs]
+set_load 10.0 [all_outputs]
