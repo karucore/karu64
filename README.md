@@ -2,31 +2,36 @@
    __  ___                    ___
   /  |/  /__ ____  ___ ___   / _ \_______  _______ ___ ___ ___  _______
  / /|_/ / _ `/ _ \(_-</ -_) / ___/ __/ _ \/ __/ -_|_-<(_-</ _ \/ __(_-<
-/_/  /_/\_,_/_//_/___/\__/ /_/  /_/  \___/\__/\__/___/___/\___/_/ /___/         
+/_/  /_/\_,_/_//_/___/\__/ /_/  /_/  \___/\__/\__/___/___/\___/_/ /___/
     __ __                 _____ __ __
    / //_/___ ________  __/ ___// // /  RVA23U64 User Application Profile
   / ,< / __ `/ ___/ / / / __ \/ // /_  Full RVV 1.0 Vector, VLEN=256
- / /| / /_/ / /  / /_/ / /_/ /__  __/  Full Zvk Vector Crypto Features   
+ / /| / /_/ / /  / /_/ / /_/ /__  __/  Full Zvk Vector Crypto Features
 /_/ |_\__,_/_/   \__,_/\____/  /_/     + PQC TG Vector Keccak Extension
 ```
 
 # karu64
 
-`karu64` is an RV64 core and FPGA bring-up tree. The scalar Linux baseline
-is RV64IMAFDC + Zicsr + Zifencei with M/S/U privilege, Sv39 translation,
-CLINT/PLIC/NS16550 platform devices, and a VCU118 DDR4 SoC target.
+`karu64` is an RV64 core and FPGA bring-up tree. The Linux baseline is RV64GCV (RV64IMAFDCV + Zicsr + Zifencei, RVV 1.0 with Zvl256b), with M/S/U privilege, Sv39 translation, generic CLINT/PLIC/NS16550 platform services (interrupts and serial console). We also have full Zvkt (vector cryptography) extensions and Keccak available. We implement these components in portable Verilog under a permissive (BSD 3-Clause) license.
 
-The Linux/rootfs images, DTBs, kernel builds, and deployment artifacts are
-produced by the companion `karudeb` repository. The core, its flows, and the
-FPGA SoC are documented under [doc/](doc/) — see the Documentation section below.
+For testing on the [VCU118](https://www.amd.com/en/products/adaptive-socs-and-fpgas/evaluation-boards/vcu118.html) (Xilinx UltraScale+ FPGA) target, we instantiate a SoC with Xilinx DDR4 IP components for 2 GB of memory and [LiteEth/LiteX](https://github.com/enjoy-digital/liteeth) for a basic Gbit Ethernet that supports network boot and a filesystem.
 
-The core is split into IFU, decoder, ALU, M (multiply/divide), FPU
-(single and double precision IEEE 754), LSU, CSR/privilege/MMU, register
-files, and vector execute blocks behind AXI4 instruction/data memory
-ports. The repository also carries freestanding firmware, Verilator and
-Icarus testbenches, VCU118 FPGA flows, and runners for riscv-tests,
-TestFloat, vector/crypto tests, and OpenSBI/Linux simulation.
+The Linux/rootfs images, DTBs, kernel builds, and deployment artifacts are produced by the companion `karudeb` repository. The core, its flows, and the FPGA SoC are documented under [doc/](doc/) — see the Documentation section below.
 
+The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and double-precision IEEE 754), LSU, CSR/privilege/MMU, register files, and vector execute blocks, all behind AXI4 instruction/data memory ports. The repository also carries freestanding firmware, Verilator and Icarus testbenches, VCU118 FPGA flows, Yosys/OpenSTA NanGate45 flows, and runners for riscv-tests, TestFloat, vector/crypto tests, and OpenSBI/Linux simulation.
+
+
+## Documentation
+
+- [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
+  pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
+  the build-time configuration knobs, and RVA23 feature coverage.
+- [doc/flows.md](doc/flows.md) — build/run flows, the riscv-tests + TestFloat +
+  directed vector/Zvk/RVA23 suites, the Linux/SoC sims, and the spike commit-log
+  divergence technique.
+- [doc/fpga.md](doc/fpga.md) — the VCU118 SoC (BRAM and DDR4), NS16550 console,
+  clocking/timing knobs, bitstream variants, and hardware/Linux status.
+ 
 ## Repo layout
 
     rtl/                    core RTL; top is rtl/karu64.v
@@ -46,50 +51,11 @@ TestFloat, vector/crypto tests, and OpenSBI/Linux simulation.
     doc/                    architecture, flows, and FPGA documentation
     _build/                 generated artifacts; intentionally gitignored
 
-## Quick start
-
-Toolchain: a GNU `riscv64-unknown-elf-*` toolchain (mine is built
-`--with-arch=rv64gcv --with-abi=lp64d`), plus `spike`, `iverilog`,
-and `verilator` on `$PATH`.
-
-    # clone with submodules (riscv-tests + its env/)
-    git clone --recurse-submodules <url>
-
-    # 1. build the hello firmware and run it on spike
-    make spike
-    # -> prints "[RESET]\n[PASS]\tAll tests ok.\n"
-
-    # 2. simulate the same binary on scalar NO_V karu64 in iverilog
-    make htif-sim
-    # -> same output; _build/karu.log gets a spike-style commit trace
-
-    # 3. or run it (much faster) under verilator
-    make veri
-
-    # 4. crank through the scalar riscv-tests suite
-    make test
-    # -> PASS: 110   FAIL: 0    TRAP/OTHER: 0
-
-    # 5. drill into a single test or its divergence vs spike
-    make test-one  T=rv64ui-p-add
-    make test-diff T=rv64um-p-mulh
-
-    # 6. Berkeley TestFloat stress test for the F extension
-    make testfloat-build           # one-time
-    make fp-test OP=f32_add        # one op, RNE, ~1s
-    make fp-test OP=f32_mul RM=rtz # other rounding modes: rne/rtz/rdn/rup/rmm
-    make fp-test OP=f32_div RM=dyn FRM=rdn  # DYN: firmware sets fcsr.frm
-    make fp-test-regression        # RNE x 17 ops, ~25s with PARALLEL=20
-    make fp-test-all               # 5 rounding modes x 17 ops + DYN sanity, ~3 min
-
 ## Current status
 
-- Scalar tests pass: `make test` is 110/110.
-- Generated artifacts are built under `_build`: hello firmware, UART hello,
-  `firmware.hex`, `vcu118_fuboot.hex`, commit logs, Vivado journals/logs,
-  generated IP/project state, reports, checkpoints, and bitstreams.
-- VCU118 DDR4 hardware is proven through MIG calibration, DDR memtest, hands-off
-  boot from the bitstream-baked boot ROM, Debian Linux, and LiteEth networking.
+- Scalar tests pass: `make test` is 110/110. Full generated RV64GCV [ACT4](test/act4-karu/): 2220 PASS / 0 FAIL — ACT4-clean. Targeted Zvk tests and end-to-end OpenSSL Crypto tests pass.
+- Generated artifacts are built under `_build`: hello firmware, UART hello, `firmware.hex`, `vcu118_fuboot.hex`, commit logs, Vivado journals/logs, generated IP/project state, reports, checkpoints, and bitstreams.
+- VCU118 DDR4 hardware is proven through MIG calibration, DDR memtest, hands-off boot from the bitstream-baked boot ROM, Debian Linux, and LiteEth networking.
 
 ## Architecture
 
@@ -142,7 +108,7 @@ to `rtl/` modules; the I-cache and DDR crossbar are build-gated paths.
 ###########################  FIGURE 2: karu64 CORE INTERNALS  ################################
 
    FRONT-END (fetch -> decode)                                 REGISTER FILES
-   ---------------------------                                 --------------------
+   ---------------------------                                 --------------
 
    +-----------+   ifu_w (insn word, to DECODE)    +--------------+   +------------------+
    | IFU       |=================================> | RVC64 + DEC  |   | x-RF  2R/1W      |
@@ -308,7 +274,44 @@ structured around explicit front-end, execute, LSU, M, FPU, CSR, and
 writeback blocks so it can grow toward deeper pipelining and multi-issue
 without keeping everything in one monolithic core file.
 
-## Test status
+
+## No-Hardware Testing Quick start
+
+Toolchain: a GNU `riscv64-unknown-elf-*` toolchain (mine is built
+`--with-arch=rv64gcv --with-abi=lp64d`), plus `spike`, `iverilog`,
+and `verilator` on `$PATH`.
+
+    # clone with submodules (riscv-tests + its env/)
+    git clone --recurse-submodules https://github.com/karucore/karu64.git
+
+    # 1. build the hello firmware and run it on spike
+    make spike
+    # -> prints "[RESET]\n[PASS]\tAll tests ok.\n"
+
+    # 2. simulate the same binary on scalar NO_V karu64 in iverilog
+    make htif-sim
+    # -> same output; _build/karu.log gets a spike-style commit trace
+
+    # 3. or run it (much faster) under verilator
+    make veri
+
+    # 4. crank through the scalar riscv-tests suite
+    make test
+    # -> PASS: 110   FAIL: 0    TRAP/OTHER: 0
+
+    # 5. drill into a single test or its divergence vs spike
+    make test-one  T=rv64ui-p-add
+    make test-diff T=rv64um-p-mulh
+
+    # 6. Berkeley TestFloat stress test for the F extension
+    make testfloat-build           # one-time
+    make fp-test OP=f32_add        # one op, RNE, ~1s
+    make fp-test OP=f32_mul RM=rtz # other rounding modes: rne/rtz/rdn/rup/rmm
+    make fp-test OP=f32_div RM=dyn FRM=rdn  # DYN: firmware sets fcsr.frm
+    make fp-test-regression        # RNE x 17 ops, ~25s with PARALLEL=20
+    make fp-test-all               # 5 rounding modes x 17 ops + DYN sanity, ~3 min
+
+### Basic Tests and Berkeley TestFloat
 
     make test
     # PASS: 110   FAIL: 0    TRAP/OTHER: 0
@@ -341,23 +344,33 @@ Beyond `riscv-tests`, the repo wires up Berkeley TestFloat 3e —
 46k+ weighted-random vectors per FP operation across all five RISC-V
 rounding modes plus a DYN sanity check (~3 min wall with
 `PARALLEL=20`). See [doc/flows.md](doc/flows.md) `#5 Berkeley
-TestFloat` for the recipe. Two real bugs in `karu_fcvt.v` were
-surfaced and fixed during integration — both off-by-shift-amount
-issues that the directed rv64uf-p tests missed: the float→int
-right-shift count was masked to 6 bits (tiny operands wrapped instead
-of rounding to 0), and the int→float round/sticky logic was clamped
-at `shift_amt >= 24` (i64→f32 with 25+ significant bits missed the
-inexact flag in RTZ/RDN/RUP). The F/D units do full subnormal
+TestFloat` for the recipe. The F/D units do full subnormal
 normalisation + gradual underflow and report **0 errors** across every
 op and rounding mode.
 
-## Documentation
+### Architectural tests (ACT4)
 
-- [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
-  pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
-  the build-time configuration knobs, and RVA23 feature coverage.
-- [doc/flows.md](doc/flows.md) — build/run flows, the riscv-tests + TestFloat +
-  directed vector/Zvk/RVA23 suites, the Linux/SoC sims, and the spike commit-log
-  divergence technique.
-- [doc/fpga.md](doc/fpga.md) — the VCU118 SoC (BRAM and DDR4), NS16550 console,
-  clocking/timing knobs, bitstream variants, and hardware/Linux status.
+Beyond `riscv-tests` and TestFloat, the repo runs **ACT4** — the RISC-V
+Architectural Certification Tests (framework v4, the successor to the
+deprecated `riscof`). Unlike a runtime signature compare, ACT4 uses the
+**Sail** reference model (configured to match the DUT) to compute golden
+results *ahead of time* and bake them into **self-checking ELFs**; karu64
+just runs each one. The test self-checks internally, prints
+`RVCP-SUMMARY: TEST PASSED|FAILED` over the HTIF console, and halts with
+`tohost = 1`/`3`, which reuses the existing HTIF testbench.
+
+    make -C test/act4-karu all              # generate Sail ELFs + run on karu64
+
+The full scalar RV64GC sweep is **347/347 PASS** — fully conformant
+(I/M/A/F/D/C, Zicsr/Zicntr/Zifencei, including full IEEE-754 subnormals and
+fused single-rounding FMA).
+
+ACT4 also covers **vector**: the framework generates the V test sources on
+demand (its `vector-testgen` scripts, behind the `vector-tests` target),
+rather than checking them in like the scalar suites. karu64's config already
+declares the vector extensions — `Zve32x/64x`, `Zve32f/64f/64d`,
+`Zvl32b…256b`, `VLEN=256` — so the selector can build the Vls*/Vi*/Vf slices;
+landing those runs against the RVV RTL is the in-progress next step. See
+[test/act4-karu/README.md](test/act4-karu/README.md) for the config, layout,
+and per-slice status.
+

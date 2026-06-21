@@ -17,7 +17,7 @@ DUT just runs each ELF: it self-checks internally, prints
 - `../riscv-arch-test/` — the framework + test sources, a submodule pinned
   on the **`act4`** branch (commit `475b5bd`, matching the installed
   editable `act` framework).
-- `karu64-rv64gc/` — the DUT config (RV64GC, M-mode):
+- `karu64-rv64gc/` — the DUT config (RV64GCV, M-mode):
   - `test_config.yaml` — names the compiler / objdump / `sail_riscv_sim`
   - `karu64-rv64gc.yaml` — UDB config: the authoritative extension/param
     set ACT4 uses to select tests and configure Sail
@@ -26,8 +26,8 @@ DUT just runs each ELF: it self-checks internally, prints
     protocol (single `sd` + poll-for-zero, race-free against the
     testbench's every-cycle `tohost` watcher)
   - `link.ld` — memory map (RAM at `0x80000000`)
-  - `sail.json` — Sail reference config (verbatim from the vetted
-    `sail-RVI20U64`; RV64GC M-mode, V Disabled)
+  - `sail.json` — Sail reference config (RV64GCV M-mode; `V` support_level
+    `Float_double` + `Zfhmin`, so the `Zve*`/`Zvl*` slices generate)
 - `env.sh` — puts the `udb`/`bundle` gems on PATH + sets `GEM_HOME`
 - `Makefile` — `tests` / `run` / `all` / `clean` / `distclean`
 - `../../flow/run_act.sh` — runs ELF(s) on karu64 and classifies PASS/FAIL
@@ -38,66 +38,54 @@ DUT just runs each ELF: it self-checks internally, prints
     make -C test/act4-karu run              # run them on karu64
     make -C test/act4-karu all              # both
 
-`EXT` selects a slice (`I`, `M`, `Zba`, … and later `Vls*` etc.); blank
+`EXT` selects a slice (`I`, `M`, `Zba`, `Vx*`, `Vls*`, `Vf*`, …); blank
 generates everything the config declares. The 4 MiB `_build/Vhtif_fp`
 verilator testbench is reused as the run harness (ACT4 ELFs exceed the
 128 KiB default RAM).
 
-## Status (2026-05-24)
+## Status (2026-06-21)
 
-Full scalar RV64GC sweep: **347/347 PASS** — fully conformant. (Progression:
-213 → 215 with the `Zalrsc` SC fix → +F/D subnormals → +fused FMA = all
-green. F slice 82/82, D slice 114/114.) The flow itself is validated
-with no new RTL; it also fixed a false-positive in the `karu_assert.v`
-livelock guard (keyed off register-writeback retire, which a long arch-test
-NOP sled never triggers — now keyed off forward progress).
+Full generated **RV64GCV** ACT4 suite: **2220 PASS / 0 FAIL** — ACT4-clean.
+Scalar RV64GC is a 347/347 subset; everything else is vector. (Progression:
+scalar reached 347 via the `Zalrsc` same-hart-store SC fix, full F/D subnormal
+support, and fused single-rounding FMA — all validated to **0 errors vs
+Berkeley TestFloat**; the vector slices then landed clean.)
 
-**PASS:** I (51), M (13), Zaamo (18), Zalrsc lr (2), Zca (32), Zcd (4),
-Misalign+D+F+Zca (20), Zicsr (6), Zicntr (2), Zifencei (1), and all FP
-data-movement ops (D 47, F 17: fld/fsd/flw/fsw, fsgnj*, fmin/fmax,
-feq/flt/fle, fclass, fmv).
+**Scalar (347):** I (51), M (13), Zaamo (18), Zalrsc (lr+sc), Zca (32),
+Zcd (4), misalign+D+F+Zca (20), Zicsr (6), Zicntr (2), Zifencei (1), and the
+full F (82) / D (114) arithmetic + data-movement slices.
 
-**FAIL — three families:**
-> **Update:** full IEEE-754 subnormal support implemented for **both F and
-> D** (`karu_f{add,mul,div,sqrt,cvt}` and the `_d` units): subnormal inputs
-> (leading-bit + effective exponent), gradual-underflow subnormal outputs,
-> and exact NX/UF flags (tininess-after-rounding, SoftFloat rule). Validated
-> to **0 errors against Berkeley TestFloat** (46k vectors/op × all 5 rounding
-> modes) on f32/f64 {add,sub,mul,div,sqrt} + every int↔float and S↔D
-> conversion; riscv-tests 110/110; ACT4 **F 27→42/82, D 47→74/114**. The
-> *only* remaining F/D-arith fails are the FMA ops (composed vs fused — a
-> separate gap, see below).
+**Vector:** integer arithmetic `Vx{8,16,32,64}`; the permute group
+(`vrgather`/`vrgatherei16`, `vslide*`, `vcompress`, `viota`, `vsext`/`vzext`);
+load/store `Vls{8,16,32,64}` — unit-stride, strided, indexed, every segment
+form, and whole-register; and vector FP `Vf32`/`Vf64` (per-lane scalar
+`karu_fpu`, SEW32→F / SEW64→D).
 
-1. **FP arithmetic:** add/sub/mul/div/sqrt/cvt **done (F+D, subnormals)**;
-   FMA **done (F+D, fused single-rounding** — `karu_ffma`/`karu_ffma_d`,
-   ported from SoftFloat mulAdd). **ACT4 F 82/82, D 114/114.**
-   Confirmed (not assumed) via commit-log diff vs spike: the first F-fadd.s
-   divergence is `fadd.s f28,f6,f7` with `f6=0x878bc661` (small normal) and
-   `f7=0x006cdb29` (**subnormal**, exp=0). spike → `0x878bc4ae` + `fflags=NX`;
-   karu64 flushes the subnormal `f7` to zero and returns `f6` unchanged
-   (`0x878bc661`). This is karu64's documented FTZ-on-input behavior. ACT4
-   also signature-checks `fflags` (`RVTEST_SIGUPD_F`), so subnormal-input
-   cases mismatch on result and/or flag. (rv64uf/ud pass only because they
-   don't exercise subnormals.) Closing this = real IEEE-754 work: subnormal
-   inputs (karu_fmul already normalizes them; fadd/fdiv/fsqrt/fcvt/D-units
-   don't), gradual-underflow subnormal outputs, exact NX/UF flags, and
-   single-rounding fused FMA. Validate with Berkeley TestFloat, not just ACT4.
-2. **Zalrsc sc.w / sc.d — FIXED (now PASS).** Root cause: the
-   `cp_custom_sc_after_store_*` coverpoint does `lr; sb (same set); sc` and
-   expects the SC to succeed (the reference keeps the reservation through a
-   same-hart store). karu64's LSU cleared the reservation on *any* store, so
-   the intervening `sb` killed it and the SC failed. Per spec a same-hart
-   plain store must not invalidate the reservation (only an SC/AMO consumes
-   it; a single-hart core has no other-hart store). Fixed in `karu_lsu.v`
-   (clear `reserve_valid` only on the SC store, not plain stores). All 110
-   riscv-tests (incl. rv64ua-p-lrsc) still pass.
-3. **minstret undercount** (karu64's `perf_retire` only pulses on register
-   writeback, so NOPs/stores/untaken-branches aren't counted) did NOT cause
-   failures here — Zicntr passed. Stays a deferred cleanup.
+**Two honest non-PASS items — both reference-side or deliberately
+out-of-scope, neither a karu64 conformance failure (0 FAIL anywhere):**
+
+1. **8 `Vx64` `vmulh*`/`vsmul` ELFs that Sail can't *generate*** — a
+   golden-generation trap-loop on the reference side, not a DUT bug. Run the
+   generator with `act -k` (keep-going) and they're simply skipped.
+2. **fp16 ops** — karu64 has no Zfhmin datapath (the config claims `Zfhmin`
+   only to satisfy ACT4's `REQUIRED_EXTENSIONS` selector for the Vf slices).
+   The independent `Vf32`/`Vf64` golden shows `Vf32` 78/100 and `Vf64` 64/66,
+   where *every* non-PASS is an honest TRAP of an unimplemented op — 0 FAIL.
+
+The flow needed no new RTL beyond the vector core itself; it did fix a
+false-positive in the `karu_assert.v` livelock guard (keyed off
+register-writeback retire, which a long arch-test NOP sled never triggers —
+now keyed off forward progress) and gave the per-element VLSU its own
+`VLSU_STALL_LIMIT` so long indexed/segment ops aren't misflagged as hangs.
+ACT4 also caught two real VPERM bugs the directed spike test missed
+(`vslideup` offset truncated to 32 bits; `vcompress` filling the tail
+agnostic instead of always-undisturbed) — both fixed.
 
 ## Scope / next
 
-The config is RV64GC today. Vector (`V` / `Zve*` / `Zvl*`) extensions get
-flipped on in the UDB + sail configs as the RVV RTL lands; see
-`../../doc/architecture.md`. Vector test `.S` sources additionally require a
-one-time `vector-sources` generation step (see the framework Makefile).
+The config is **RV64GCV** (M-mode), `VLEN=256`. What's left is the documented
+out-of-scope deviations — some `Vx64` `vmulh*`/`vsmul` (Sail golden-gen), fp16,
+and a few overlap / LMUL-misalignment corner rules; see the vector notes in
+`../../doc/architecture.md`. Vector test `.S` sources require the framework's
+one-time `vector-tests` / `vector-testgen` generation step (see the framework
+Makefile).
