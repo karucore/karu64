@@ -7,7 +7,7 @@
 //	project, found to work on this board; the core underneath is karu64.
 //	Pin constraints are in flow/fpga/vcu118.xdc.
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 `ifndef SIM_TB
 module vcu118_top (
@@ -39,7 +39,7 @@ module vcu118_top (
 	//	MHz did not close timing for the IMAFDC core (post-route WNS -2.35 ns);
 	//	62.5 MHz leaves ~8 ns of margin. Vivado auto-derives the /2 generated
 	//	clock from BUFGCE_DIV, so the XDC keeps the 8 ns constraint on the input
-	//	port and core logic is analysed at 16 ns. `IUTSYS_CLK` (config.vh) is set
+	//	port and core logic is analysed at 16 ns. `IUTSYS_CLK` (karu_ext.vh) is set
 	//	to 62.5e6 so UART baud + the heartbeat track the real core frequency.
 	BUFGCE_DIV #(
 		.BUFGCE_DIVIDE	(2)

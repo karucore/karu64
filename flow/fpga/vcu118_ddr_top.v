@@ -29,7 +29,7 @@
 //	ddr4_0.veo / converter .veo before synthesis. The DDR4 PHY pins below are
 //	the standard MIG c0_ddr4_* bus; the MIG generates their pin XDC.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 `ifndef SIM_TB

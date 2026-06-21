@@ -13,7 +13,7 @@
 //	  +reset_at=<dec>    cycle at which to pulse an async reset (0 = never)
 //	  +reset_len=<dec>   length of the injected reset pulse (default 24)
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 `ifndef SIM_TB
 `define SIM_TB

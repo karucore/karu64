@@ -118,7 +118,7 @@ and report **0 errors** across every op and rounding mode.
     make fp-test-dyn                 # DYN-only sanity (read frm CSR)
 
 Pipeline per op: `testfloat_gen` → `flow/run_fp_test.sh` chunks the operands,
-packs them to RAM-hex, runs the verilator `htif_tb` (4 MiB RAM, `RAM_XADR=22`),
+packs them to RAM-hex, runs the verilator `htif_tb` (4 MiB RAM, `HTIF_TB_XADR=22`),
 dumps the output region, and pipes it to `testfloat_ver`. Chunks fan out up to
 `PARALLEL=20` concurrently and are stitched in index order. The subject firmware
 `test/fw/fp_subj.c` dispatches the op via inline asm; six rounding-mode variants

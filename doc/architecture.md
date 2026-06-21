@@ -231,11 +231,11 @@ window to the full 2 GiB).
 ## Build-time configuration
 
 ISA extensions are individually pluggable (`rtl/karu_ext.vh`). The base core is
-RV64-**IC**; A/M/F/D/V/K are gated by `KARU_NO_A` / `KARU_NO_M` / `KARU_NO_F` /
-`KARU_NO_D` / `KARU_NO_V` / `KARU_NO_K`, with the dependency cascade
-**K ⊃ V ⊃ D ⊃ F** (dropping F also drops D/V/K, etc.). Disabled instructions
-raise a vectoring cause-2 illegal-instruction exception and their units are not
-instantiated.
+RV64-**I**; C/A/M/B/F/D/V are gated by `KARU_NO_C` / `KARU_NO_A` / `KARU_NO_M` /
+`KARU_NO_B` / `KARU_NO_F` / `KARU_NO_D` / `KARU_NO_V`, with the dependency cascade
+**V ⊃ D ⊃ F** (dropping F also drops D/V, etc.). Vector crypto (Zvk*) is opt-in
+via the `KARU_ZVK*` flags and needs V. Disabled instructions raise a vectoring
+cause-2 illegal-instruction exception and their units are not instantiated.
 
 Performance/area knobs (full table in the repository build notes) include the
 per-unit mul/div cycle counts (`KARU_{M,F,D,V}_*_CYCLES`), FP fast-path multiply

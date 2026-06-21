@@ -23,7 +23,7 @@
 //	immediate $write so console output is fast in simulation -- the
 //	register decode and LSR polling the firmware exercises are unchanged.
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 module karu_ns16550 #(
 	parameter	BITCLKS = (`IUTSYS_CLK / 115200)

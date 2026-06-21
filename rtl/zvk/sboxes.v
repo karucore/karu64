@@ -1,6 +1,7 @@
 //  sboxes.v
 //  2020-01-29  Markku-Juhani O. Saarinen <mjos@pqshield.com>
 //  Copyright (c) 2020, PQShield Ltd. All rights reserved.
+//  Released under BSD-2 at https://github.com/mjosaarinen/lwaes_isa
 
 /*
 

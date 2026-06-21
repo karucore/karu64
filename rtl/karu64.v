@@ -6,9 +6,8 @@
 //  control is driven from that packet, with bypass into the packet latch
 //  for adjacent scalar dependencies.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
-`include "karu_hpm_events.vh"
 `include "karu_uop_defs.vh"
 `include "karu_vcfg.vh"
 
@@ -319,7 +318,7 @@ module karu64 #(
 
     wire is_c = (ifu_w[1:0] != 2'b11);
     wire [31:0] ins_unc;
-`ifdef CORE_COMPRESSED
+`ifdef KARU_EN_C
     karu_rvc64 rvc (.c(ifu_w[15:0]), .out(ins_unc));
 `else
     assign ins_unc = ifu_w;

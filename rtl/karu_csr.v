@@ -10,8 +10,7 @@
 //  Trap entry / mret are separate signals so the core's BRU/SYS unit
 //  can drive them in parallel with normal CSR traffic.
 
-`include "config.vh"
-`include "karu_hpm_events.vh"
+`include "karu_ext.vh"
 `include "karu_uop_defs.vh"
 `include "karu_vcfg.vh"
 
@@ -955,6 +954,4 @@ module karu_csr (
     assign ret_pc   = csr_mepc;
 `endif
 
-    //  silence unused
-    wire _unused = &{`KARU_HPM_NONE, 1'b0};
 endmodule

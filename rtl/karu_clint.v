@@ -22,7 +22,7 @@
 //  forces awaddr/araddr[2:0]=0 and carries the byte position in wstrb), reads
 //  are combinational on the latched address, writes are byte-granular.
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 module karu_clint #(
     //  mtime tick = one increment every TICK_DIV core clocks (~1 MHz default).

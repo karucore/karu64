@@ -1,39 +1,53 @@
 //  karu_ext.vh
-//  Build-time ISA-extension enable resolution.
+//  High-level RTL configuration: ISA-extension enable resolution plus the
+//  system/board knobs that used to live in config.vh (now folded in here so
+//  there is a single configuration header).
 //
-//  Base core is RV64IC (I + C). The A, M, B, F, D, V and K
-//  (vector-crypto, Zvk*) extensions are individually pluggable. Privilege
-//  and profiling features are also build-time scoped for area studies.
+//  Base core is RV64I. The C, A, M, B, F, D and V extensions are individually
+//  pluggable. Vector crypto (Zvk*) is opt-IN, scoped by its own KARU_ZVK*
+//  flags in the section further down. Privilege and profiling features are
+//  also build-time scoped for area studies.
 //
-//  Default: all extensions ENABLED unless config.vh or the build command opts
-//  out. Opt OUT on the build line with any of:
+//  Default: all extensions ENABLED unless the build command opts out. Opt OUT
+//  on the build line with any of:
+//      -DKARU_NO_C   drop the C extension (compressed instructions)
 //      -DKARU_NO_A   drop the A extension (atomics)
 //      -DKARU_NO_M   drop the M extension (multiply/divide)
 //      -DKARU_NO_B   drop scalar Zba/Zbb/Zbs bit-manipulation
 //      -DKARU_NO_F   drop the F extension (single-precision FP)
 //      -DKARU_NO_D   drop the D extension (double-precision FP)
-//      -DKARU_NO_V   drop the V extension (vector)
-//      -DKARU_NO_K   drop the K extension (vector crypto, Zvk*)
+//      -DKARU_NO_V   drop the V extension (vector; also drops Zvk* crypto)
 //      -DKARU_NO_S   drop S-mode/Sv39 (M/U privilege only; no MMU walkers)
 //      -DKARU_NO_HPM drop mhpmcounter3..31/mhpmevent3..31
 //      -DKARU_NO_MEM drop scalar L1/cache wrapper in non-vector builds
 //
-//  Dependency chain  K  >  V  >  D  >  F
-//  (vector-crypto needs vectors; the RVA23 "V" = Zve64d needs double;
-//   double needs single). Disabling a lower extension cascades upward:
-//      KARU_NO_F  ==> also drops D, V, K
-//      KARU_NO_D  ==> also drops V, K
-//      KARU_NO_V  ==> also drops K
+//  Dependency chain  V  >  D  >  F
+//  (the RVA23 "V" = Zve64d needs double; double needs single; the opt-in Zvk*
+//   crypto leaves need V). Disabling a lower extension cascades upward:
+//      KARU_NO_F  ==> also drops D, V
+//      KARU_NO_D  ==> also drops V
 //
 //  The RTL checks ONLY the canonical positive defines resolved here:
-//      KARU_EN_A / KARU_EN_M / KARU_EN_B / KARU_EN_F / KARU_EN_D / KARU_EN_V
-//      KARU_EN_K / KARU_EN_S / KARU_EN_HPM / KARU_EN_MEM
+//      KARU_EN_C / KARU_EN_A / KARU_EN_M / KARU_EN_B / KARU_EN_F / KARU_EN_D
+//      KARU_EN_V / KARU_EN_S / KARU_EN_HPM / KARU_EN_MEM
 //  Never test KARU_NO_* directly in the RTL.
 
 `ifndef KARU_EXT_VH
 `define KARU_EXT_VH
 
-//  --- cascade the opt-outs downward (K > V > D > F) ---
+//  ======================================================================
+//  System / board configuration (formerly config.vh)
+//  ======================================================================
+`timescale  1 ns / 1 ps
+`default_nettype none
+
+`define     IUTSYS_CLK  62500000        //  core clock = CLK_125MHZ / 2 = 62.5 MHz (16 ns).
+                                            //  vcu118_top divides the 125 MHz LVDS input by 2
+                                            //  (BUFGCE_DIV). Per-top UART BITCLKS + the 1 s
+                                            //  heartbeat track this. (8 ns/125 MHz did not close
+                                            //  timing for IMAFDC: post-route WNS -2.35 ns.)
+
+//  --- cascade the opt-outs downward (V > D > F) ---
 `ifdef KARU_NO_F
     `ifndef KARU_NO_D
         `define KARU_NO_D
@@ -44,13 +58,11 @@
         `define KARU_NO_V
     `endif
 `endif
-`ifdef KARU_NO_V
-    `ifndef KARU_NO_K
-        `define KARU_NO_K
-    `endif
-`endif
 
 //  --- canonical positive enables (RTL uses these) ---
+`ifndef KARU_NO_C
+    `define KARU_EN_C
+`endif
 `ifndef KARU_NO_A
     `define KARU_EN_A
 `endif
@@ -68,9 +80,6 @@
 `endif
 `ifndef KARU_NO_V
     `define KARU_EN_V
-`endif
-`ifndef KARU_NO_K
-    `define KARU_EN_K
 `endif
 `ifndef KARU_NO_S
     `define KARU_EN_S

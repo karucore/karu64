@@ -11,38 +11,8 @@
 
 #include "sio_generic.h"
 
-#ifdef  IUTSYS
-#include "iutsys_map.h"
-
-//  wait for an operation
-
-#define KTI3_WAIT { while (r32[KTI3_STAT] != 0) ; }
-#define KECC_WAIT { while (r32[KECC_STAT] != 0) ; }
-#define S256_WAIT { while (r32[S256_STAT] != 0) ; }
-#define S512_WAIT { while (r32[S512_STAT] != 0) ; }
-
-//  uart
-#define set_uart_tx(x)  \
-    {   *((volatile char *)UART_TX_ADDR) = (x); }
-#define get_uart_txok() (*((volatile char *)UART_TXOK_ADDR))
-#define get_uart_rx()   (*((volatile char *)UART_RX_ADDR))
-#define get_uart_rxok() (*((volatile char *)UART_RXOK_ADDR))
-
-//  get ticks
-#define get_clk_ticks() (*((volatile uint32_t *)GET_TICKS_ADDR))
-
-//  gpio
-#define get_gpio_in(x)  (*((volatile uint32_t *)GPIO_IN_ADDR))
-#define set_gpio_out(x) \
-    {   *((volatile uint32_t *)GPIO_OUT_ADDR) = (x);    }
-
-//  millisecond-resolution delay
-void delayms(uint32_t ms);
-
-#else
-//  running in host
+//  host / sim build: no memory-mapped peripherals
 #define get_clk_ticks() 0
-#endif
 
 //  fixed-length word-wise block copy macros are faster than memcpy
 

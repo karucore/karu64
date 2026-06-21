@@ -3,7 +3,7 @@
 //  transaction for Phase 2 (no pipelining). Misaligned accesses that
 //  cross an 8-byte beat are split into two aligned 64-bit transactions.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 `include "karu_uop_defs.vh"
 

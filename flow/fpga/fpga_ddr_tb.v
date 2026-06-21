@@ -10,7 +10,7 @@
 //	  +max_cycles=<dec>  watchdog (default 2,000,000)
 //	  +uart_in=<file>    bytes fed to the UART RX
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 `ifndef SIM_TB
 `define SIM_TB

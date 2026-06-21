@@ -330,7 +330,7 @@ $(VERI_FP_BIN): $(VERI_FP_DIR)/Vhtif_tb.mk
 
 $(VERI_FP_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_FP_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -347,7 +347,7 @@ $(VERI_IC_BIN): $(VERI_IC_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_IC_DIR) -f Vhtif_tb.mk
 $(VERI_IC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_IC_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_ICACHE \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_ICACHE \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -377,7 +377,7 @@ $(VERI_VP_BIN): $(VERI_VP_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_VP_DIR) -f Vhtif_tb.mk
 $(VERI_VP_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_VP_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_V_LANE_PIPE \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_V_LANE_PIPE \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -406,7 +406,7 @@ $(VERI_CWB_BIN): $(VERI_CWB_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_CWB_DIR) -f Vhtif_tb.mk
 $(VERI_CWB_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_CWB_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_V_CWB_STAGE \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_V_CWB_STAGE \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -432,7 +432,7 @@ $(VERI_PRAM_BIN): $(VERI_PRAM_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_PRAM_DIR) -f Vhtif_tb.mk
 $(VERI_PRAM_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_PRAM_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 \
 		-DKARU_V_PERM_RAM -DKARU_V_CWB_STAGE -DKARU_V_LANE_PIPE \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
@@ -547,7 +547,7 @@ $(VERI_ZVK_BIN): $(VERI_ZVK_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_ZVK_DIR) -f Vhtif_tb.mk
 $(VERI_ZVK_DIR)/Vhtif_tb.mk: $(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_ZVK_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 $(ZVK_FLAGS) \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 $(ZVK_FLAGS) \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-VARHIDDEN \
 		$(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp
@@ -927,7 +927,7 @@ $(VERI_KEC_BIN): $(VERI_KEC_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_KEC_DIR) -f Vhtif_tb.mk
 $(VERI_KEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_KEC_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_KECCAK \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_KECCAK \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -1973,7 +1973,7 @@ $(VERI_STATEEN_BIN): $(VERI_STATEEN_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_STATEEN_DIR) -f Vhtif_tb.mk
 $(VERI_STATEEN_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_STATEEN_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSTATEEN \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_SSTATEEN \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -2011,7 +2011,7 @@ $(VERI_SMCNTR_BIN): $(VERI_SMCNTR_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_SMCNTR_DIR) -f Vhtif_tb.mk
 $(VERI_SMCNTR_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_SMCNTR_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SMCNTRPMF \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_SMCNTRPMF \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -2046,7 +2046,7 @@ $(VERI_SMCNTR_NOS_BIN): $(VERI_SMCNTR_NOS_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_SMCNTR_NOS_DIR) -f Vhtif_tb.mk
 $(VERI_SMCNTR_NOS_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_SMCNTR_NOS_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SMCNTRPMF -DKARU_NO_S \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_SMCNTRPMF -DKARU_NO_S \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -2069,7 +2069,7 @@ $(VERI_SSCOF_BIN): $(VERI_SSCOF_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_SSCOF_DIR) -f Vhtif_tb.mk
 $(VERI_SSCOF_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_SSCOF_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSCOFPMF \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_SSCOFPMF \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
@@ -2113,7 +2113,7 @@ $(VERI_SSCOF_NOS_BIN): $(VERI_SSCOF_NOS_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_SSCOF_NOS_DIR) -f Vhtif_tb.mk
 $(VERI_SSCOF_NOS_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_SSCOF_NOS_DIR) --cc --exe \
-		--top-module htif_tb -DSIM_TB -DRAM_XADR=22 -DKARU_SSCOFPMF -DKARU_NO_S \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_SSCOFPMF -DKARU_NO_S \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp

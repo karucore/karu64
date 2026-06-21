@@ -9,7 +9,7 @@
 //	  0x1000_0000  NS16550-compatible UART console
 //	  0x8000_0000  32 MiB RAM, loaded from +img=<flat.img>
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module linux_tb (

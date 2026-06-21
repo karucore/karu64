@@ -1,6 +1,6 @@
 # rtl/zvk — standard RISC-V vector-crypto (Zvk\*)
 
-Opt-in standard vector-crypto for `karu64`, default **OFF**. The coarse
+Opt-in standard vector-crypto for `karu64`. The coarse
 `-DKARU_ZVK` umbrella enables all implemented standard leaves; the leaf knobs
 can also be enabled independently: `-DKARU_ZVKB` (vandn/vbrev8/vrev8/vrol/vror
 lane bit-manip glue), `-DKARU_ZVKNED` (AES), `-DKARU_ZVKNHA` (SHA-256),

@@ -12,7 +12,7 @@
 //	The BRAM is initialised from firmware.hex (one 64-bit word per line,
 //	hexdump -e '1/8 "%016x\n"') loaded at DRAM_BASE = 0x80000000.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module karu_axi_mem #(

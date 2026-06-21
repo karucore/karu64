@@ -22,7 +22,7 @@
 //	Single outstanding per master per channel (which the IFU/LSU + the behavioral
 //	slave both honour) keeps the routing a latched select rather than a tag FIFO.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module karu_ddr_xbar #(

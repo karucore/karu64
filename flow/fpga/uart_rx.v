@@ -17,7 +17,7 @@
 	of eight consecutive data bits (idx=0..7), BITCLKS apart.
 */
 
-`include "config.vh"
+`include "karu_ext.vh"
 
 `define TCLKS BITCLKS[TMR_LEN-1:0]
 

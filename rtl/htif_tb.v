@@ -2,11 +2,15 @@
 //  HTIF testbench instantiating karu64 directly (no adapter). Same
 //  AXI slave models as htif_tb_axi.v.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 `ifndef SIM_TB
 `define SIM_TB
+`endif
+
+`ifndef HTIF_TB_XADR
+`define HTIF_TB_XADR 17                  //  sim RAM = (1 << HTIF_TB_XADR) bytes
 `endif
 
 module clk_gen;
@@ -19,9 +23,9 @@ endmodule
 
 module htif_tb (input wire clk);
 
-    localparam  RAM_BYTES   = 1 << `RAM_XADR;
+    localparam  RAM_BYTES   = 1 << `HTIF_TB_XADR;
     localparam  RAM_WORDS   = RAM_BYTES / 8;
-    localparam  RAM_IDX_HI  = `RAM_XADR - 1;
+    localparam  RAM_IDX_HI  = `HTIF_TB_XADR - 1;
 
     reg [63:0]  ram [0:RAM_WORDS-1];
 

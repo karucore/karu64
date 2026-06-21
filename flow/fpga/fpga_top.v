@@ -5,7 +5,7 @@
 //	single clock and an active-high reset; the board wrapper (e.g.
 //	vcu118_top.v) supplies the clock/reset and the serial pins.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module fpga_top #(

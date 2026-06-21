@@ -13,7 +13,7 @@
 //  cycle change. Gated behind KARU_ICACHE in karu64.v so the no-cache build is
 //  byte-identical for A/B.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module karu_icache #(

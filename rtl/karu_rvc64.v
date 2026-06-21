@@ -7,9 +7,9 @@
 //  0100111). Note RV64C does NOT have c.flw/c.fsw -- those encodings
 //  are reused for c.ld/c.sd in RV64 (RV32C only).
 
-`include    "config.vh"
+`include    "karu_ext.vh"
 
-`ifdef  CORE_COMPRESSED
+`ifdef  KARU_EN_C
 
 module karu_rvc64(
     input   wire [15:0] c,

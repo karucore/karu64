@@ -7,7 +7,7 @@
 //	on hardware vcu118_ddr_top swaps that for the MIG user-AXI slave. CLINT,
 //	PLIC and the NS16550 live inside the xbar as on-chip MMIO siblings.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module fpga_ddr_top #(

@@ -21,7 +21,7 @@
 //  non-cacheable). `xlate()` is the identity Sv39/Sv48 hook, shared by all
 //  clients.
 
-`include "config.vh"
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 module karu_mem #(

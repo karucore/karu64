@@ -1,7 +1,7 @@
 //  karu_cfg.vh
 //  Centralised resolution of the M / F / D mul/div cycle-count flags.
 //
-//  User-visible flags (set with -D on the build line or in config.vh):
+//  User-visible flags (set with -D on the build line or in karu_ext.vh):
 //
 //    Master multiplier cycle count (applies to M, F, D unless per-unit
 //    overrides are set):
