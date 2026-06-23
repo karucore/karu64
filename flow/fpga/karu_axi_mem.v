@@ -151,6 +151,11 @@ module karu_axi_mem #(
 	wire			clint_mtip;
 	wire			clint_msip;
 
+	//	dmem_r_addr is latched in the dmem-read FSM far below, but the CLINT
+	//	read port consumes it here -- hoist the decl so a single-pass front-end
+	//	(Genus + default_nettype none) does not treat the port as an implicit net.
+	reg [31:0]		dmem_r_addr;	//	full latched read address (CLINT/PLIC)
+
 	karu_clint #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_clint (
 		.clk		(clk		),
 		.rst		(rst		),
@@ -247,7 +252,7 @@ module karu_axi_mem #(
 	reg					dmem_r_clint;
 	reg					dmem_r_plic;
 	reg [2:0]			dmem_r_off;		//	byte offset (NS16550 register index)
-	reg [31:0]			dmem_r_addr;	//	full latched read address (CLINT/PLIC)
+	//	dmem_r_addr hoisted up to the CLINT read port (declared above)
 	reg [`AXI_ID_W-1:0]	dmem_r_id;
 	reg [RAM_IDX_HI-3:0] dmem_r_idx;
 	reg [`AXI_LEN_W-1:0] dmem_r_cnt;

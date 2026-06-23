@@ -184,6 +184,13 @@ module karu_ddr_xbar #(
 		.dmem_wstrb(boot_wstrb), .dmem_wdata(boot_wdata)
 	);
 
+	//	mr_* (MMIO target select) and mmio_r_fire are latched / derived in the
+	//	dmem-read front-end far below, but the MMIO device instances here consume
+	//	them -- hoist the decls so a single-pass front-end (Genus + default_nettype
+	//	none) does not see implicit nets in the .re() port expressions.
+	reg				mr_uart, mr_clint, mr_plic, mr_flash, mr_eth;
+	wire			mmio_r_fire;
+
 	karu_ns16550 #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_uart (
 		.clk(clk), .rst(rst),
 		.re(mmio_r_fire && mr_uart), .raddr(mr_addr[2:0]),
@@ -351,7 +358,7 @@ module karu_ddr_xbar #(
 	localparam MR_IDLE = 1'b0, MR_VLD = 1'b1;
 	reg				mr_st;
 	reg [`AXI_ID_W-1:0]	mr_id;
-	reg				mr_uart, mr_clint, mr_plic, mr_flash, mr_eth;
+	//	mr_uart/mr_clint/mr_plic/mr_flash/mr_eth hoisted up to the MMIO instances
 	reg				eth_rd_ready;
 
 	wire dmem_ar_dram = is_dram(dmem_araddr);
@@ -392,7 +399,7 @@ module karu_ddr_xbar #(
 							  mr_plic  ? plic_rdata  :
 							  mr_eth   ? eth_rdata    :
 							  mr_flash ? flash_rdata : 64'b0;
-	wire mmio_r_fire = mmio_rvalid && dmem_rready;
+	assign mmio_r_fire = mmio_rvalid && dmem_rready;
 
 	//	dmem AR ready: DRAM path or MMIO path depending on the address
 	assign dmem_arready = dmem_ar_dram ? dmem_rd_arready :
