@@ -2,8 +2,8 @@
 //	=== board-agnostic karu64 SoC for FPGA targets.
 //
 //	karu64 + on-chip BRAM + NS16550 UART. The whole thing is driven by a
-//	single clock and an active-high reset; the board wrapper (e.g.
-//	vcu118_top.v) supplies the clock/reset and the serial pins.
+//	single clock and an active-high reset; the simulation testbench
+//	(fpga_tb.v) supplies the clock/reset and drives the serial pins.
 
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"

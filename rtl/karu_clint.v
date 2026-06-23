@@ -9,7 +9,7 @@
 //  `mtime` is NOT clocked off the raw core clock: it advances by one every
 //  TICK_DIV core cycles, so it is a *wall-clock-stable* tick whose rate is
 //  independent of the (config-/board-dependent) core frequency. The DTB
-//  `timebase-frequency` must be set to IUTSYS_CLK / TICK_DIV.
+//  `timebase-frequency` must be set to CPU_CLK_HZ / TICK_DIV.
 //
 //  Outputs:
 //    mtip = (mtime >= mtimecmp)   -> core irq (MTIP, mcause 7)
@@ -25,8 +25,9 @@
 `include "karu_ext.vh"
 
 module karu_clint #(
-    //  mtime tick = one increment every TICK_DIV core clocks (~1 MHz default).
-    parameter   TICK_DIV = (`IUTSYS_CLK / 1000000)
+    //  core clock in Hz (100 MHz default; DDR top overrides via MIG/div, e.g. 75 MHz
+    //  at DIV=4). mtime tick = one increment per TICK_DIV = CPU_CLK_HZ/1e6 (~1 MHz).
+    parameter   CPU_CLK_HZ = 100000000
 ) (
     input  wire         clk,
     input  wire         rst,
@@ -47,6 +48,8 @@ module karu_clint #(
     //  CLINT mtime domain (TICK_DIV'd) diverge and timer interrupts never fire.
     output wire [63:0]  mtime_o
 );
+    //  mtime tick divider: one increment every TICK_DIV core clocks (~1 MHz)
+    localparam  TICK_DIV = (CPU_CLK_HZ / 1000000);
     localparam [31:0] CLINT_BASE = 32'h0200_0000;
     localparam [15:0] OFF_MSIP     = 16'h0000;
     localparam [15:0] OFF_MTIMECMP = 16'h4000;

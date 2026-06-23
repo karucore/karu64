@@ -14,7 +14,7 @@
 //  Run: load to DDR + `go 0x80000000` (the interrupt test / DDR board image rig).
 
 #include <stdint.h>
-#include "iutsys_hal.h"
+#include "karu_hal.h"
 
 #define CLINT_MTIME 0x0200BFF8UL
 static inline uint64_t rd_time(void)  { uint64_t t; __asm__ volatile ("csrr %0, time" : "=r"(t)); return t; }

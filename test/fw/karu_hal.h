@@ -1,9 +1,9 @@
-//  iutsys_hal.h
+//  karu_hal.h
 //  2025-05-08  Markku-Juhani O. Saarinen <mjos@iki.fi>
 //  === A minimal hardware abstraction layer
 
-#ifndef _IUTSYS_HAL_H_
-#define _IUTSYS_HAL_H_
+#ifndef _KARU_HAL_H_
+#define _KARU_HAL_H_
 
 
 #include <stdint.h>
@@ -83,5 +83,5 @@ static inline void block_copy_64(volatile void *dst, const volatile void *src)
     block_copy_32( d32,     s32 );
     block_copy_32( d32 + 8, s32 + 8 );
 }
-//  _IUTSYS_HAL_H_
+//  _KARU_HAL_H_
 #endif

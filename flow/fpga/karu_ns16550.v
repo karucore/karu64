@@ -26,7 +26,7 @@
 `include "karu_ext.vh"
 
 module karu_ns16550 #(
-	parameter	BITCLKS = (`IUTSYS_CLK / 115200)
+	parameter	CPU_CLK_HZ = 100000000	//	core clock in Hz (100 MHz default; DDR top overrides via MIG/div, e.g. 75 MHz at DIV=4)
 ) (
 	input  wire			clk,
 	input  wire			rst,
@@ -46,6 +46,9 @@ module karu_ns16550 #(
 	output wire			intr,
 	output wire			thr_ready
 );
+	//	UART bit period in core-clock cycles (115200 baud)
+	localparam	BITCLKS = (CPU_CLK_HZ / 115200);
+
 	//	LSR bits
 	localparam	LSR_DR	 = 8'h01;
 	localparam	LSR_THRE = 8'h20;

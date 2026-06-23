@@ -15,7 +15,7 @@
 //  NOT a test of the external DP83867 PHY (that needs the E3 SGMII front-end).
 
 #include <stdint.h>
-#include "iutsys_hal.h"
+#include "karu_hal.h"
 
 //  ---- LiteEth MAC layout (flow/fpga/eth/liteeth_csr.csv) ----
 #define ETH_MAC   0x11001000UL

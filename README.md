@@ -66,7 +66,7 @@ to `rtl/` modules; the I-cache and DDR crossbar are build-gated paths.
 
 ```text
 ###########################  KARU64 — FIGURE 1: SoC / TOP LEVEL  #############################
-#  sim tops: htif_tb · fpga_tb        hw tops: fpga_top -> vcu118_top / vcu118_ddr_top       #
+#  sim tops: htif_tb · fpga_tb        hw tops: fpga_top -> vcu118_ddr_top                    #
 #  clk/rst : reset_ctrl (POR stretch + 2-FF sync); BUFGCE_DIV or MIG-derived cpu_clk         #
 ##############################################################################################
 

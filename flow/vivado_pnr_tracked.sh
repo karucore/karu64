@@ -2,7 +2,7 @@
 #	vivado_pnr_tracked.sh -- run a Vivado synth+P&R make target with wall-time +
 #	peak-memory instrumentation. Samples the live vivado RSS (+ system used/avail)
 #	every SAMPLE_SEC into a CSV, wraps the build in /usr/bin/time -v, and prints a
-#	summary. Use for the heavy vcu118.bit / vcu118-ddr runs to characterise the
+#	summary. Use for the heavy vcu118-ddr runs to characterise the
 #	resource cost (the "how much time/RAM does full-vector P&R take" question).
 #
 #	Usage:  flow/vivado_pnr_tracked.sh <make target + VAR=val args...>

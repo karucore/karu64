@@ -12,7 +12,7 @@
 //  02:00:00:00:00:2a (or ether broadcast).
 
 #include <stdint.h>
-#include "iutsys_hal.h"
+#include "karu_hal.h"
 
 #define ETH_MAC   0x11001000UL
 #define ETH_BUF   0x11010000UL

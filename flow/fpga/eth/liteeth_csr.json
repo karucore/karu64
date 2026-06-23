@@ -123,7 +123,7 @@
     },
     "constants": {
         "config_platform_name": "platform",
-        "config_clock_frequency": 62500000,
+        "config_clock_frequency": 75000000,
         "config_cpu_type_none": null,
         "config_cpu_variant_standard": null,
         "config_cpu_family": null,

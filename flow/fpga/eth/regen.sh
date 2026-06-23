@@ -41,14 +41,14 @@ clone_at() {	#	repo url, dir, ref
 fix_vivado_tcl() {	#	tcl path, output basename
 	local tcl="$1" base="$2"
 	perl -0pi \
-		-e 's/# Create Project\n/# Create Project\n\nsource [file join [file dirname [file normalize [info script]]] .. vivado_paths.tcl]\ncd $::karu_build_dir\n\n/' \
-		-e "s|create_project -force -name liteeth_core -part[^\\n]*|create_project -force -name ${base} -part $PART|" \
-		-e "s|read_verilog \\{[^\\n]*liteeth_core\\.v\\}|read_verilog [file join [file dirname [file normalize [info script]]] ${base}.v]|" \
-		-e "s|read_xdc liteeth_core\\.xdc|read_xdc [file join [file dirname [file normalize [info script]]] ${base}.xdc]|" \
-		-e "s|get_files liteeth_core\\.xdc|get_files [file join [file dirname [file normalize [info script]]] ${base}.xdc]|" \
-		-e "s|-file liteeth_core([A-Za-z0-9_.-]*)|-file [karu_build_path ${base}\$1]|g" \
-		-e "s|write_checkpoint -force liteeth_core([A-Za-z0-9_.-]*)|write_checkpoint -force [karu_build_path ${base}\$1]|g" \
-		-e "s|write_bitstream -force liteeth_core\\.bit\\s*|write_bitstream -force [karu_build_path ${base}.bit]|g" \
+		-e 's/# Create Project\n/# Create Project\n\nsource [file join [file dirname [file normalize [info script]]] .. vivado_paths.tcl]\ncd \$::karu_build_dir\n\n/;' \
+		-e "s|create_project -force -name liteeth_core -part[^\\n]*|create_project -force -name ${base} -part $PART|;" \
+		-e "s|read_verilog \\{[^\\n]*liteeth_core\\.v\\}|read_verilog [file join [file dirname [file normalize [info script]]] ${base}.v]|;" \
+		-e "s|read_xdc liteeth_core\\.xdc|read_xdc [file join [file dirname [file normalize [info script]]] ${base}.xdc]|;" \
+		-e "s|get_files liteeth_core\\.xdc|get_files [file join [file dirname [file normalize [info script]]] ${base}.xdc]|;" \
+		-e "s|-file liteeth_core([A-Za-z0-9_.-]*)|-file [karu_build_path ${base}\$1]|g;" \
+		-e "s|write_checkpoint -force liteeth_core([A-Za-z0-9_.-]*)|write_checkpoint -force [karu_build_path ${base}\$1]|g;" \
+		-e "s|write_bitstream -force liteeth_core\\.bit[ \t]*|write_bitstream -force [karu_build_path ${base}.bit]|g;" \
 		"$tcl"
 }
 
@@ -81,7 +81,7 @@ echo "== gen config: $YML_CFG${OUTBASE:+  (output basename: $OUTBASE)}"
 
 if [ -n "$OUTBASE" ]; then
 	cp "$TMP/liteeth_core.v"   "$HERE/$OUTBASE.v"
-	python3 "$HERE/../../flow/eth_mdio_guard.py" "$HERE/$OUTBASE.v"
+	python3 "$HERE/../../eth_mdio_guard.py" "$HERE/$OUTBASE.v"
 	cp "$TMP/csr.csv"          "$HERE/${OUTBASE}_csr.csv"
 	cp "$TMP/csr.json"         "$HERE/${OUTBASE}_csr.json"
 	cp "$TMP/liteeth_core.xdc" "$HERE/$OUTBASE.xdc"
@@ -91,7 +91,7 @@ if [ -n "$OUTBASE" ]; then
 	grep -E '^csr_base|^memory_region' "$HERE/${OUTBASE}_csr.csv"
 else
 	cp "$TMP/liteeth_core.v"   "$HERE/liteeth_core.v"
-	python3 "$HERE/../../flow/eth_mdio_guard.py" "$HERE/liteeth_core.v"
+	python3 "$HERE/../../eth_mdio_guard.py" "$HERE/liteeth_core.v"
 	cp "$TMP/csr.csv"          "$HERE/liteeth_csr.csv"
 	cp "$TMP/csr.json"         "$HERE/liteeth_csr.json"
 	cp "$TMP/liteeth_core.xdc" "$HERE/liteeth_core.xdc"

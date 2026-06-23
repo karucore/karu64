@@ -41,12 +41,6 @@
 `timescale  1 ns / 1 ps
 `default_nettype none
 
-`define     IUTSYS_CLK  62500000        //  core clock = CLK_125MHZ / 2 = 62.5 MHz (16 ns).
-                                            //  vcu118_top divides the 125 MHz LVDS input by 2
-                                            //  (BUFGCE_DIV). Per-top UART BITCLKS + the 1 s
-                                            //  heartbeat track this. (8 ns/125 MHz did not close
-                                            //  timing for IMAFDC: post-route WNS -2.35 ns.)
-
 //  --- cascade the opt-outs downward (V > D > F) ---
 `ifdef KARU_NO_F
     `ifndef KARU_NO_D

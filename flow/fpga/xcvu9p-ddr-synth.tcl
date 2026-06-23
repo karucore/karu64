@@ -110,10 +110,9 @@ foreach fn [glob -nocomplain -type f [file join $::karu_repo_dir rtl zvk *.v]] {
 	read_verilog $fn
 }
 
-#	FPGA RTL (flow/fpga/) minus simulation-only testbenches and the non-DDR board top.
+#	FPGA RTL (flow/fpga/) minus simulation-only testbenches.
 foreach fn [glob -type f [file join $::karu_repo_dir flow fpga *.v]] {
 	if {[string match "*_tb.v"         $fn]} { continue }
-	if {[string match "*vcu118_top.v"  $fn]} { continue }
 	read_verilog $fn
 }
 #	LiteEth hardware MAC wrapper. Keep sim-only DPI/checker primitive shims out of

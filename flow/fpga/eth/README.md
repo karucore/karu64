@@ -35,7 +35,7 @@ liteeth `456c059`. The generation is `--no-compile` (verilog + CSR export only).
 - `phy: LiteEthPHYMII` — a stock, vendor-neutral PHY. In sim its MII pads are
   looped TX→RX by `eth_mii_loopback.v`; on hardware (E3) this PHY is replaced by
   the Xilinx PCS/PMA + DP83867 SGMII front-end.
-- `endianness: big`, `csr_data_width: 32`, 2 rx / 2 tx slots, slot size 2048.
+- `endianness: little`, `csr_data_width: 32`, 2 rx / 2 tx slots, slot size 2048.
 
 ## Address map (relocated into karu64's eth MMIO window `0x1100_0000`)
 

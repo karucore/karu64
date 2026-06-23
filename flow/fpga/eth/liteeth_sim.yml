@@ -7,8 +7,13 @@
 #   single is_eth() decode in the xbar covers CSRs + slot SRAM.
 phy        : LiteEthPHYMII
 vendor     : xilinx
+# device/toolchain let the LiteX XilinxPlatform fill the -part on the generated
+# synth_design line in the standalone liteeth_core.tcl; harmless for the MII sim
+# core, and keeps the build script complete + consistent with liteeth_gmii.yml.
+device     : xcvu9p-flga2104-2L-e
+toolchain  : vivado
 core       : wishbone
-clk_freq   : 62.5e6
+clk_freq   : 75e6
 endianness : little
 nrxslots   : 2
 ntxslots   : 2

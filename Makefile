@@ -981,8 +981,8 @@ vrf-bram-core-test bwe-core-test:	$(VERI_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vp
 #	legacy verilator into the environment that shadows the one used for
 #	the sims above). Bring it in first with the `xilinx` shell alias:
 #	    xilinx                 # source $HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh
-#	    make vcu118.bit        # synth + place + route -> _build/vcu118.bit
-#	    make prog_vcu118       # program a connected board over JTAG
+#	    make vcu118-ddr        # synth + place + route -> _build/vcu118_ddr.bit
+#	    make prog_vcu118_ddr   # program a connected board over JTAG
 #
 #	Vivado is always launched from _build so its journals, logs, .Xil state,
 #	generated IP/project state, reports, checkpoints, and bitstreams stay out
@@ -1004,6 +1004,30 @@ CORE_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu
 FPGA_RTL =	flow/fpga/fpga_top.v flow/fpga/karu_axi_mem.v flow/fpga/karu_ns16550.v \
 			rtl/karu_clint.v rtl/karu_plic.v \
 			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v
+
+#	==========================================================
+#	RTL lint -- verilator --lint-only across the vector on/off configs.
+#	`default_nettype none` (rtl/karu_ext.vh) turns any undeclared or
+#	ifdef-excluded net into a hard error, so a signal used in a config whose
+#	declaration is gated out fails fast. Run BOTH: a bug can hide in the
+#	config the sims / -DKARU_NO_V iverilog gate never build (e.g. a karu64
+#	forward-ref that only the vector path exercises).
+#	    make lint  |  make lint-vec (KARU_EN_V)  |  make lint-novec (KARU_NO_V)
+#	==========================================================
+LINT_W =	-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK \
+			-Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY -Wno-CMPCONST -Wno-WIDTHEXPAND \
+			-Wno-WIDTHTRUNC -Wno-DECLFILENAME
+.PHONY: lint lint-vec lint-novec
+lint-vec:
+	@echo ">>> lint: vector core (KARU_EN_V, default)"
+	verilator --lint-only $(VFLAGS) -Iflow/fpga $(LINT_W) --top-module fpga_top \
+		$(FPGA_RTL) $(CORE_RTL)
+lint-novec:
+	@echo ">>> lint: scalar core (KARU_NO_V)"
+	verilator --lint-only $(VFLAGS) -Iflow/fpga $(LINT_W) -DKARU_NO_V --top-module fpga_top \
+		$(FPGA_RTL) $(CORE_RTL)
+lint: lint-novec lint-vec
+	@echo ">>> lint OK: both configs clean"
 
 #	_build/firmware.hex (BRAM image) -- source is FW_HEX (default the NS16550 hello).
 #	Override FW_HEX to bake a different image into the BRAM for synth.
@@ -1481,10 +1505,6 @@ VIVADO_VMEM_KB ?= 72000000
 #	Vivado worker threads: fewer = lower peak RAM (and slower). 8 on a 14-core
 #	host; Vivado scales poorly past 8 and more threads raise peak RAM.
 VIVADO_THREADS ?= 8
-#	Clock-period target override (ns). Empty = use the XDC's 8 ns (125 MHz).
-#	Set e.g. KARU_CLK_PERIOD=12.0 for an ~83 MHz feasibility run.
-KARU_CLK_PERIOD ?=
-
 #	SYNTH_ONLY=1 -> feasibility pass: stop after synth_design (post-synth util +
 #	estimated-route timing + worst paths + .dcp), skip the multi-hour P&R.
 SYNTH_ONLY ?=
@@ -1502,7 +1522,7 @@ KARU_DDR4_CUSTOM_2133 ?=
 #	KARU_REPORT_TAG -> label for the auto-archived reports under
 #	_build/fpga_rpt/ (<tag>__<reportname>). Empty = the tcl falls back to
 #	the design top. Override for a specific config, e.g.
-#	    make vcu118-vec KARU_DEFINES="... KARU_ZVK KARU_KECCAK" \
+#	    make vcu118-ddr KARU_DEFINES="... KARU_ZVK KARU_KECCAK" \
 #	                    KARU_REPORT_TAG=zvk_keccak SYNTH_ONLY=1
 KARU_REPORT_TAG ?=
 VIVADO_REPO_ROOT := $(CURDIR)
@@ -1510,33 +1530,6 @@ VIVADO_BUILD_DIR := $(abspath $(BUILD))
 VIVADO_ENV := KARU_REPO_ROOT="$(VIVADO_REPO_ROOT)" KARU_BUILD_DIR="$(VIVADO_BUILD_DIR)"
 VIVADO_RUN := cd "$(VIVADO_BUILD_DIR)" && $(VIVADO_ENV)
 VIVADO_FPGA_SRC := $(VIVADO_REPO_ROOT)/flow/fpga
-
-.PHONY: vcu118.bit
-vcu118.bit:	$(FIRMWARE_HEX) | $(BUILD)
-	ulimit -v $(VIVADO_VMEM_KB); \
-	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" VIVADO_THREADS="$(VIVADO_THREADS)" \
-		KARU_CLK_PERIOD="$(KARU_CLK_PERIOD)" KARU_SYNTH_ONLY="$(SYNTH_ONLY)" \
-		KARU_PLACE_ONLY="$(PLACE_ONLY)" KARU_FLOORPLAN="$(KARU_FLOORPLAN)" \
-		KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" KARU_REPORT_TAG="$(KARU_REPORT_TAG)" \
-		vivado -mode batch -log vcu118_synth.log -journal vcu118_synth.jou \
-			-source "$(VIVADO_FPGA_SRC)/xcvu9p-synth.tcl"
-
-#	I/O bring-up bitstream: IMAFDC (no vector), fits a 32 GB host.
-vcu118-novec:	$(FIRMWARE_HEX)
-	$(MAKE) vcu118.bit KARU_DEFINES="KARU_NO_V" \
-		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),imafdc_novec)"
-
-#	Full RV64GCV (RVV 1.0; no Keccak). Vector area is held down with the shared
-#	(one-element-at-a-time) iterative mul/div and a 2-barrel gather crossbar --
-#	both shrink the combinational cones that made the all-parallel default
-#	un-synthesizable on the old 32 GB host. Needs the big-host VIVADO_VMEM_KB
-#	default. The all-element-parallel simple-op arith (VLEN=256 -> 32-wide) has
-#	no cycle knob and is what drives the timing-opt pass long, so pair the
-#	feasibility read with SYNTH_DIRECTIVE=RuntimeOptimized:
-#	    xilinx && make vcu118-vec SYNTH_ONLY=1 SYNTH_DIRECTIVE=RuntimeOptimized
-vcu118-vec:	$(FIRMWARE_HEX)
-	$(MAKE) vcu118.bit KARU_DEFINES="KARU_KECCAK" \
-		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),vec_keccak)"
 
 #	Out-of-context (per-module) synthesis for diagnostics. Synthesizes ONE
 #	module standalone -> its area + logic depth + worst paths, in isolation
@@ -1859,16 +1852,6 @@ fp-board-hex fp-board-spike vcu118-fp:
 	@echo "       Algorithm sources are now under $(PQC_TOOLS_DIR); no in-tree board harness remains." >&2
 	@exit 1
 
-#	Program the EXISTING _build/vcu118.bit over JTAG. This deliberately does NOT
-#	depend on the vcu118.bit build rule: a prerequisite would let make decide
-#	the bitstream is "stale" (e.g. _build/firmware.hex got regenerated) and silently
-#	kick off a multi-hour resynth. Build explicitly (make vcu118.bit)
-#	first; this target only flashes whatever _build/vcu118.bit is present.
-.PHONY: prog_vcu118
-prog_vcu118:	| $(BUILD)
-	@test -f "$(VIVADO_BUILD_DIR)/vcu118.bit" || { echo "ERROR: $(VIVADO_BUILD_DIR)/vcu118.bit not found -- build it first (e.g. make vcu118.bit)"; exit 1; }
-	$(VIVADO_RUN) vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/prog_vcu118.tcl"
-
 #	==========================================================
 #	misc
 #	==========================================================
@@ -1879,7 +1862,7 @@ $(BUILD):
 clean:
 	$(RM) -f  hello.elf hello.bin hello.hex karu.log
 	$(RM) -f  hello_uart.elf hello_uart.bin hello_uart.hex firmware.hex vcu118_fuboot.hex
-	$(RM) -f  vcu118.bit vcu118_ddr*.bit vcu118_synth*.log vcu118_ddr*.log
+	$(RM) -f  vcu118_ddr*.bit vcu118_ddr*.log
 	$(RM) -f  vcu118_*.rpt *.dcp
 	$(RM) -f  vivado*.jou vivado*.log *.jou *.pb usage_statistics_webtalk.*
 	$(RM) -f  hs_err_pid*.log *.backup.log

@@ -17,7 +17,7 @@
 
 module karu_axi_mem #(
 	parameter		RAM_XADR = 20,				//	BRAM = 1<<RAM_XADR bytes
-	parameter		BITCLKS	 = (`IUTSYS_CLK / 115200),
+	parameter		CPU_CLK_HZ = 100000000,		//	core clock in Hz (100 MHz; sim default)
 	parameter		HEXFILE	 = "firmware.hex"
 ) (
 	input  wire			clk,
@@ -127,7 +127,7 @@ module karu_axi_mem #(
 	wire			ns_thr_ready;
 
 	karu_ns16550 #(
-		.BITCLKS	(BITCLKS)
+		.CPU_CLK_HZ	(CPU_CLK_HZ)
 	) u_uart (
 		.clk		(clk		),
 		.rst		(rst		),
@@ -151,7 +151,7 @@ module karu_axi_mem #(
 	wire			clint_mtip;
 	wire			clint_msip;
 
-	karu_clint u_clint (
+	karu_clint #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_clint (
 		.clk		(clk		),
 		.rst		(rst		),
 		.raddr		(dmem_r_addr),
@@ -161,7 +161,8 @@ module karu_axi_mem #(
 		.wstrb		(dmem_wstrb	),
 		.wdata		(dmem_wdata	),
 		.mtip		(clint_mtip	),
-		.msip		(clint_msip	)
+		.msip		(clint_msip	),
+		.mtime_o	(			)	//	unused in the BRAM sim path (DDR xbar wires it)
 	);
 
 	//	================= PLIC (0x0c00_0000) =================

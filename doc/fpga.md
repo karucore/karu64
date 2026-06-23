@@ -25,23 +25,23 @@ Bring Vivado in only when needed:
 ```sh
 alias xilinx='source $HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh'
 xilinx
-make vcu118.bit          # synth + place + route -> _build/vcu118.bit
-make prog_vcu118         # program a connected board over JTAG
+make vcu118-ddr          # synth + place + route -> _build/vcu118_ddr.bit
+make prog_vcu118_ddr     # program a connected board over JTAG
 ```
 
 The Makefile launches Vivado from `_build`, so journals, logs, `.Xil`, generated
 IP, project state, reports, checkpoints, and bitstreams stay under `_build`. The
 sim/spike targets must run in a shell where `xilinx` has **not** been sourced.
 
-`make prog_vcu118` deliberately does **not** depend on the build rule — it
-flashes whatever `_build/vcu118.bit` exists (a prerequisite would let make decide
-the bitstream is stale and silently start a multi-hour resynth). Build first,
-then program.
+`make prog_vcu118_ddr` deliberately does **not** depend on the build rule — it
+flashes whatever `_build/vcu118_ddr.bit` exists (a prerequisite would let make
+decide the bitstream is stale and silently start a multi-hour resynth). Build
+first, then program.
 
 For one-off Vivado/JTAG work without changing your shell, `flow/with_vivado.sh
 <cmd>` sources the settings in a subshell only (e.g. `flow/with_vivado.sh make
-prog_vcu118_ddr` to program the DDR4/ROM bit — `make prog_vcu118` is the BRAM
-bit), and `flow/hw_server.sh` start|stop|status manages the JTAG `hw_server`.
+prog_vcu118_ddr` to program the DDR4/ROM bit), and `flow/hw_server.sh`
+start|stop|status manages the JTAG `hw_server`.
 
 ### Driving the console from the host
 
@@ -65,15 +65,13 @@ and skips console typing entirely — preferred when you control the build.
 
 ```
 flow/fpga/
-  vcu118_top.v      board top: 125 MHz LVDS clock (IBUFGDS), conditioned button
-                    reset (reset_ctrl), NS16550 pins on the CP2105 USB-UART, LEDs
   reset_ctrl.v      power-on-reset stretch + 2-FF synchronizer on the async button
-  fpga_top.v        board-agnostic SoC: karu64 + BRAM + NS16550
+  fpga_top.v        board-agnostic SoC: karu64 + BRAM + NS16550. Now the sim top
+                    (driven by fpga_tb.v); the hardware board top is
+                    vcu118_ddr_top.v (DDR4 main memory).
   karu_axi_mem.v    synthesizable AXI4 memory: imem (RO) + dmem (RW, INCR-burst
                     refill + single-beat write-through) from BRAM, 0x10000000 -> UART
   karu_ns16550.v    NS16550-register-compatible UART (wraps uart_tx/uart_rx)
-  vcu118.xdc        pin / clock constraints
-  xcvu9p-synth.tcl  Vivado non-project batch flow -> _build/vcu118.bit
   fpga_tb.v         verilator/iverilog testbench for fpga_top
 ```
 
@@ -158,15 +156,18 @@ instruction-memory latency.
 
 ## Clocking and timing
 
-The core runs off the board's **125 MHz `CLK_125MHZ`** LVDS user clock (bank 64,
-pins AY24/AY23) through `IBUFGDS`, constrained at 8 ns in `vcu118.xdc`. The
-DDR4 builds derive the core `cpu_clk` from the MIG (`KARU_DDR_CPU_DIV`), and
-`IUTSYS_CLK`/`UART_BITCLKS` track the chosen core clock so the console stays at
-115200 baud. (The other board clocks — `E12/D12` 250 MHz DDR4 ref, `G31/F31`
-300 MHz — are `DIFF_SSTL12`, not LVDS, and not used as the core clock.)
+The DDR4 board build derives the core `cpu_clk` from the MIG user clock —
+`ui_clk` ÷ `KARU_DDR_CPU_DIV` (300 MHz / 4 = 75 MHz for the full-vector build),
+through a `BUFGCE_DIV` in `vcu118_ddr_top.v`. That `CPU_CLK_HZ` (75 MHz) threads
+as a parameter into `karu_ddr_xbar` → `karu_ns16550` (UART bit period =
+`CPU_CLK_HZ / 115200`) and `karu_clint` (mtime tick = `CPU_CLK_HZ / 1e6`), so the
+console stays at 115200 baud and the mtime tick at 1 MHz. The clock-consuming
+modules default `CPU_CLK_HZ` to 100 MHz — matching the sim testbench clock and the
+`KARU_DDR_CPU_DIV=3` base build (`make vcu118-ddr`); the deployed full-vector build
+threads 75 MHz down via `DIV=4`.
 
-8 ns is optimistic for this RV64GCV core with combinational mul/div, so two
-things shorten the deep cones:
+Even at the relaxed ~75 MHz core clock (~13.3 ns), this RV64GCV core with
+combinational mul/div has deep cones, so two levers shorten them:
 
 - **Don't leave the multiplies combinational.** Default `KARU_MUL_CYCLES=1`
   writes the 64×64 (`karu_m`) and 53×53 (`karu_fmul_d`) multiplies as a Verilog

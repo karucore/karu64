@@ -656,6 +656,10 @@ module karu64 #(
     end
 // synthesis translate_on
 
+    //  vlsu_* are read by the KARU_EN_V vrf instance below (vlsu_busy) before the
+    //  VLSU block declares them; keep the decl here (default_nettype none).
+    wire        vlsu_req, vlsu_busy, vlsu_done;
+
 `ifdef KARU_EN_V
     //  BRAM-backed VRF via the sequencing adapter (the only VRF since the
     //  2026-06-12 collapse). The adapter freezes karu_varith (vrf_op_stall)
@@ -795,7 +799,6 @@ module karu64 #(
     wire        v_fpsew_ill = (ex_unit == `UNIT_VFPU)
                            && ((v_fp_sew == 3'd0)                           //  e8: never
                             || ((v_fp_sew == 3'd1) && !v_is_zvfhmin));      //  e16: Zvfhmin only
-    wire        vlsu_req, vlsu_busy, vlsu_done;
     //  ---- V2 translation-preflight plumbing (doc/architecture.md) ----
     //  The VLSU translates every access through the shared DMMU before any
     //  side effect; the response wires are assigned at the dmmu block below

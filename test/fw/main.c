@@ -3,7 +3,7 @@
 //  === testing main()
 
 #include <string.h>
-#include "iutsys_hal.h"
+#include "karu_hal.h"
 
 const char main_hello[] =
 "\n[RESET]\n";

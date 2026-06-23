@@ -1,8 +1,8 @@
 //	vcu118_ddr_top.v
 //	=== VCU118 board top with DDR4 (MIG) main memory.  [board-gated scaffolding]
 //
-//	Same SoC as vcu118_top.v, but main memory is the DDR4 SODIMM reached via the
-//	Xilinx DDR4 (MIG) IP instead of on-chip BRAM. Structure:
+//	Same karu64 SoC as the BRAM sim top (fpga_top.v), but main memory is the DDR4
+//	SODIMM reached via the Xilinx DDR4 (MIG) IP instead of on-chip BRAM. Structure:
 //
 //	    karu64 (imem+dmem) -> karu_ddr_xbar -> [64-bit AXI4 @ 75/100 MHz]
 //	        -> axi_clock_converter_0 -> [64-bit AXI4 @ MIG ui_clk]
@@ -93,12 +93,10 @@ module vcu118_ddr_top (
 	localparam [31:0] MIG_UI_CLK_HZ = 32'd300000000;
 `endif
 	localparam [31:0] CPU_CLK_HZ = MIG_UI_CLK_HZ / CPU_CLK_DIV;
-	localparam integer UART_BITCLKS = CPU_CLK_HZ / 115200;
-											// NB: the FPGA console is wired to the CP2105
-											// Standard (SCI) port (/dev/ttyUSB1), max 921600
-											// baud -- the old 2 Mbaud (BITCLKS=50) was
-											// unreadable. Keep <= 921600.
-	localparam integer CLINT_TICK_DIV = CPU_CLK_HZ / 1000000;	// 1 MHz mtime tick
+											// CPU_CLK_HZ threads into karu_ddr_xbar -> karu_ns16550
+											// (UART bit period = CPU_CLK_HZ/115200) and karu_clint
+											// (mtime tick = CPU_CLK_HZ/1e6). Console is the CP2105
+											// SCI port (/dev/ttyUSB1); keep baud <= 921600.
 	wire _unused_params = &{CPU_CLK_HZ[0], 1'b0};
 
 	wire		ui_clk;					//	MIG user clock
@@ -335,8 +333,7 @@ module vcu118_ddr_top (
 	);
 
 	karu_ddr_xbar #(
-		.BITCLKS(UART_BITCLKS),
-		.TICK_DIV(CLINT_TICK_DIV),
+		.CPU_CLK_HZ(CPU_CLK_HZ),
 		.ROM_HEX("vcu118_fuboot.hex")
 	) xbar (
 		.clk(clk), .rst(rst),

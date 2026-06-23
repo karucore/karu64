@@ -187,7 +187,7 @@ module karu_varith (
 
     //  ---- latched request ----
     //  (* max_fanout *) on the broadcast control regs. SEW/op-type fan out to
-    //  every lane: vsew_q drove ~7226 loads in the vcu118-vec post-synth report
+    //  every lane: vsew_q drove ~7226 loads in a full-vector post-synth report
     //  and heads the ~16 ns vsew_q->wdata writeback cone (78% routing). Capping
     //  fanout makes Vivado replicate the driver -> shorter local routes on that
     //  path. Verilog attribute, so verilator ignores it (functionally inert;

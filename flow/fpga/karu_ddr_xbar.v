@@ -26,8 +26,7 @@
 `include "karu_axi_defs.vh"
 
 module karu_ddr_xbar #(
-	parameter		BITCLKS = (`IUTSYS_CLK / 115200),
-	parameter		TICK_DIV = (`IUTSYS_CLK / 1000000),
+	parameter		CPU_CLK_HZ = 100000000,		//	core clock in Hz (100 MHz default; DDR top overrides via MIG/div)
 	parameter		ROM_HEX = "vcu118_fuboot.hex"
 ) (
 	input  wire			clk,
@@ -185,7 +184,7 @@ module karu_ddr_xbar #(
 		.dmem_wstrb(boot_wstrb), .dmem_wdata(boot_wdata)
 	);
 
-	karu_ns16550 #(.BITCLKS(BITCLKS)) u_uart (
+	karu_ns16550 #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_uart (
 		.clk(clk), .rst(rst),
 		.re(mmio_r_fire && mr_uart), .raddr(mr_addr[2:0]),
 		.we(ns_we), .wstrb(dmem_wstrb), .wdata(dmem_wdata), .rdata(ns_rdata),
@@ -193,7 +192,7 @@ module karu_ddr_xbar #(
 		.uart_rts(uart_rts), .uart_cts(uart_cts),
 		.intr(uart_intr), .thr_ready(ns_thr_ready)
 	);
-	karu_clint #(.TICK_DIV(TICK_DIV)) u_clint (
+	karu_clint #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_clint (
 		.clk(clk), .rst(rst),
 		.raddr(mr_addr), .rdata(clint_rdata),
 		.we(clint_we), .waddr(dmem_awaddr), .wstrb(dmem_wstrb), .wdata(dmem_wdata),

@@ -41,9 +41,9 @@ for m in $OOC_MODS; do
 	echo "<<< OOC $m rc=$rc (${dt}s)"
 done
 
-echo ">>> full-core synth-only @ 75 MHz (input 6.667 ns -> core 13.33 ns) ..."
+echo ">>> full-core DDR synth-only @ 75 MHz (MIG ui_clk / KARU_DDR_CPU_DIV=4 = 300/4) ..."
 t0=$SECONDS
-make vcu118.bit KARU_DEFINES="$FEAT_DEFS" KARU_CLK_PERIOD=6.667 \
+make vcu118_ddr.bit KARU_DEFINES="$FEAT_DEFS KARU_DDR_CPU_DIV=4" \
 	SYNTH_ONLY=1 SYNTH_DIRECTIVE="$DIR" VIVADO_VMEM_KB="$VMEM" VIVADO_THREADS="$THREADS" \
 	> "$LOGDIR/full_synth.out" 2>&1
 rc=$?

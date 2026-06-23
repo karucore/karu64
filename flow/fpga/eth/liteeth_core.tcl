@@ -4,6 +4,7 @@
 source [file join [file dirname [file normalize [info script]]] .. vivado_paths.tcl]
 cd $::karu_build_dir
 
+
 create_project -force -name liteeth_core -part xcvu9p-flga2104-2L-e
 set_msg_config -id {Common 17-55} -new_severity {Warning}
 
@@ -30,7 +31,7 @@ set_property PROCESSING_ORDER EARLY [get_files [file join [file dirname [file no
 
 # Synthesis
 
-synth_design -directive default -top liteeth_core -part 
+synth_design -directive default -top liteeth_core -part xcvu9p-flga2104-2L-e
 
 # Synthesis report
 
