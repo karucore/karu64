@@ -163,6 +163,10 @@ module karu_fmul (
     wire sm_busy;
     wire sm_done;
 
+    //  state encodings + pipe depth hoisted to module scope -- Genus rejects
+    //  localparam decls inside generate blocks; used by the g_iter / g_fastp arms.
+    localparam SS_IDLE = 2'd0, SS_LOAD = 2'd1, SS_RUN = 2'd2, SS_FIN = 2'd3;
+    localparam NP = (F_MUL_PIPE < 3) ? 3 : F_MUL_PIPE;  //  register stages, >=3
     generate
     if (F_MUL_CYCLES != 1) begin : g_iter
         //  ------------------------------------------------------------------
@@ -172,7 +176,6 @@ module karu_fmul (
         //  multiplicand to make a (24+K)-bit partial, add to prod_high, then
         //  right-shift the 48-bit window by K.
         //  ------------------------------------------------------------------
-        localparam SS_IDLE = 2'd0, SS_LOAD = 2'd1, SS_RUN = 2'd2, SS_FIN = 2'd3;
         reg [1:0]       sstate;
         reg [4:0]       scnt;
         reg [47:0]      sacc;
@@ -228,7 +231,6 @@ module karu_fmul (
         //  PIPELINED fast 24x24 (FPGA Fmax): operand -> multiply -> round stages.
         //  busy high for the whole fill (single-op semantics) -> transparent to
         //  consumers; feed-forward / per-op-stateless (II=1 stream-capable).
-        localparam NP = (F_MUL_PIPE < 3) ? 3 : F_MUL_PIPE;  //  register stages, >=3
         integer st;
         reg [NP-1:1]      vldp;
         reg [23:0]        r_amf, r_bmf;

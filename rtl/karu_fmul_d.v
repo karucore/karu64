@@ -129,13 +129,16 @@ module karu_fmul_d (
     wire sm_busy;
     wire sm_done;
 
+    //  state encodings + pipe depth hoisted to module scope -- Genus rejects
+    //  localparam decls inside generate blocks; used by the g_iter / g_fastp arms.
+    localparam SS_IDLE = 2'd0, SS_LOAD = 2'd1, SS_RUN = 2'd2, SS_FIN = 2'd3;
+    localparam NP = (D_MUL_PIPE < 3) ? 3 : D_MUL_PIPE;  //  register stages, >=3
     generate
     if (D_MUL_CYCLES != 1) begin : g_iter
         //  Bit-serial mantissa multiply: 53 iters, K=1 bit/cycle -- the BACKUP
         //  multiplier (smallest area). Latched a_q/b_q drive the datapath.
         //  SS_LOAD waits one cycle for a_q/b_q (hence a_mfull/b_mfull) to be
         //  valid before seeding the accumulator.
-        localparam SS_IDLE = 2'd0, SS_LOAD = 2'd1, SS_RUN = 2'd2, SS_FIN = 2'd3;
         reg [1:0]       sstate;
         reg [6:0]       scnt;
         reg [105:0]     sacc;
@@ -194,7 +197,6 @@ module karu_fmul_d (
         //  so this is transparent to every consumer (they wait on `done`). The
         //  datapath is feed-forward / per-op-stateless, so it is also II=1
         //  stream-capable for a future pipelined-issue vector FSM.
-        localparam NP = (D_MUL_PIPE < 3) ? 3 : D_MUL_PIPE;  //  register stages, >=3
         integer st;
         reg [NP-1:1]      vldp;
         reg [52:0]        r_amf, r_bmf;

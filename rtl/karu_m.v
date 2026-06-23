@@ -124,9 +124,11 @@ module karu_m (
     //  ==================================================================
     //  Iterative path + state machine
     //  ==================================================================
+    //  FSM state encodings hoisted to module scope -- Genus rejects localparam
+    //  declarations inside generate blocks; used by the g_iter always below.
+    localparam S_IDLE = 1'b0, S_RUN = 1'b1;
     generate
     if (ANY_ITER) begin : g_iter
-        localparam S_IDLE = 1'b0, S_RUN = 1'b1;
         reg          state;
         reg [6:0]    cnt;                   //  enough for 64
         reg          op_is_div_q, op_is_rem_q, op_is_high_q, op_is_w_q;

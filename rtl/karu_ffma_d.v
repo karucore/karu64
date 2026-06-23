@@ -337,12 +337,14 @@ module karu_ffma_d (
     wire [52:0] sigB53 = sigB63[62:10];
     wire         mul_done;
     wire [127:0] mul_prod;
+    //  FSM state encodings hoisted to module scope -- Genus rejects localparam
+    //  declarations inside generate blocks; used by the g_dfma_iter always below.
+    localparam SS_IDLE = 2'd0, SS_RUN = 2'd1, SS_FIN = 2'd2;
     generate
     if (D_FMA_CYCLES == 1) begin : g_dfma_comb
         assign mul_done = 1'b1;
         assign mul_prod = s1_sig128_0_w;    //  combinational 53x53 (DSP)
     end else begin : g_dfma_iter
-        localparam SS_IDLE = 2'd0, SS_RUN = 2'd1, SS_FIN = 2'd2;
         reg [1:0]   sstate;
         reg [6:0]   scnt;
         reg [105:0] sacc;
