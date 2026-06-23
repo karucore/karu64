@@ -2,7 +2,7 @@
 //	Checker for the *caller side* of the karu_eth bridge -- the linux_tb dmem
 //	front-end that drives the eth window: the AR/AW busy-gate and the multi-cycle
 //	read/write handshake latches (eth_rd_ready, eth_wr_inflight). Complements
-//	flow/fpga/eth/karu_eth_assert.v (which watches the bridge FSM itself): this one
+//	flow/fpga/eth/karu_eth_assert.sv (which watches the bridge FSM itself): this one
 //	watches that the *master* obeys the bridge's single-in-flight contract and
 //	tracks completion correctly. Same passive model + plusargs as the others.
 //

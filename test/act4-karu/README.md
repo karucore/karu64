@@ -73,7 +73,7 @@ out-of-scope, neither a karu64 conformance failure (0 FAIL anywhere):**
    where *every* non-PASS is an honest TRAP of an unimplemented op — 0 FAIL.
 
 The flow needed no new RTL beyond the vector core itself; it did fix a
-false-positive in the `karu_assert.v` livelock guard (keyed off
+false-positive in the `karu_assert.sv` livelock guard (keyed off
 register-writeback retire, which a long arch-test NOP sled never triggers —
 now keyed off forward progress) and gave the per-element VLSU its own
 `VLSU_STALL_LIMIT` so long indexed/segment ops aren't misflagged as hangs.

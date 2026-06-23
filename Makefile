@@ -169,8 +169,8 @@ HTIF_SRC =	rtl/htif_tb.v \
 			rtl/karu_ffma.v \
 			rtl/karu_fmul_d.v rtl/karu_fadd_d.v rtl/karu_fdiv_d.v \
 			rtl/karu_fsqrt_d.v rtl/karu_fcvt_d.v rtl/karu_fcvt_hs.v rtl/karu_fzfa.v rtl/karu_ffma_d.v \
-			rtl/karu_assert.v rtl/karu_vrf_assert.v
-HTIF_IVL_FLAGS ?=	$(VFLAGS) -DKARU_NO_V
+			rtl/karu_assert.sv rtl/karu_vrf_assert.sv
+HTIF_IVL_FLAGS ?=	-g2012 $(VFLAGS) -DKARU_NO_V
 
 ZVK_FLAGS ?= -DKARU_ZVK
 ZVK_RTL =	rtl/zvk/sboxes.v \
@@ -955,7 +955,7 @@ vfp-test:	$(VERI_FP_BIN) $(BUILD)/vfp_subj.hex
 .PHONY: vrf-bram-test
 vrf-bram-test:	| $(BUILD)
 	iverilog -g2012 -Irtl -o $(BUILD)/vrf_bram_tb \
-		test/karu_vrf_bram_tb.v rtl/karu_vrf_bram.v rtl/karu_vrf_assert.v
+		test/karu_vrf_bram_tb.v rtl/karu_vrf_bram.v rtl/karu_vrf_assert.sv
 	$(BUILD)/vrf_bram_tb
 
 #	---- macro-VRF regression aliases ----
@@ -1121,7 +1121,7 @@ ddr-irq-test:	$(DDR_SIM_BIN) $(BUILD)/irq_test.hex $(BUILD)/irq_rx.bin
 #	==========================================================
 #	Linux boot sim: OpenSBI -> Linux from the karudeb RV64IMAC flat image.
 #	==========================================================
-#	Self-contained karu64 harness (flow/fpga/linux_tb.v, ported from ../ecp5karu):
+#	Self-contained karu64 harness (flow/fpga/linux_tb.sv, ported from ../ecp5karu):
 #	behavioral boot ROM @0x1000 (sets a1=FDT, jumps 0x80000000), CLINT
 #	(mtime=cycle counter), karu_plic, NS16550 console (TX -> stdout, RX <- stdin
 #	via the linux_tb.cpp DPI getchar -- interactive, NO HTIF), 32 MiB RAM loaded
@@ -1141,8 +1141,8 @@ LINUX_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/kar
 			rtl/karu_plic.v \
 			flow/fpga/eth/karu_eth.v flow/fpga/eth/liteeth_core.v \
 			flow/fpga/eth/eth_mii_loopback.v flow/fpga/eth/eth_sim_prims.v \
-			flow/fpga/eth/karu_eth_assert.v flow/fpga/eth/karu_eth_caller_assert.v \
-			rtl/karu_plic_assert.v
+			flow/fpga/eth/karu_eth_assert.sv flow/fpga/eth/karu_eth_caller_assert.v \
+			rtl/karu_plic_assert.sv
 
 LINUX_V_RTL =	$(LINUX_RTL) \
 			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
@@ -1284,7 +1284,7 @@ uboot-sim:	$(LINUX_BIN) $(UBOOT_FLAT)
 
 #	--- U-Boot net bring-up (E2c/E2d): DPI host packet backend ---
 #	Same harness as uboot-sim, but KARU_ETH_DPI swaps the MII loopback for the
-#	host packet backend (flow/fpga/eth/eth_mii_dpi.v + flow/eth_backend.cpp), so
+#	host packet backend (flow/fpga/eth/eth_mii_dpi.sv + flow/eth_backend.cpp), so
 #	U-Boot's arp/ping/tftp have a responder. Separate binary ($(BUILD)/Vuboot).
 #	TFTP_DIR holds the files served to `tftpboot`. The in-process backend is
 #	TFTP/ARP/ICMP only; NFS-root Linux needs ETH_TAP=<dev> to reach a host NFS
@@ -1299,7 +1299,7 @@ KARUDEB_DTB_VARIANT ?= sim
 KARUDEB_TFTP_DIR ?= $(BUILD)/tftp-v
 VLINUX_MAX_CYCLES ?= 1500000000
 
-$(UBOOT_NET_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp Makefile
+$(UBOOT_NET_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.sv flow/linux_tb.cpp flow/eth_backend.cpp Makefile
 	@mkdir -p $(UBOOT_NET_DIR)
 	verilator $(VFLAGS) -Mdir $(UBOOT_NET_DIR) --cc --exe \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1307,14 +1307,14 @@ $(UBOOT_NET_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/fpga/eth/e
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp
+		flow/fpga/linux_tb.sv $(LINUX_RTL) flow/fpga/eth/eth_mii_dpi.sv flow/linux_tb.cpp flow/eth_backend.cpp
 
 #	depend on the C++ too: a backend-only change doesn't rewrite the .mk (verilator
 #	sees no RTL change), so list it here to force the sub-make to recompile/relink.
 $(UBOOT_NET_BIN): $(UBOOT_NET_DIR)/Vlinux_tb.mk flow/linux_tb.cpp flow/eth_backend.cpp
 	$(MAKE) -C $(UBOOT_NET_DIR) -f Vlinux_tb.mk
 
-$(UBOOT_NET_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp Makefile
+$(UBOOT_NET_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.sv flow/linux_tb.cpp flow/eth_backend.cpp Makefile
 	@mkdir -p $(UBOOT_NET_V_DIR)
 	verilator $(VFLAGS) -Mdir $(UBOOT_NET_V_DIR) --cc --exe \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1322,7 +1322,7 @@ $(UBOOT_NET_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/fpga/e
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.v flow/linux_tb.cpp flow/eth_backend.cpp
+		flow/fpga/linux_tb.sv $(LINUX_V_RTL) flow/fpga/eth/eth_mii_dpi.sv flow/linux_tb.cpp flow/eth_backend.cpp
 
 $(UBOOT_NET_V_BIN): $(UBOOT_NET_V_DIR)/Vlinux_tb.mk flow/linux_tb.cpp flow/eth_backend.cpp
 	$(MAKE) -C $(UBOOT_NET_V_DIR) -f Vlinux_tb.mk
@@ -1372,7 +1372,7 @@ $(LINUX_V_IMG): $(OPENSBI_FW) $(KARUDEB_VK) | $(BUILD)
 	cp $(OPENSBI_FW) $@
 	dd if=$(KARUDEB_VK) of=$@ bs=4096 seek=512 conv=notrunc status=none
 
-$(LINUX_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/linux_tb.cpp Makefile
+$(LINUX_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_V_RTL) flow/linux_tb.cpp Makefile
 	@mkdir -p $(LINUX_V_DIR)
 	verilator $(VFLAGS) -Mdir $(LINUX_V_DIR) --cc --exe \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1380,7 +1380,7 @@ $(LINUX_V_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/linux_tb.c
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_V_RTL) flow/linux_tb.cpp
+		flow/fpga/linux_tb.sv $(LINUX_V_RTL) flow/linux_tb.cpp
 
 $(LINUX_V_BIN): $(LINUX_V_DIR)/Vlinux_tb.mk flow/linux_tb.cpp
 	$(MAKE) -C $(LINUX_V_DIR) -f Vlinux_tb.mk
@@ -1418,7 +1418,7 @@ $(LINUX_BIN): $(LINUX_DIR)/Vlinux_tb.mk
 $(LINUX_ASSERT_BIN): $(LINUX_ASSERT_DIR)/Vlinux_tb.mk
 	$(MAKE) -C $(LINUX_ASSERT_DIR) -f Vlinux_tb.mk
 
-$(LINUX_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp Makefile
+$(LINUX_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_RTL) flow/linux_tb.cpp Makefile
 	@mkdir -p $(LINUX_DIR)
 	verilator $(VFLAGS) -Mdir $(LINUX_DIR) --cc --exe \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1426,9 +1426,9 @@ $(LINUX_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp M
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp
+		flow/fpga/linux_tb.sv $(LINUX_RTL) flow/linux_tb.cpp
 
-$(LINUX_ASSERT_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) rtl/karu_assert.v flow/linux_tb.cpp Makefile
+$(LINUX_ASSERT_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_RTL) rtl/karu_assert.sv flow/linux_tb.cpp Makefile
 	@mkdir -p $(LINUX_ASSERT_DIR)
 	verilator $(VFLAGS) -Mdir $(LINUX_ASSERT_DIR) --cc --exe \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1436,7 +1436,7 @@ $(LINUX_ASSERT_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) rtl/karu_ass
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_RTL) rtl/karu_assert.v flow/linux_tb.cpp
+		flow/fpga/linux_tb.sv $(LINUX_RTL) rtl/karu_assert.sv flow/linux_tb.cpp
 
 #	== checkpoint/restore + windowed-VCD build of the same bench ==
 #	Built --savable --trace with -DLINUX_TRACE in the harness. Boot ONCE to a
@@ -1460,7 +1460,7 @@ linux-trace:	$(LINUX_TRACE_BIN)
 $(LINUX_TRACE_BIN): $(LINUX_TRACE_DIR)/Vlinux_tb.mk
 	$(MAKE) -C $(LINUX_TRACE_DIR) -f Vlinux_tb.mk
 
-$(LINUX_TRACE_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp Makefile
+$(LINUX_TRACE_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.sv $(LINUX_RTL) flow/linux_tb.cpp Makefile
 	@mkdir -p $(LINUX_TRACE_DIR)
 	verilator $(VFLAGS) -Mdir $(LINUX_TRACE_DIR) --cc --exe --savable --trace \
 		--threads $(LINUX_THREADS) -CFLAGS "$(LINUX_VL_OPT)" \
@@ -1469,7 +1469,7 @@ $(LINUX_TRACE_DIR)/Vlinux_tb.mk: flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
-		flow/fpga/linux_tb.v $(LINUX_RTL) flow/linux_tb.cpp
+		flow/fpga/linux_tb.sv $(LINUX_RTL) flow/linux_tb.cpp
 
 #	KARU_DEFINES (e.g. KARU_NO_F for the IMAC bring-up core) are forwarded as
 #	verilator -D flags so the sim matches the synthesized ISA config. Switching

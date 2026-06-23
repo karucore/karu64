@@ -466,7 +466,7 @@ module htif_tb (input wire clk);
     //  Wired via hierarchical references into `cpu`; iverilog lacks
     //  `bind`, so this is the portable attachment for both sims. Disable
     //  at runtime with +no_assert; report-without-stopping with
-    //  +no_assert_stop. See rtl/karu_assert.v.
+    //  +no_assert_stop. See rtl/karu_assert.sv.
 `ifndef KARU_NO_ASSERT
     karu_assert u_kassert (
         .clk            (clk),

@@ -1,4 +1,4 @@
-//	karu_hostmux_assert.v
+//	karu_hostmux_assert.sv
 //	Bindable checker for the vcu118_ddr_top host/CPU AXI mux. The mux select
 //	(host_cpu_hold/use_host_axi) is safe to change only when no selected-side
 //	transaction is visible or outstanding.

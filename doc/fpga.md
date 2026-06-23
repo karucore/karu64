@@ -210,7 +210,7 @@ fit a 32 GB box; the full-vector build wants more (≈84 GB box, 8 threads).
 - **In simulation:** OpenSBI → Linux boots to a BusyBox/Debian shell in
   Verilator (`make linux-sim` / `make linux-v-sim` / `make linux-v-irfs-sim`),
   matching spike on the identical image. The Linux harness can bind
-  `rtl/karu_assert.v` into the core for frontend/MMU regression checking.
+  `rtl/karu_assert.sv` into the core for frontend/MMU regression checking.
 
 The Linux/rootfs/DTB/kernel artifacts are produced by the companion `../karudeb`
 repository.

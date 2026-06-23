@@ -1,12 +1,12 @@
-//  karu_plic_assert.v
+//  karu_plic_assert.sv
 //  Signalling checker for the two-source karu_plic (UART = id 1, eth = id 2),
-//  same passive model as rtl/karu_assert.v / flow/fpga/eth/karu_eth_assert.v. It
+//  same passive model as rtl/karu_assert.sv / flow/fpga/eth/karu_eth_assert.sv. It
 //  re-derives each context's "presentable" condition from the raw
 //  pending/enable/priority/threshold state and cross-checks the PLIC's claim
 //  and irq outputs against it -- so it catches a claim/irq/arbitration bug
 //  rather than just re-stating the implementation.
 //
-//  Sim path: instantiated by flow/fpga/linux_tb.v with hierarchical refs into the
+//  Sim path: instantiated by flow/fpga/linux_tb.sv with hierarchical refs into the
 //  karu_plic instance. Formal path: KARU_PLIC_ASSERT_BIND for `bind karu_plic`,
 //  KARU_PLIC_ASSERT_SVA for the assert-property form. Disable with the shared
 //  +no_assert / +no_assert_stop plusargs.

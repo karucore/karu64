@@ -268,8 +268,6 @@ module karu_vlsu #(
     wire [51:0] pgA      = g0abs[63:12];
     wire [63:0] g1va     = g0abs + 64'd16;
     wire        need_hi  = straddle && (g1va[63:12] != pgA);
-    //  post-translate destination for the current pelem element
-    wire [5:0]  pe_run   = pe_pass1 ? S_PE_NEXT : (st_q ? S_PE_WR0 : S_PE_RD0);
     //  fault-only-first trim geometry (contiguous): elements wholly below
     //  the faulting second page survive; 0 survivors = element-0 fault.
     wire [63:0] pg1_base = {va_first[63:12] + 52'd1, 12'b0};
@@ -312,6 +310,9 @@ module karu_vlsu #(
                S_PE_GO=6'd12, S_PE_RD0=6'd13, S_PE_RD0W=6'd14, S_PE_RD1=6'd15,
                S_PE_RD1W=6'd16, S_PE_LDB=6'd17, S_PE_WR0=6'd18, S_PE_WR0W=6'd19,
                S_PE_WR1=6'd20, S_PE_WR1W=6'd21, S_PE_NEXT=6'd22, S_PE_WB=6'd23;
+    //  post-translate destination for the current pelem element (derived from
+    //  the S_PE_* states above; moved below the enum so it follows its decls).
+    wire [5:0]  pe_run   = pe_pass1 ? S_PE_NEXT : (st_q ? S_PE_WR0 : S_PE_RD0);
     //  Extra +1 wait states: the BRAM VRF granule read is REGISTERED (data one
     //  cycle later than the combinational flop VRF), so each VRF-read issue
     //  state needs one bubble before its capture state. See doc/architecture.md.

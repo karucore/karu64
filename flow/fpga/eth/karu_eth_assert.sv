@@ -1,6 +1,6 @@
-//	karu_eth_assert.v
+//	karu_eth_assert.sv
 //	State-transition / signalling checker for the karu_eth <-> LiteEth wishbone
-//	bridge (flow/fpga/eth/karu_eth.v). Passive, same model as rtl/karu_assert.v: it
+//	bridge (flow/fpga/eth/karu_eth.v). Passive, same model as rtl/karu_assert.sv: it
 //	observes the bridge FSM + its wishbone master + the req/busy handshake and
 //	flags any violation of the contracts the bridge is built on. No data-path
 //	semantics (it never checks "the frame round-trips" -- that's make eth-sim).
@@ -14,7 +14,7 @@
 //	    S_W0->S_W1 directly, so a regression that re-introduced the stale-ack
 //	    back-to-back bug is caught structurally.
 //
-//	Sim path: instantiated by flow/fpga/linux_tb.v with hierarchical refs into the
+//	Sim path: instantiated by flow/fpga/linux_tb.sv with hierarchical refs into the
 //	karu_eth instance (iverilog 14 has no `bind`). Formal path: define
 //	KARU_ETH_ASSERT_BIND for the `bind karu_eth ...` at the bottom, and
 //	KARU_ETH_ASSERT_SVA for the `assert property` form. Disable at runtime with
@@ -221,7 +221,7 @@ endmodule
 
 //	---------------------------------------------------------------------
 //	Formal-flow attachment (bind to the bridge). iverilog has no `bind`, so the
-//	sim path instantiates this from flow/fpga/linux_tb.v with hierarchical ports.
+//	sim path instantiates this from flow/fpga/linux_tb.sv with hierarchical ports.
 //	---------------------------------------------------------------------
 `ifdef KARU_ETH_ASSERT_BIND
 bind karu_eth karu_eth_assert u_karu_eth_assert (

@@ -660,6 +660,13 @@ module karu64 #(
     //  VLSU block declares them; keep the decl here (default_nettype none).
     wire        vlsu_req, vlsu_busy, vlsu_done;
 
+    //  issue_v{keccak,crypto}_mode are read by the karu_varith instance below
+    //  (.is_keccak / .is_vcrypto, ~line 882) before their assigns further down;
+    //  hoist the decl so a strict front-end (Genus + default_nettype none) does
+    //  not treat the forward port connection as an implicit net. Same reason as
+    //  the vlsu_* hoist above; the drivers stay at unconditional module scope.
+    wire        issue_vkeccak_mode, issue_vcrypto_mode;
+
 `ifdef KARU_EN_V
     //  BRAM-backed VRF via the sequencing adapter (the only VRF since the
     //  2026-06-12 collapse). The adapter freezes karu_varith (vrf_op_stall)
@@ -1582,8 +1589,8 @@ module karu64 #(
     wire v_resv_trap   = issuing && v_resv_ill && !vs_off_ill;
     wire v_fpsew_trap  = issuing && v_fpsew_ill && !vs_off_ill;
     wire issue_vcrypto_trap = issuing && vcrypto_sew_illegal && !v_vstart_ill && !v_resv_ill && !vs_off_ill;
-    wire issue_vkeccak_mode = issuing && ex_unit == `UNIT_VKECCAK && !v_vstart_ill && !vs_off_ill;
-    wire issue_vcrypto_mode = issuing && ex_unit == `UNIT_VCRYPTO &&
+    assign issue_vkeccak_mode = issuing && ex_unit == `UNIT_VKECCAK && !v_vstart_ill && !vs_off_ill;
+    assign issue_vcrypto_mode = issuing && ex_unit == `UNIT_VCRYPTO &&
                               !vcrypto_sew_illegal && !v_vstart_ill && !vs_off_ill;
     wire issue_varith = issuing && !v_vstart_ill && !v_resv_ill && !vs_off_ill && !v_fpsew_ill &&
                                    (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU

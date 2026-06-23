@@ -1,4 +1,4 @@
-//	eth_mii_dpi.v
+//	eth_mii_dpi.sv
 //	Simulation-only MII <-> host packet backend for the generated liteeth_core
 //	(Ethernet phase E2c). Drop-in replacement for eth_mii_loopback: same ports,
 //	but instead of echoing TX->RX it hands each transmitted MII frame to a C

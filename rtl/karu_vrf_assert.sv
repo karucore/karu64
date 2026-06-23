@@ -1,8 +1,8 @@
-//  karu_vrf_assert.v
+//  karu_vrf_assert.sv
 //  Passive protocol checker for the BRAM-backed macro-VRF.
 //  See doc/architecture.md for the architecture this enforces.
 //
-//  Like karu_assert.v this is a *passive* checker: it observes the two
+//  Like karu_assert.sv this is a *passive* checker: it observes the two
 //  BRAM ports + the v0 flop shadow and flags any violation of the VRF
 //  access contract. It carries NO instruction semantics -- only the
 //  structural/protocol invariants of the dual-port-BRAM register file:

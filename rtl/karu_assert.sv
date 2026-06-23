@@ -1,4 +1,4 @@
-//  karu_assert.v
+//  karu_assert.sv
 //  Architectural invariant / hang-guard checker for karu64.
 //
 //  This is a *passive* checker: it observes the core's internal state

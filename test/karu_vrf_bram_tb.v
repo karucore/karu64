@@ -7,7 +7,7 @@
 //	with a FAIL line. Clean run prints "VRF-BRAM TB PASS".
 //
 //	Run:  iverilog -g2012 -Irtl -o /tmp/vrftb test/karu_vrf_bram_tb.v \
-//	          rtl/karu_vrf_bram.v rtl/karu_vrf_assert.v && /tmp/vrftb
+//	          rtl/karu_vrf_bram.v rtl/karu_vrf_assert.sv && /tmp/vrftb
 
 `include "karu_vcfg.vh"
 `timescale 1ns/1ps

@@ -45,7 +45,7 @@ holds `busy` from `req` until its `done` pulse, and nothing else issues
 meanwhile. Single-cycle units (ALU, bit-manip, BRU, CSR, vset*) retire in their
 issue cycle. The structural contracts this relies on (at most one FU active per
 cycle, one writeback port per cycle, etc.) are checked continuously by the
-passive assertion library `rtl/karu_assert.v` (see "Invariants" below).
+passive assertion library `rtl/karu_assert.sv` (see "Invariants" below).
 
 ### Functional-unit handshake
 
@@ -256,7 +256,7 @@ when off) counter/state extensions: Smcntrpmf, Sscofpmf, and Smstateen/Ssstateen
 The RVA23-*optional* vector extensions full Zvfh, full Zvbb, and Zvbc are
 deliberately not implemented (optional → conformant).
 
-## Invariants and hang guards (`rtl/karu_assert.v`)
+## Invariants and hang guards (`rtl/karu_assert.sv`)
 
 `karu_assert` is a passive checker of the core's architectural state and
 signaling (not instruction semantics — that is what riscv-tests and TestFloat

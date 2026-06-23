@@ -1,5 +1,5 @@
 //	eth_backend.c
-//	Host-side sim packet backend for flow/fpga/eth/eth_mii_dpi.v (Ethernet phase E2c).
+//	Host-side sim packet backend for flow/fpga/eth/eth_mii_dpi.sv (Ethernet phase E2c).
 //	The DPI bridge hands us each MII frame karu64/U-Boot transmits and clocks our
 //	replies back in, so U-Boot's net stack has something to talk to: ARP, ICMP
 //	echo (ping), and a TFTP read-server (tftpboot). Self-contained -- no host TAP

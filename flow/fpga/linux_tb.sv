@@ -1,4 +1,4 @@
-//	linux_tb.v
+//	linux_tb.sv
 //	Direct karu64 simulation harness for the karudeb flat Linux bundle.
 //
 //	Memory map:
@@ -284,7 +284,7 @@ module linux_tb (
 	end
 
 	//	Passive checker for the karu_eth bridge FSM + wishbone/req-busy signalling
-	//	(flow/fpga/eth/karu_eth_assert.v). Hierarchical refs reach the bridge internals
+	//	(flow/fpga/eth/karu_eth_assert.sv). Hierarchical refs reach the bridge internals
 	//	(iverilog 14 has no `bind`). Disable with +no_assert / +no_assert_stop.
 	karu_eth_assert u_eth_assert (
 		.clk(clk), .rst(rst),

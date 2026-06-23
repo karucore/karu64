@@ -1,4 +1,4 @@
-//	linux_tb.cpp -- Verilator main for flow/fpga/linux_tb.v (karu64 Linux boot).
+//	linux_tb.cpp -- Verilator main for flow/fpga/linux_tb.sv (karu64 Linux boot).
 //
 //	Two build flavours of the same file:
 //	  - default (`make linux-sim`): plain clock-toggle loop, interactive UART.

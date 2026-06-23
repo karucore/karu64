@@ -56,9 +56,9 @@ foreach pattern [list ../../rtl/karu_*.v ../../rtl/zvk/*.v] {
 		set base [file tail $file]
 		if {$base in {
 			htif_tb.v
-			karu_assert.v
-			karu_vrf_assert.v
-			karu_plic_assert.v
+			karu_assert.sv
+			karu_vrf_assert.sv
+			karu_plic_assert.sv
 			karu_clint.v
 			karu_plic.v
 		}} {
