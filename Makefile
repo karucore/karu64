@@ -420,10 +420,10 @@ vcwb-test:	$(VERI_CWB_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vfp_subj.hex \
 		$(VERI_CWB_BIN) +hex=$(BUILD)/$${s}_subj.hex +tohost=8000 +max_cycles=4000000 || exit 1; \
 	done
 
-#	---- permute-buffers-in-LUTRAM build (KARU_V_PERM_RAM) + directed validation ----
-#	KARU_V_PERM_RAM moves the VPERM pbuf/ibuf into distributed RAM (deletes ~4096 flops +
-#	the two GBUF barrel shifters) and serializes the window to 1 elem/cycle -- an area /
-#	congestion-relief lever for the full-vector bit. Opt-in; own binary (Vhtif_vcwb
+#	---- VPERM RAM-backed buffers (now always-on) + directed validation ----
+#	The VPERM pram/iram buffers live in distributed RAM (~4096 fewer flops +
+#	no GBUF barrel shifters) and serialize the window to 1 elem/cycle -- an area /
+#	congestion-relief baked into the full-vector bit. Own binary (Vhtif_vcwb
 #	precedent), built with the bit's structural vector knobs (CWB_STAGE + LANE_PIPE) so
 #	the validated config matches the synth. `vpermram-test` exercises the VPERM engine.
 VERI_PRAM_DIR	=	$(BUILD)/Vhtif_vpermram
@@ -433,14 +433,14 @@ $(VERI_PRAM_BIN): $(VERI_PRAM_DIR)/Vhtif_tb.mk
 $(VERI_PRAM_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 	verilator $(VFLAGS) -Mdir $(VERI_PRAM_DIR) --cc --exe \
 		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 \
-		-DKARU_V_PERM_RAM -DKARU_V_CWB_STAGE -DKARU_V_LANE_PIPE \
+		-DKARU_V_CWB_STAGE -DKARU_V_LANE_PIPE \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
 .PHONY: veri-vpermram vpermram-test
 veri-vpermram:	$(VERI_PRAM_BIN)
 vpermram-test:	$(VERI_PRAM_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vidx_subj.hex $(BUILD)/vperm_subj.hex
-	@echo "== KARU_V_PERM_RAM directed suites (VPERM engine in distributed RAM) =="
+	@echo "== VPERM engine directed suites (RAM-backed buffers, CWB_STAGE + LANE_PIPE) =="
 	@for s in vperm vidx vint; do \
 		echo "-- $$s --"; \
 		$(VERI_PRAM_BIN) +hex=$(BUILD)/$${s}_subj.hex +tohost=8000 +max_cycles=4000000 || exit 1; \
@@ -1485,7 +1485,7 @@ $(FPGA_SIM_DIR)/Vfpga_tb.mk: flow/fpga/fpga_tb.v $(FPGA_RTL) $(CORE_RTL) flow/fp
 
 #	bitstream + program (require the `xilinx` alias to be sourced first)
 #	KARU_DEFINES adds flags on top of the karu_cfg.vh defaults. BALANCED-FAST
-#	(MUL=4 DIV=64 V_MUL=16 V_DIV=64 V_PERM=2 => F_FMA=4 D_FMA=53) is now the
+#	(MUL=4 DIV=64 V_MUL=16 V_DIV=64 => F_FMA=4 D_FMA=53) is now the
 #	NO-FLAGS default for synth builds (sim builds default combinational), so this
 #	is empty -- only set it to DEPART from balanced: e.g. KARU_NO_V for an IMAFDC
 #	bring-up, or KARU_MUL_CYCLES=1 KARU_DIV_CYCLES=1 for the all-combinational
@@ -1538,7 +1538,7 @@ VIVADO_FPGA_SRC := $(VIVADO_REPO_ROOT)/flow/fpga
 #	Knobs: OOC_DEFINES (verilog defines), OOC_PERIOD (clk ns, default 16),
 #	SYNTH_DIRECTIVE. Reports: ooc_<mod>_{util,timing,worstpaths}.rpt + .dcp
 OOC_TOP     ?= karu_varith
-OOC_DEFINES ?= KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_PERM_LANES=2
+OOC_DEFINES ?= KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64
 OOC_PERIOD  ?= 16.0
 .PHONY: ooc
 ooc:	| $(BUILD)
@@ -1731,8 +1731,8 @@ vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
 #	on the vector core; OpenSBI enables mstatus.VS from misa.V). cpu_clk = 75 MHz.
 #	This box: VIVADO_VMEM_KB=84000000 VIVADO_THREADS=8.
 #	TIMING-CLOSURE RECIPE (baked in below so a plain `make vcu118-ddr-sgmii-rom-vec`
-#	reproduces the closing bit): the full-vector cpu_clk cone needs the KARU_V_PERM_RAM
-#	congestion-relief knob (frees ~16.5k LUT in varith: 380.6k -> 364.1k) PLUS the P&R
+#	reproduces the closing bit): the full-vector cpu_clk cone relies on the always-on
+#	RAM-backed VPERM buffers (freed ~16.5k LUT in varith: 380.6k -> 364.1k) PLUS the P&R
 #	directives place=ExtraTimingOpt / phys_opt=AggressiveExplore / post-route phys_opt,
 #	which biased the placer onto the recovered, less-congested cone. Together they
 #	recovered cpu_clk WNS -0.456 -> +0.022 (post-route, 0 failing endpoints). The three
@@ -1753,7 +1753,7 @@ vcu118-ddr-sgmii-rom-vec: gen-pcspma mig-vcu118 | $(BUILD)
 		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
 		FUBOOT_ROM_DTB="$(FUBOOT_VEC_DTB)"
 	ulimit -v $(VIVADO_VMEM_KB); \
-	$(VIVADO_RUN) KARU_DEFINES="KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_ZVK KARU_KECCAK KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_V_PERM_RAM KARU_SMCNTRPMF KARU_SSCOFPMF" \
+	$(VIVADO_RUN) KARU_DEFINES="KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_ZVK KARU_KECCAK KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_SMCNTRPMF KARU_SSCOFPMF" \
 		VIVADO_THREADS="$(VIVADO_THREADS)" \
 		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
 		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(if $(KARU_PLACE_DIRECTIVE),$(KARU_PLACE_DIRECTIVE),ExtraTimingOpt)" \

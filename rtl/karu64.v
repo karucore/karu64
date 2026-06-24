@@ -561,14 +561,13 @@ module karu64 #(
     wire        v_vstart_ill = (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU ||
                                 ex_unit == `UNIT_VKECCAK || ex_unit == `UNIT_VCRYPTO) &&
                                (v_vstart != 64'd0);
-    //  karu_varith drives the whole-register read addresses (group offset)
-    //  and the whole-register write port; declared here as it feeds the VRF.
-    wire        varith_req, varith_busy, varith_done, varith_wx, varith_we;
+    //  karu_varith drives the whole-register read addresses (group offset);
+    //  declared here as they feed the VRF.
+    wire        varith_req, varith_busy, varith_done, varith_wx;
     wire        varith_vsat;        //  any element saturated this op (valid at done)
     assign      varith_vxsat = varith_done && varith_vsat;
     wire [63:0] varith_x;
-    wire [4:0]  varith_r_vs1, varith_r_vs2, varith_r_vold, varith_wd;
-    wire [`KARU_VLEN-1:0] varith_wdata;
+    wire [4:0]  varith_r_vs1, varith_r_vs2, varith_r_vold;
     //  karu_varith now also handles vector FP (OPFVV/OPFVF) -- one merged FU
     //  (the lanes carry karu_fpu). FP-specific outputs: fflags + the vfmv.f.s
     //  scalar f-register write.
@@ -579,9 +578,6 @@ module karu64 #(
     //  Keccak (vkeccak) is folded into karu_varith (no separate FU): it reads via
     //  varith's r_vold and writes via the same VRF write path as every other op
     //  (the granule g_* port through S_CWB).
-    wire                    vrf_we    = varith_we;
-    wire [4:0]              vrf_wd    = varith_wd;
-    wire [`KARU_VLEN-1:0]   vrf_wdata = varith_wdata;
     //  Vector memory port <-> karu_mem (unified write-through L1). The scalar
     //  LSU and this 128-bit vector port share one coherent L1; karu_mem drives
     //  v_busy/v_done/v_rdata (instantiated below near the LSU).
@@ -878,7 +874,6 @@ module karu64 #(
         .vm(ex_vm), .imm(ex_imm), .rs1_v(ex_xrs1_v), .nreg(varith_nreg), .v0(vrf_v0),
         .vd_base(ex_rd), .vs1_base(ex_rs1), .vs2_base(ex_rs2),
         .r_vs1(varith_r_vs1), .r_vs2(varith_r_vs2), .r_vold(varith_r_vold),
-        .we(varith_we), .wd(varith_wd), .wdata(varith_wdata),
         .writes_x(varith_wx), .x_res(varith_x),
         //  -- vector FP (OPFVV/OPFVF) --
         .frm(csr_frm), .frs1_v(ex_frs1_v),
@@ -906,13 +901,19 @@ module karu64 #(
     //  V disabled: vector arith absent. issue_varith permanently 0.
     assign varith_busy = 1'b0;  assign varith_done = 1'b0;
     assign varith_vsat = 1'b0;
-    assign varith_we = 1'b0;    assign varith_wd = 5'b0;
-    assign varith_wdata = {`KARU_VLEN{1'b0}};
     assign varith_wx = 1'b0;    assign varith_x = 64'b0;
     assign varith_r_vs1 = 5'b0; assign varith_r_vs2 = 5'b0; assign varith_r_vold = 5'b0;
     assign varith_ff_set = 1'b0;    assign varith_fflags = 5'b0;
     assign varith_writes_f = 1'b0;  assign varith_f_res = 64'b0;
     assign varith_fp_lane_active = 1'b0;
+    //  granule write port: absent without vector, but varith_g_we feeds the
+    //  karu_assert checker (bind + htif instance) unconditionally -- tie the
+    //  whole port off so the scalar build has no undriven nets / X into the SVA.
+    assign varith_g_we = 1'b0;          assign varith_g_wlast = 1'b0;
+    assign varith_g_wd = 5'b0;          assign varith_g_wg = {VGW{1'b0}};
+    assign varith_g_wdata = 128'b0;     assign varith_g_wbe = 16'b0;
+    assign varith_g_wb_vlgov = 1'b0;    assign varith_g_wb_mdest = 1'b0;
+    assign varith_g_wb_vsew = 3'b0;     assign varith_g_wb_epr = 16'b0;
 `endif
 
     //  -- experimental single-instruction Keccak-f1600 (vkeccak) --

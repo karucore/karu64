@@ -104,7 +104,7 @@ module karu_assert #(
     input  wire         fwb_we,
 
     //  ---- vector writeback + fixed-point flag ----
-    input  wire         vrf_we,         //  full-register VRF write (varith)
+    input  wire         varith_g_we,    //  varith VRF granule write
     input  wire         vg_we,          //  granule VRF write (vlsu load)
     input  wire         vxsat_set,      //  fixed-point saturation sticky-set (varith)
 
@@ -436,19 +436,18 @@ module karu_assert #(
         //  ==============================================================
         //  Vector regfile / fixed-point invariants
         //  ==============================================================
-        //  The VRF has two write ports: the full-register port (driven by
-        //  an active varith op, including its multi-cycle widen/narrow/
-        //  serial-mul/divide write phases) and the granule port (driven by
-        //  an active vlsu load). Each only fires while its owner is in flight.
-        `KCHK(!(vrf_we && !(varith_active || vfpu_active || vkeccak_active)),
-              "INV11 VRF full-reg write while !(varith|vfpu|vkeccak)_active")
+        //  The VRF granule write has two mutually-exclusive sources (single-
+        //  issue): varith (`varith_g_we`, incl. its multi-cycle widen/narrow/
+        //  serial-mul/divide write phases) and vlsu loads (`vg_we`). Each only
+        //  fires while its owner is in flight.
         `KCHK(!(vg_we  && !vlsu_active),   "INV12 VRF granule write while !vlsu_active")
-        //  Single-issue => at most one VRF write port fires per cycle.
-        `KCHK(!(vrf_we && vg_we), "INV13 both VRF write ports same cycle")
+        //  Single-issue => the two granule sources never fire together (the gw_*
+        //  priority mux would otherwise drop the vlsu write).
+        `KCHK(!(varith_g_we && vg_we), "INV13 both granule write sources same cycle")
         //  A vector op commits exactly one destination class: the vector
         //  regfile, or a scalar (x via vmv.x.s/vfirst/vcpop), never both.
-        `KCHK(!(vrf_we && wb_we),  "INV14 vector and integer regfile written same cycle")
-        `KCHK(!(vrf_we && fwb_we), "INV15 vector and FP regfile written same cycle")
+        `KCHK(!(varith_g_we && wb_we),  "INV14 vector and integer regfile written same cycle")
+        `KCHK(!(varith_g_we && fwb_we), "INV15 vector and FP regfile written same cycle")
         //  The fixed-point saturation flag (vxsat) is sticky-set only on a
         //  varith completion -- a mid-op element saturation must not leak
         //  into the architectural CSR before the op retires.
@@ -735,11 +734,10 @@ module karu_assert #(
     a_inv6g_vkeccak_done: assert property (vkeccak_done |-> vkeccak_active);
     a_inv7_x0:    assert property (wb_we |-> (wb_rd != 5'd0));
     a_inv8_excl:  assert property (!(wb_we && fwb_we));
-    a_inv11_vrf_we:  assert property (vrf_we |-> (varith_active || vfpu_active || vkeccak_active));
     a_inv12_vg_we:   assert property (vg_we  |-> vlsu_active);
-    a_inv13_vrf_excl:assert property (!(vrf_we && vg_we));
-    a_inv14_vrf_x:   assert property (!(vrf_we && wb_we));
-    a_inv15_vrf_f:   assert property (!(vrf_we && fwb_we));
+    a_inv13_gran_excl: assert property (!(varith_g_we && vg_we));
+    a_inv14_vrf_x:   assert property (!(varith_g_we && wb_we));
+    a_inv15_vrf_f:   assert property (!(varith_g_we && fwb_we));
     a_inv16_vxsat:   assert property (vxsat_set |-> varith_done);
     a_inv17_vmem_own:  assert property (vmem_req |-> vlsu_active);
     a_inv18_vmem_align:assert property (vmem_req |-> (vmem_addr[3:0] == 4'b0));
@@ -858,7 +856,7 @@ bind karu64 karu_assert u_karu_assert (
 `endif
     .vkeccak_req(1'b0), .vkeccak_done(1'b0),
     .wb_we(wb_we), .wb_rd(wb_rd), .fwb_we(fwb_we),
-    .vrf_we(vrf_we), .vg_we(vg_we), .vxsat_set(varith_vxsat),
+    .varith_g_we(varith_g_we), .vg_we(vg_we), .vxsat_set(varith_vxsat),
     .vmem_req(vmem_req), .vmem_is_store(vmem_is_store), .vmem_addr(vmem_addr),
     .ifu_valid(ifu_valid), .ifu_pc(ifu_pc),
     .ifu_redir(ifu_redir), .ifu_redir_pc(ifu_redir_pc),

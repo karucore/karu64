@@ -33,14 +33,14 @@
 
 //  ======================================================================
 //  BALANCED-FAST is the no-flags DEFAULT for SYNTH / ASIC builds:
-//      MUL=4 DIV=64  V_MUL=16 V_DIV=64 V_PERM=2  => F_FMA=4, D_FMA=4
+//      MUL=4 DIV=64  V_MUL=16 V_DIV=64  => F_FMA=4, D_FMA=4
 //      (the D mantissa knobs resolve to 4 and are clamped to bit-serial 53
 //      inside karu_fmul_d / karu_ffma_d, i.e. EFFECTIVE D mul/FMA = 53 cycles)
 //  Sim builds (-DSIM_TB) instead default to the COMBINATIONAL 1-cycle
 //  reference -- fast sim + the documented benchmark baseline (a bit-serial
 //  D default would make f64 TestFloat / fn-dsa ~50x slower). Any explicit
 //  -D flag overrides either. Only CYCLE knobs default here; structural flags
-//  (KARU_ZVK / KARU_KECCAK / KARU_V_PERM_RAM / ...) stay
+//  (KARU_ZVK / KARU_KECCAK / ...) stay
 //  explicit. Named build profiles depart from balanced via extra -D flags.
 //  ======================================================================
 //  Capture whether the USER set the master knobs (vs our balanced default
@@ -182,20 +182,5 @@
     `endif
 `endif
 
-//  Vector permute crossbar lanes (vrgather.vv / vrgatherei16.vv): number of
-//  data-indexed source selects ("crossbars") evaluated per cycle. Each lane
-//  is a VLEN-group-wide barrel mux, so this directly bounds the combinational
-//  area/depth of the only true crossbar in the VPU. Lower = smaller/shallower
-//  but more cycles (ceil(elems_per_reg / lanes) cycles per dest register).
-//  Allowed: power-of-2 in [1, VLEN/8]; other values round down. The other
-//  VPERM ops need no crossbar (slides = one shared shift; vrgather.vx/.vi =
-//  one broadcast; vcompress/viota = prefix networks) and ignore this.
-`ifndef KARU_V_PERM_LANES
-    `ifndef SIM_TB
-        `define KARU_V_PERM_LANES 2     //  synth/ASIC balanced default
-    `else
-        `define KARU_V_PERM_LANES 4     //  sim default (timing-irrelevant; keep wide/fast)
-    `endif
-`endif
 
 `endif // KARU_CFG_VH

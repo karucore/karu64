@@ -58,10 +58,6 @@ module karu_varith (
     output wire [4:0]   r_vs2,
     output wire [4:0]   r_vold,
 
-    output reg          we,
-    output reg  [4:0]   wd,
-    output reg  [`KARU_VLEN-1:0] wdata,
-
     output wire         writes_x,   //  vfirst.m / (future) vmv.x.s
     output reg  [63:0]  x_res,
 
@@ -80,8 +76,8 @@ module karu_varith (
     //  ---- experimental single-instruction Keccak-f1600 (vkeccak) ----
     //  is_keccak is the issue-cycle decode (dec_unit==UNIT_VKECCAK, only ever
     //  asserted under KARU_EN_KECCAK). The op runs IN PLACE on the vd e64/m8
-    //  group via this unit's normal VRF read (r_vold/d_vold) and write
-    //  (we/wd/wdata) ports -- one ISOLATED 1600-bit Keccak permutation, never
+    //  group via this unit's normal VRF read (r_vold) and granule write
+    //  (g_*) port -- one ISOLATED 1600-bit Keccak permutation, never
     //  lane-replicated. Folded in here so karu64 has ONE vector-execute FU.
     input  wire         is_keccak,
 
@@ -159,31 +155,13 @@ module karu_varith (
     localparam BS_MUL = (V_MUL_C != 1);
 
 
-    //  ---- legacy whole-register write outputs (QUARANTINED) ----
-    //  Every write goes through the granule g_* port (S_GWB / S_FPWR /
-    //  S_CWB / S_CMW / inline Zvk). The we/wd/wdata outputs survive the
-    //  2026-06-12 flop-VRF deletion only as a policed dead interface: this
-    //  FSM never asserts `we`, and the karu_assert INV11/13/14/15 checks
-    //  (via the karu64 vrf_we wire) fire if that ever regresses.
     localparam MK     = (V_MUL_C == 1) ? 1 : (64 / V_MUL_C);    //  bits/cycle (safe part-select when comb)
-    //  VPERM gather crossbar lanes: output elements (data-indexed source
-    //  selects) computed per cycle for vrgather.vv/ei16. Clamp the requested
-    //  value to a power-of-2 in [1, VLEN/8]. Other VPERM ops use no crossbar.
-    localparam PLANES_REQ = `KARU_V_PERM_LANES;
-`ifdef KARU_V_PERM_RAM
-    //  slice (b): serialized to ONE element/cycle -- every additional window
-    //  lane would be another async read port on pram/iram (a replicated RAM
-    //  copy), and the whole point is deleting the parallel read network.
-    //  KARU_V_PERM_LANES is ignored.
+    //  VPERM gather: data-indexed source selects (pelem/gidx barrel muxes) for
+    //  vrgather.vv/ei16, serialized to ONE element/cycle. A second window lane
+    //  would need another async read port on pram/iram (a replicated RAM copy);
+    //  the point of the RAM-backed buffers is deleting that parallel read
+    //  network. Other VPERM ops use no crossbar.
     localparam PLANES = 1;
-`else
-    localparam PLANES =
-        (PLANES_REQ >= (VLEN/8)) ? (VLEN/8) :
-        (PLANES_REQ >= 16) ? 16 :
-        (PLANES_REQ >= 8)  ? 8  :
-        (PLANES_REQ >= 4)  ? 4  :
-        (PLANES_REQ >= 2)  ? 2  : 1;
-`endif
 
     //  ---- latched request ----
     //  (* max_fanout *) on the broadcast control regs. SEW/op-type fan out to
@@ -349,7 +327,6 @@ module karu_varith (
     wire [4:0] r_dbl  = {r, 1'b0} + {4'b0, nph};        //  2r + phase
     //  ---- VPERM (cross-lane) buffers & geometry (forward-declared) ----
     localparam GBUF = VLEN*8;                           //  max group bits (LMUL<=8)
-`ifdef KARU_V_PERM_RAM
     //  slice (b): the perm source/index buffers are distributed-RAM word
     //  arrays instead of GBUF-wide flop vectors -- deletes the 4096 buffer
     //  flops and (with the serialized window) turns the two GBUF->64
@@ -364,11 +341,6 @@ module karu_varith (
     (* ram_style = "distributed" *) reg [63:0] iram [0:PDEPTH-1];   //  vs1 index/mask group
     reg [WPW-1:0] plw;                              //  word subcounter within a reg
     reg [PWW-1:0] plwa;                             //  running load word address
-`else
-    reg [GBUF-1:0] pbuf;                                //  buffered vs2 source group (reg-contiguous)
-    reg [GBUF-1:0] ibuf;                                //  buffered vs1 index/mask group
-    reg plg;                                            //  granule sub-step (S_PLOAD)
-`endif
     reg [3:0]  pli;                                     //  perm load counter
     reg        ld_active;                               //  high during the perm load phase
     reg [31:0] iota_acc;                                //  viota running prefix (carried per window)
@@ -448,7 +420,6 @@ module karu_varith (
         end
     endfunction
     localparam NLANE = VLEN/8;          //  max elements/register (e8)
-    localparam RLOG  = $clog2(NLANE);   //  (legacy)
     //  Reductions fold ONE 64-bit chunk per cycle (REPC = max elements/chunk = e8)
     //  rather than a full VLEN-wide register tree -- a small, predictable cone.
     localparam REPC  = 8;               //  max elements per 64-bit chunk (64/8)
@@ -460,15 +431,15 @@ module karu_varith (
     //  old flat all-element-parallel loop so synthesis maps ONE lane and
     //  replicates it (see karu_vlane.v) instead of a VLEN-wide fused cone.
     //  ========================================================
-    //  Step C: compute lanes track the VRF bus (KARU_VRF_NLANES = VBUS_W/64 = 2
-    //  under KARU_VRF_BRAM; = VLEN/64 = 4 otherwise). VGRAN_C = CPR/NLANES granule
-    //  passes cover a register: 2 under BRAM, 1 (byte-identical) for the flop core.
+    //  Step C: compute lanes track the VRF bus (KARU_VRF_NLANES = VBUS_W/64 = 2).
+    //  VGRAN_C = CPR/NLANES granule passes cover a register (2 with the
+    //  exact-byte-enable 2-lane VRF).
     localparam NLANES = `KARU_VRF_NLANES;
     //  CPR = 64-bit chunks per WHOLE v-register (vs NLANES = compute lanes).
-    //  Today NLANES==CPR, but the 2-lane narrowing makes NLANES =
-    //  KARU_VRF_NLANES (<CPR); uses that mean "chunks per register" (e.g. the
-    //  reduction fold loop) must track CPR, not the lane count. VGRAN_C is the
-    //  number of granule passes the lanes take to cover a register (=1 today).
+    //  With the 2-lane VRF, NLANES = KARU_VRF_NLANES (=2) < CPR (=4 at VLEN=256),
+    //  so uses that mean "chunks per register" (e.g. the reduction fold loop)
+    //  must track CPR, not the lane count. VGRAN_C is the number of granule
+    //  passes the lanes take to cover a register (=2 today).
     localparam CPR     = VLEN/64;
     localparam VGRAN_C = CPR / NLANES;
     //  elaboration guard: the granule loop assumes the NLANES compute lanes evenly
@@ -476,8 +447,8 @@ module karu_varith (
     //  requires a clean VLEN/VBUS_W/64 geometry. A bad combo (NLANES not a divisor
     //  of CPR, zero, or > CPR; VBUS_W not a multiple of 64; VLEN not a multiple of
     //  VBUS_W) would silently cover only part of each register -- trip synth/elab
-    //  here instead. Only the violating branch elaborates, so valid configs (flop
-    //  NLANES==CPR, BRAM NLANES==2/CPR==4) instantiate nothing.
+    //  here instead. Only the violating branch elaborates, so valid configs
+    //  (macro VRF NLANES==2 / CPR==4) instantiate nothing.
     generate
         if (NLANES == 0 || (CPR % NLANES) != 0 || NLANES > CPR
             || ((`KARU_VBUS_W % 64) != 0) || ((`KARU_VLEN % `KARU_VBUS_W) != 0))
@@ -496,9 +467,9 @@ module karu_varith (
 
     //  ---- 2-lane granule loop ----------------------------------
     //  The NLANES compute lanes cover a register's CPR 64-bit chunks over
-    //  VGRAN_C = CPR/NLANES passes. Under KARU_VRF_BRAM NLANES=KARU_VRF_NLANES (=2)
-    //  => VGRAN_C=2 (two passes); the flop/default build keeps NLANES==CPR =>
-    //  VGRAN_C==1 (a single pass, BYTE-IDENTICAL to the pre-loop code). Each pass
+    //  VGRAN_C = CPR/NLANES passes. NLANES = KARU_VRF_NLANES (= VBUS_W/64 = 2),
+    //  so VGRAN_C = CPR/2 (two passes at VLEN=256; a single pass when CPR==NLANES).
+    //  Each pass
     //  the lanes window to chunks [gwin, gwin+NLANES); grp_res holds that pass's
     //  LANEW bits, accumulated into grp_acc; the whole register is written on the
     //  last pass via grp_full.
@@ -520,7 +491,7 @@ module karu_varith (
                || is_vmvsx || is_carry_e || is_satadd || is_avg || is_vssr || is_vsmul
                || is_brev8 || is_rev8;
     reg  [`KARU_VLEN-1:0] grp_full;                     //  grp_acc + this pass's slice
-    //  KARU_V_WB_STAGE: register the LANE OUTPUT (grp_res/grp_sat) before the
+    //  WB stage: register the LANE OUTPUT (grp_res/grp_sat) before the
     //  accumulate + grp_full + wdata_hot writeback, cutting the route-bound
     //  lane->wdata_hot cone (the 16ns worst path). The accumulate/write then runs
     //  off the REGISTERED grp_res_q in S_GWB, so grp_full feeds from grp_res_q.
@@ -1170,30 +1141,22 @@ module karu_varith (
     //  Both source groups are buffered first (S_PLOAD), then one dest
     //  register is computed+written per cycle (S_PCOMP) from the buffers.
     //  ========================================================
-    //  source element g (SEW-wide) out of the flat source buffer pbuf
+    //  source element g (SEW-wide) out of the source RAM pram
     function [63:0] pelem; input [31:0] g; reg [63:0] sm; reg [31:0] sh;
         begin
             sm = (sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
             sh = g << sew_lg;                   //  == g * sewb (sewb = 2^sew_lg); shift, not DSP
-`ifdef KARU_V_PERM_RAM
             //  SEW divides 64, so an element never straddles a word
             pelem = (pram[sh[6 +: PWW]] >> sh[5:0]) & ~sm;
-`else
-            pelem = (pbuf >> sh) & ~sm;
-`endif
         end
     endfunction
-    //  gather index value at element ge (SEW-wide from ibuf; ei16 -> 16-bit)
+    //  gather index value at element ge (SEW-wide from iram; ei16 -> 16-bit)
     function [63:0] gidx; input [31:0] ge; reg [63:0] sm; reg [31:0] sh; reg [6:0] iw;
         begin
             iw = is_gei16 ? 7'd16 : sewb;
             sm = (iw >= 7'd64) ? 64'h0 : ({64{1'b1}} << iw);
             sh = ge << (is_gei16 ? 6'd4 : sew_lg);  //  == ge * iw (iw = 2^lg); shift, not DSP
-`ifdef KARU_V_PERM_RAM
             gidx = (iram[sh[6 +: PWW]] >> sh[5:0]) & ~sm;
-`else
-            gidx = (ibuf >> sh) & ~sm;
-`endif
         end
     endfunction
 
@@ -1204,9 +1167,9 @@ module karu_varith (
     wire [63:0] gidx_sx   = b_vx ? rs1_q : {59'b0, imm_q[4:0]}; //  gather.vx/.vi index
     wire [63:0] elem_sm   = (sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
 
-    //  -- vcompress: SERIAL pack (replaces the old full-VLEN cmp_obuf scatter:
-    //  a VLEN-wide prefix network + VLEN GBUF-wide barrel-shifts, which was the
-    //  dominant Vivado tech-mapping hotspot and bypassed KARU_V_PERM_LANES).
+    //  -- vcompress: SERIAL pack. A full-VLEN scatter (VLEN-wide prefix network +
+    //  VLEN-wide barrel-shifts) would be the dominant Vivado tech-mapping hotspot,
+    //  so it is avoided.
     //  The pack is sequenced one source element/cycle (S_CMP_SCAN): out_idx is
     //  a plain running popcount (no prefix net), and each mask-selected source
     //  element is written with ONE variable byte-select/cycle. Dest pack
@@ -1222,18 +1185,14 @@ module karu_varith (
     //  so that flush IS the op-ending drain (nothing left to scan or pad).
     //  No group buffer and no old-vd merge exist on this path.
     //  NB: vcompress vd/vs1/vs2 overlap is a reserved encoding; the buffered
-    //  source (pbuf/ibuf) keeps overlap benign, but the core does NOT trap
+    //  source (pram/iram) keeps overlap benign, but the core does NOT trap
     //  reserved encodings (unchecked by design). --
     reg [`KARU_VLEN-1:0] cstg;      //  staging: the dest register being packed
     reg [31:0]     cslot;           //  next free element slot within cstg
     reg [31:0]     cse;             //  source element index being examined
     reg [31:0]     out_idx;         //  packed count so far = next free dest slot
     reg [31:0]     cmp_count;       //  final packed count (latched at scan end)
-`ifdef KARU_V_PERM_RAM
     wire           cmp_sel = (cse < vl_q) && iram[cse[6 +: PWW]][cse[5:0]]; //  in-vl & mask-selected
-`else
-    wire           cmp_sel = (cse < vl_q) && ibuf[cse[7:0]];    //  in-vl & mask-selected
-`endif
     wire [63:0]    cmp_src = pelem(cse) & ~elem_sm;         //  one source element
     integer csb;
 
@@ -1242,27 +1201,17 @@ module karu_varith (
     //  accumulator (seeded with old vd at pse==0, carried in `pacc` otherwise);
     //  the register is written when the window reaches `epr`. This bounds the
     //  number of data-indexed source selects (`pelem`/`gidx` barrel muxes) to
-    //  PLANES per cycle -- the knob that keeps the gather crossbar synthesizable.
-    //  vrgather.vx/.vi collapse to a single broadcast (`bcast`, one pelem).
+    //  PLANES (=1) per cycle, keeping the gather read network single-ported.
+    //  vrgather.vx/.vi collapse to a single scalar source read (gscalar -> pval).
     reg [`KARU_VLEN-1:0] perm_res;  reg [31:0] iota_next;
     integer lane, pbb;
-    reg [31:0] pe, pge, icnt;   reg [63:0] pidx, praw, psrc64, bcast;   reg pact, pwr, psrcbit;
-`ifdef KARU_V_PERM_RAM
+    reg [31:0] pe, pge, icnt;   reg [63:0] pidx, praw, psrc64;   reg pact, pwr, psrcbit;
     reg [31:0] prd; reg [63:0] pval;                //  the one shared source read
-`endif
     always @(*) begin
         perm_res = (pse == 32'd0) ? {`KARU_VLEN{1'b0}} : pacc;  //  6c-b: BE keep-old
         icnt = iota_acc;
-`ifndef KARU_V_PERM_RAM
-        //  vrgather.vx/.vi: one scalar/imm index -> one source read, broadcast
-        bcast = (gidx_sx < {32'b0, vlmax}) ? pelem(gidx_sx[31:0]) : 64'd0;
-`else
-        bcast = 64'd0;          //  unused under PERM_RAM (gscalar reads pval)
-`endif
         pe=0; pge=0; pidx=0; praw=0; psrc64=0; pact=0; pwr=0; psrcbit=0;
-`ifdef KARU_V_PERM_RAM
         prd=0; pval=64'd0;
-`endif
         if (is_perm)
         for (lane = 0; lane < PLANES; lane = lane + 1) begin
             pe = pse + lane[31:0];              //  element index within register r
@@ -1270,7 +1219,6 @@ module karu_varith (
                 pge  = ebase + pe;
                 pact = vm_q || v0_q[pge[7:0]];
                 praw = 64'd0;   pwr = 1'b0;
-`ifdef KARU_V_PERM_RAM
                 //  ONE shared source-element read per cycle (one async pram
                 //  port): the op class selects the index up front and the arms
                 //  consume pval under their own bound checks. An out-of-range
@@ -1284,70 +1232,40 @@ module karu_varith (
                      : is_slidedn  ? (pge + slide_off[31:0])
                      :               (pge + 32'd1);     //  slide1dn
                 pval = pelem(prd);
-`endif
                 if (is_viota) begin
                     praw = {32'b0, icnt};
                     pwr  = (pge < vl_q);
                     //  count active source-mask bits strictly before the NEXT element
-`ifdef KARU_V_PERM_RAM
                     psrcbit = pram[pge[6 +: PWW]][pge[5:0]];    //  vs2 mask register, bit pge
-`else
-                    psrcbit = pbuf[pge[7:0]];       //  vs2 mask register, bit pge
-`endif
                     if (pge < vl_q && pact && psrcbit) icnt = icnt + 32'd1;
                 end else if (is_gscalar) begin
-`ifdef KARU_V_PERM_RAM
                     praw = (gidx_sx < {32'b0, vlmax}) ? pval : 64'd0;
-`else
-                    praw = bcast;
-`endif
                     pwr = (pge < vl_q);                             //  vrgather.vx/.vi splat
                 end else if (is_gvv) begin
-`ifdef KARU_V_PERM_RAM
                     praw = (pidx < {32'b0, vlmax}) ? pval : 64'd0;  //  vrgather.vv / ei16
-`else
-                    pidx = gidx(pge);                               //  vrgather.vv / ei16
-                    praw = (pidx < {32'b0, vlmax}) ? pelem(pidx[31:0]) : 64'd0;
-`endif
                     pwr  = (pge < vl_q);
                 end else if (is_slideup) begin
                     //  64-bit offset compare (x[rs1] may exceed 2^32 -> all prestart);
                     //  the guard guarantees slide_off<=pge<=VLMAX so the low bits used
                     //  for the source index are exact.
                     if (({32'b0, pge} >= slide_off) && (pge < vl_q)) begin
-`ifdef KARU_V_PERM_RAM
                         praw = pval;    pwr = 1'b1;
-`else
-                        praw = pelem(pge - slide_off[31:0]);    pwr = 1'b1;
-`endif
                     end //  pge < off: prestart, undisturbed
                 end else if (is_slide1up) begin
                     if (pge < vl_q) begin
-`ifdef KARU_V_PERM_RAM
                         praw = (pge == 32'd0) ? (rs1_q & ~elem_sm) : pval;
-`else
-                        praw = (pge == 32'd0) ? (rs1_q & ~elem_sm) : pelem(pge - 32'd1);
-`endif
                         pwr  = 1'b1;
                     end
                 end else if (is_slidedn) begin
                     if (pge < vl_q) begin
                         psrc64 = {32'b0, pge} + slide_off;
-`ifdef KARU_V_PERM_RAM
                         //  prd == psrc64[31:0] when in bounds (mod-2^32 equal)
                         praw   = (psrc64 < {32'b0, vlmax}) ? pval : 64'd0;
-`else
-                        praw   = (psrc64 < {32'b0, vlmax}) ? pelem(psrc64[31:0]) : 64'd0;
-`endif
                         pwr    = 1'b1;
                     end
                 end else if (is_slide1dn) begin
                     if (pge < vl_q) begin
-`ifdef KARU_V_PERM_RAM
                         praw = (pge == (vl_q - 32'd1)) ? (rs1_q & ~elem_sm) : pval;
-`else
-                        praw = (pge == (vl_q - 32'd1)) ? (rs1_q & ~elem_sm) : pelem(pge + 32'd1);
-`endif
                         pwr  = 1'b1;
                     end
                 end
@@ -1434,17 +1352,17 @@ module karu_varith (
                S_KLOAD=6'd34, S_KREQ=6'd35, S_KWAIT=6'd36, S_KSTORE=6'd37,
                //   standard Zvk: run one EGW128/256 group through karu_vcrypto
                S_CREQ=6'd39, S_CWAIT=6'd40, S_CWR=6'd41,
-               //   KARU_V_WB_STAGE: registered lane-output writeback for the is_grp
+               //   Registered lane-output writeback for the is_grp
                //   granule loop (S_RUN registers grp_res -> S_GWB accumulates+writes).
                S_GWB=6'd42,
-               //   KARU_V_FPWB_STAGE: registered FP non-FPU writeback (S_FPAR registers
+               //   Registered FP non-FPU writeback (S_FPAR registers
                //   vf_p_relem -> S_FPWB writes fdbuf), cutting the f6_q->est->fdbuf cone.
                S_FPWB=6'd43,
-               //   KARU_V_FPWB_STAGE: registered SEQUENTIAL FP non-FPU writeback
+               //   Registered SEQUENTIAL FP non-FPU writeback
                //   (S_FRUN registers vf_res_elem -> S_FSWB writes fdbuf), cutting the
                //   last combinational lane_est->fdbuf path.
                S_FSWB=6'd44,
-               //   KARU_VRF_BRAM: shared COLD whole-register-> granule writeback drain.
+               //   Shared COLD whole-register-> granule writeback drain.
                //   A cold site loads cwb_buf/cwb_wd (+cwb_done/cwb_ret) and enters here;
                //   S_CWB emits one VBUS_W granule/cycle (ascending wg), advancing r and
                //   returning to cwb_ret (or done) on the final granule. r is held until
@@ -1474,7 +1392,7 @@ module karu_varith (
     `define CWB_T  cwb_buf
     `define CWB_NX S_CWB
 `endif
-    //  KARU_V_FPWB_STAGE: register the non-FPU per-lane FP result (vf_p_relem,
+    //  FP writeback stage: register the non-FPU per-lane FP result (vf_p_relem,
     //  whose f6_q->est->fdbuf cone is the 10ns limiter) before the fdbuf write.
     //  S_FPAR registers these; S_FPWB writes fdbuf + advances. Cuts the cone.
     reg  [NLANES*64-1:0]  fp_relem_q;
@@ -1611,7 +1529,7 @@ module karu_varith (
     //             reductions/slides) -- each element read re-pointed to its
     //             granule (vf_e_sh/vf_src_sh/vf_w_sh/...).
     //    mv_gran  vmv<nr>r -- granule-streamed copy (vs2_g -> g_* port).
-    //    pl_gran  perm S_PLOAD snapshot (BOTH buffer flavors) -- one
+    //    pl_gran  perm S_PLOAD snapshot -- one
     //             granule per word; source needs are gated to ld_active,
     //             so the post-load r-walk triggers NO fills.
     //    red/ser/wser/wpar/nar/ext/cmp/msk_gran  the remaining classes
@@ -1651,7 +1569,7 @@ module karu_varith (
     wire msk_gran = (is_mlg || is_mscan || is_vfirst || is_vcpop || is_vmvxs)
                  && !is_fp_q && !cz_q;
     wire mv_gran  = is_vmvnr && !is_fp_q && !cz_q;
-    wire pl_gran  = is_perm && !is_fp_q && !cz_q;   //  both perm-buffer flavors
+    wire pl_gran  = is_perm && !is_fp_q && !cz_q;   //  RAM-backed perm buffers
 `ifdef KARU_EN_ZVK
     wire czv_gran = czv_q;
 `else
@@ -1703,11 +1621,7 @@ module karu_varith (
                      || (czk_gran && czk_ld_ph)
 `endif
                      ;
-`ifdef KARU_V_PERM_RAM
     wire rdu_gdef = (pl_gran && ld_active) ? plw[WPW-1] : gpass[0];
-`else
-    wire rdu_gdef = (pl_gran && ld_active) ? plg : gpass[0];
-`endif
     assign rdu_g1 =
 `ifdef KARU_EN_ZVK
                     czv_gran  ? czv_idx :
@@ -2148,7 +2062,7 @@ module karu_varith (
     //  The vd e64/m8 group (8 regs) is loaded one reg/cycle into sbuf via this
     //  unit's normal r_vold/d_vold read path; sbuf[1599:0] = the 1600-bit state
     //  (lanes 0..24). The single 24-round FSM runs in place; the group is then
-    //  written back through we/wd/wdata (sbuf bits >=1600 = lanes 25..31 are
+    //  written back through the granule g_* port (sbuf bits >=1600 = lanes 25..31 are
     //  undisturbed). vs1/vs2/vl are ignored. Requires VLEN>=200 (8*VLEN>=1600).
     localparam integer KVGRP = 8;
     reg  [KVGRP*VLEN-1:0]   ksbuf;
@@ -2213,7 +2127,7 @@ module karu_varith (
 
     always @(posedge clk) begin
         if (rst) begin
-            state<=S_IDLE; done<=0; we<=0; r<=0; gpass<=0;
+            state<=S_IDLE; done<=0; r<=0; gpass<=0;
 `ifdef KARU_V_LANE_PIPE
             lane_warm<=0;
 `endif
@@ -2222,11 +2136,6 @@ module karu_varith (
             //  op_stall edge-captured write replays with its own op's values.
             g_wb_vlgov<=0; g_wb_mdest<=0; g_wb_vsew<=0; g_wb_epr<=0;
             cwb_be<=0; cwb_vlgov<=0; cwb_mdest<=0; cwb_vsew<=0; cwb_epr<=0;
-            //  The whole-register write outputs are dead under KARU_VRF_BRAM (all
-            //  varith writes go via the granule g_* port). Quarantine them to a
-            //  constant 0 here so they are driven (no undriven-net noise; synth
-            //  prunes them). karu64 leaves them disconnected from the adapter.
-            wd<=5'd0; wdata<={`KARU_VLEN{1'b0}};
             is_fp_q<=0; vf_fpu_req<=0; fflags_set<=0; writes_f<=0; fp_pend<=0;
 `ifdef KARU_EN_KECCAK
             kreq<=0;
@@ -2236,11 +2145,11 @@ module karu_varith (
 `endif
         end else
         //  Global operand-fill freeze: while op_stall, hold ALL FSM state (the
-        //  default pulse deassigns below also don't run, so `we` holds high for
+        //  default pulse deassigns below also don't run, so `g_we` holds high for
         //  the adapter to edge-capture; done/creq/kreq are 0 at stall entry).
         if (!op_stall)
         begin
-            done<=0; we<=0; vf_fpu_req<=0; fflags_set<=0; writes_f<=0;
+            done<=0; vf_fpu_req<=0; fflags_set<=0; writes_f<=0;
             g_we<=0; g_wlast<=0;    //  one-cycle granule write pulse
 `ifdef KARU_EN_KECCAK
             kreq<=0;
@@ -2260,16 +2169,11 @@ module karu_varith (
 `ifdef KARU_EN_KECCAK
                     kg<=1'b0;
 `endif
-`ifndef KARU_V_PERM_RAM
-                    plg<=1'b0;
-`endif
                     nreg_q<=nreg; vd_q<=vd_base; vs1_q<=vs1_base; vs2_q<=vs2_base;
                     v0_q<=v0; r<=0; macc<={VLEN{1'b0}}; dle<=0; mle<=0; nph<=0; nse<=0; rch<=0;
                     found_q<=1'b0; ff_q<=32'b0; cnt_q<=64'b0;
                     pli<=0; pse<=0; iota_acc<=0; ld_active <= req_is_perm && !req_is_fp;
-`ifdef KARU_V_PERM_RAM
                     plw <= {WPW{1'b0}}; plwa <= {PWW{1'b0}};
-`endif
                     wmul_q <= (BS_MUL && req_is_wmul);
                     //  FP fields + accumulator (mask seed deferred to run state: vd_q stale here)
                     frm_q<=frm; frs1_q<=frs1_v; is_fp_q<=req_is_fp; fe<=0; fs<=0; gpass<=0;
@@ -2559,7 +2463,6 @@ module karu_varith (
 
                 //  ---- VPERM load: buffer the source/index groups, one reg/cycle ----
                 S_PLOAD: begin
-`ifdef KARU_V_PERM_RAM
                     //  one 64-bit word/cycle; pli (the VRF read address) advances
                     //  only after WPR word writes, so d_vs1/d_vs2 are held stable
                     //  stage-4: the snapshot words come from the granule feed
@@ -2571,27 +2474,13 @@ module karu_varith (
                     else begin
                         plw <= {WPW{1'b0}};
                         if (pli == load_n - 4'd1) begin
-`else
-                    //  one granule per cycle from the granule latches (index plg)
-                    pbuf[{26'b0, pli, plg} * `KARU_VBUS_W +: `KARU_VBUS_W] <= vs2_g;
-                    ibuf[{26'b0, pli, plg} * `KARU_VBUS_W +: `KARU_VBUS_W] <= vs1_g;
-                    if (!plg) plg <= 1'b1;
-                    else begin
-                    plg <= 1'b0;
-                    if (pli == load_n - 4'd1) begin
-`endif
                         ld_active <= 1'b0;  pli <= 0;   r <= 0; pse <= 0;
                         //  vcompress takes the serial-pack path; others the windowed VPERM
                         if (is_compress) begin
                             cse <= 0; out_idx <= 0; cslot <= 0; cstg <= {`KARU_VLEN{1'b0}}; state <= S_CMP_SCAN;
                         end else state <= S_PCOMP;
-`ifdef KARU_V_PERM_RAM
                         end else pli <= pli + 4'd1;
                     end
-`else
-                    end else pli <= pli + 4'd1;
-                    end
-`endif
                 end
                 //  ---- VPERM compute: PLANES elements/cycle, write per register ----
                 S_PCOMP: begin
@@ -3007,7 +2896,7 @@ module karu_varith (
 // synthesis translate_off
 //  Pulse-hazard safety net (sim only). While op_stall freezes the FSM, the
 //  externally consumed START/COMPLETE pulses must NOT be held high -- that
-//  would double-fire to karu64 / the subunits on unfreeze. `we` is exempt: the
+//  would double-fire to karu64 / the subunits on unfreeze. `g_we` is exempt: the
 //  adapter (karu_vrf_bram_wr) edge-captures + masks it. By construction these
 //  pulse only while op_stall is low (after the operand fill), so this should
 //  never trip; it guards the global-freeze contract (see the integration plan).
@@ -3017,7 +2906,7 @@ module karu_varith (
     //      gate holds); vf_fpu_req itself MAY be frozen high -- that's fine.
     //    - done/fflags_set/writes_f/creq/kreq : completion/start pulses that by
     //      construction occur only with op_stall low; flag if one is frozen high.
-    //  `we` is exempt -- the adapter edge-captures + masks it.
+    //  `g_we` is exempt -- the adapter edge-captures + masks it.
     always @(posedge clk) if (!rst && op_stall) begin
         if (done)         begin $display("[VRF-BRAM-ASSERT] op_stall && done @%0t",        $time); $finish; end
         if (|lane_fp_req) begin $display("[VRF-BRAM-ASSERT] op_stall && lane_fp_req @%0t",  $time); $finish; end
@@ -3036,14 +2925,10 @@ module karu_varith (
     //  The NLANES compute lanes cover a register's CPR chunks over VGRAN_C =
     //  CPR/NLANES passes; gpass walks 0..VGRAN_C-1 PER dest register, the whole
     //  register is committed on the last pass (last_g), and r holds until then.
-    //  At VGRAN_C==1 (the byte-identical flop path) every check below degenerates
+    //  At VGRAN_C==1 (single-pass geometry, CPR==NLANES) every check below degenerates
     //  to always-true, so attaching this block costs nothing there.
     //  (Same inline $display/$finish style as the pulse-hazard block above; the
     //  port-level VRF contract is policed separately by karu_vrf_assert.)
-    //  the legacy whole-register write-enable: permanently 0 since the
-    //  flop-VRF deletion, so the checks below that key on it are vacuous
-    //  guards against a regression re-driving it.
-    wire va_grp_we = we;
     integer va_l;
     reg [GPW-1:0] va_gp_q;          //  gpass, previous cycle
     reg [3:0]     va_r_q;           //  r, previous cycle
@@ -3072,10 +2957,9 @@ module karu_varith (
             begin $display("[VRF-BRAM-ASSERT] GLR2 illegal gpass step %0d->%0d (VGRAN_C=%0d) @%0t", va_gp_q, gpass, VGRAN_C, $time); $finish; end
 
         //  GLR3 (a non-last is_grp granule must not be the op's FINAL write):
-        //  flop commits the WHOLE register only on the last pass, so va_grp_we
-        //  (we/we_hot) must be 0 on a held (non-last) pass. BRAM writes EVERY pass
-        //  via g_we, but g_wlast (op-final granule -> read-cache invalidate) must
-        //  never fire on a non-last pass (else the cache invalidates mid-op).
+        //  the BRAM VRF writes EVERY pass via g_we, but g_wlast (op-final granule
+        //  -> read-cache invalidate) must never fire on a non-last pass (else the
+        //  cache invalidates mid-op).
         if (va_grp_hold_q && g_we && g_wlast)
             begin $display("[VRF-BRAM-ASSERT] GLR3 g_wlast on a non-last is_grp granule @%0t", $time); $finish; end
 

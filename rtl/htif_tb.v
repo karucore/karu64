@@ -510,7 +510,7 @@ module htif_tb (input wire clk);
         .wb_we          (cpu.wb_we),
         .wb_rd          (cpu.wb_rd),
         .fwb_we         (cpu.fwb_we),
-        .vrf_we         (cpu.vrf_we),
+        .varith_g_we    (cpu.varith_g_we),
         .vg_we          (cpu.vg_we),
         .vxsat_set      (cpu.varith_vxsat),
         .vmem_req       (cpu.vmem_req),

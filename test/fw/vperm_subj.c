@@ -552,7 +552,7 @@ int main(void)
         run8_compress(v8m, v8m);
         { int d=0; for(i=0;i<v8m;i++) ref8[i]=0xEE; for(i=0;i<v8m;i++) if(mact(i)) ref8[d++]=src8[i]; }
         check8("e8/m4 vcompress.vm packed crosses reg boundary", v8m);
-        //  packed-count matrix (streaming dest pack, KARU_VRF_BWE slice a):
+        //  packed-count matrix (streaming dest pack):
         //  first-n masks put the packed count exactly on the granule (16 e8
         //  elements) and register (32) boundaries +/-1, plus the empty/full
         //  extremes. count<16 ends in granule 0 (the zero-BE granule-1 pad

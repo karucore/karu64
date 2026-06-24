@@ -239,8 +239,7 @@ cause-2 illegal-instruction exception and their units are not instantiated.
 
 Performance/area knobs (full table in the repository build notes) include the
 per-unit mul/div cycle counts (`KARU_{M,F,D,V}_*_CYCLES`), FP fast-path multiply
-pipelining (`KARU_F_MUL_PIPE`/`KARU_D_MUL_PIPE`), the gather crossbar width
-(`KARU_V_PERM_LANES`), permute-buffer LUTRAM (`KARU_V_PERM_RAM`), and the two
+pipelining (`KARU_F_MUL_PIPE`/`KARU_D_MUL_PIPE`), and the two
 vector timing levers that close the full-vector FPGA bitstream — the 2-stage lane
 pipeline (`KARU_V_LANE_PIPE`) and the cold-funnel writeback stage
 (`KARU_V_CWB_STAGE`). Each knob is byte-identical when off.
