@@ -13,8 +13,8 @@
 //  Requires VGRAN = VLEN/VBUS_W >= 2 (i.e. VLEN > VBUS_W) -- the whole point
 //  of this module (a VLEN==VBUS_W build would need a single-granule variant).
 //
-//  NOT reset: the BRAM array itself (power-up = 0 via INIT, as on real HW).
-//  rst clears only the v0 flop shadow and the read latches.
+//  NOT reset: the BRAM array, read latches, and v0 shadow retain across soft
+//  reset. They power up through INIT/initial state and then move only on writes.
 
 `include "karu_vcfg.vh"
 
@@ -33,7 +33,7 @@ module karu_vrf_bram #(
     input  wire [$clog2(32*(VLEN/VBUS_W))-1:0]  a_addr,
     input  wire [(VBUS_W/8)-1:0]                a_be,
     input  wire [VBUS_W-1:0]    a_wdata,
-    output reg  [VBUS_W-1:0]    a_rdata,
+    output wire [VBUS_W-1:0]    a_rdata,
 
     //  ---- Port B (primary writeback port) ----
     input  wire                 b_en,
@@ -41,7 +41,7 @@ module karu_vrf_bram #(
     input  wire [$clog2(32*(VLEN/VBUS_W))-1:0]  b_addr,
     input  wire [(VBUS_W/8)-1:0]                b_be,
     input  wire [VBUS_W-1:0]    b_wdata,
-    output reg  [VBUS_W-1:0]    b_rdata,
+    output wire [VBUS_W-1:0]    b_rdata,
 
     //  ---- v0 mask shadow (combinational; flop-backed) ----
     output wire [VLEN-1:0]      v0
@@ -63,43 +63,16 @@ module karu_vrf_bram #(
         end
     endgenerate
 
-    //  ---- the BRAM array (force block RAM; small for VLEN=256, but the
-    //  whole point is to evacuate the flop array out of the CLB fabric) ----
-    (* ram_style = "block" *)
-    reg [VBUS_W-1:0] mem [0:NENT-1];
-
-    integer m;
-    initial begin
-        for (m = 0; m < NENT; m = m + 1) mem[m] = {VBUS_W{1'b0}};
-        a_rdata = {VBUS_W{1'b0}};
-        b_rdata = {VBUS_W{1'b0}};
-    end
-
-    //  ---- Port A: byte-write + NO_CHANGE registered read ----
-    integer ba;
-    always @(posedge clk) begin
-        if (a_en) begin
-            if (a_we) begin
-                for (ba = 0; ba < NBYTES; ba = ba + 1)
-                    if (a_be[ba]) mem[a_addr][ba*8 +: 8] <= a_wdata[ba*8 +: 8];
-            end else begin
-                a_rdata <= mem[a_addr];
-            end
-        end
-    end
-
-    //  ---- Port B: byte-write + NO_CHANGE registered read ----
-    integer bb;
-    always @(posedge clk) begin
-        if (b_en) begin
-            if (b_we) begin
-                for (bb = 0; bb < NBYTES; bb = bb + 1)
-                    if (b_be[bb]) mem[b_addr][bb*8 +: 8] <= b_wdata[bb*8 +: 8];
-            end else begin
-                b_rdata <= mem[b_addr];
-            end
-        end
-    end
+    //  ---- BRAM leaf: byte-write + NO_CHANGE registered reads ----
+    karu_tdp_be_ram #(
+        .DATA_W(VBUS_W), .DEPTH(NENT), .ADDR_W(AW), .NBYTES(NBYTES)
+    ) mem_u (
+        .clk(clk),
+        .a_en(a_en), .a_we(a_we), .a_addr(a_addr), .a_be(a_be),
+        .a_wdata(a_wdata), .a_rdata(a_rdata),
+        .b_en(b_en), .b_we(b_we), .b_addr(b_addr), .b_be(b_be),
+        .b_wdata(b_wdata), .b_rdata(b_rdata)
+    );
 
     //  ---- v0 (mask) flip-flop shadow ----
     //  Mirror any write that targets register 0 (reg = addr[AW-1:GB], granule
@@ -136,5 +109,6 @@ module karu_vrf_bram #(
     //  until the next read, which the consumer awaits; `initial` zeroes all
     //  sim state. Keeping reset off these also avoids a second driver and does
     //  not defeat block-RAM output-register inference. `rst` is kept in the
-    //  port list for interface uniformity with the flop VRF + the checker.)
+    //  port list for interface uniformity with the checker and future macro
+    //  substitutions.)
 endmodule

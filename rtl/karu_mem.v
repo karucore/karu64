@@ -111,8 +111,8 @@ module karu_mem #(
     localparam OFFW  = 6;
     localparam TAGW  = 32 - OFFW - IDXW;
 
-    reg [511:0]     line_data [0:SETS-1];
-    reg [TAGW-1:0]  line_tag  [0:SETS-1];
+    //  Cache data/tag arrays live in leaf RAM wrappers for ASIC macro
+    //  substitution. Valid bits remain local control state.
     reg [SETS-1:0]  line_valid;
 
     function [31:0] xlate; input [31:0] va; begin xlate = va; end endfunction
@@ -132,8 +132,9 @@ module karu_mem #(
     wire [1:0]      req_dw   = req_pa[5:4];     //  128-bit dword in line
     wire            req_uncacheable =
         (req_pa[31:12] == uncache_page[31:12]) || (req_pa[31:28] != 4'h8);
-    wire            req_hit = line_valid[req_idx] && (line_tag[req_idx] == req_tag);
-    wire [511:0]    hit_line = line_data[req_idx];
+    wire [511:0]    hit_line;
+    wire [TAGW-1:0] hit_tag;
+    wire            req_hit = line_valid[req_idx] && (hit_tag == req_tag);
     wire [63:0]     hit_word = hit_line[req_word*64 +: 64];
     wire [127:0]    hit_dw   = hit_line[req_dw*128 +: 128];
 
@@ -145,9 +146,43 @@ module karu_mem #(
     reg         beat;           //  0/1 for 128-bit two-beat ops
     reg [63:0]  uc_lo;          //  low 64 of an uncacheable 128-bit load
 
+    reg [511:0]     store_line;
+    integer         line_bi;
+    always @(*) begin
+        store_line = hit_line;
+        if (req_w128) begin
+            for (line_bi = 0; line_bi < 16; line_bi = line_bi + 1)
+                if (req_wstrb[line_bi])
+                    store_line[(req_dw*128)+line_bi*8 +: 8] = req_wdata[line_bi*8 +: 8];
+        end else begin
+            for (line_bi = 0; line_bi < 8; line_bi = line_bi + 1)
+                if (req_wstrb[line_bi])
+                    store_line[(req_word*64)+line_bi*8 +: 8] = req_wdata[line_bi*8 +: 8];
+        end
+    end
+
+    wire            store_hit_we = (state == S_WR) && !req_uncacheable &&
+                                   line_valid[req_idx] && (hit_tag == req_tag);
+    wire            fill_we = (state == S_FILL_DONE);
+    wire            line_data_we = fill_we || store_hit_we;
+    wire [511:0]    line_data_wdata = fill_we ? fill_buf : store_line;
+    karu_1w1r_async_ram #(
+        .DATA_W(512), .DEPTH(SETS), .ADDR_W(IDXW)
+    ) line_data_u (
+        .clk(clk),
+        .we(line_data_we), .waddr(req_idx), .wdata(line_data_wdata),
+        .raddr(req_idx), .rdata(hit_line)
+    );
+    karu_1w1r_async_ram #(
+        .DATA_W(TAGW), .DEPTH(SETS), .ADDR_W(IDXW)
+    ) line_tag_u (
+        .clk(clk),
+        .we(fill_we), .waddr(req_idx), .wdata(req_tag),
+        .raddr(req_idx), .rdata(hit_tag)
+    );
+
     assign v_busy = (state != S_IDLE);
 
-    integer bi;
     always @(posedge clk) begin
         if (rst) begin
             state <= S_IDLE; line_valid <= {SETS{1'b0}};
@@ -203,7 +238,6 @@ module karu_mem #(
                     end
                 end
                 S_FILL_DONE: begin
-                    line_data[req_idx]<=fill_buf; line_tag[req_idx]<=req_tag;
                     line_valid[req_idx]<=1'b1;
                     v_rdata <= fill_buf[req_dw*128 +: 128];
                     s_rid<=req_id; s_rdata<=fill_buf[req_word*64 +: 64];
@@ -236,19 +270,7 @@ module karu_mem #(
 
                 //  -------- store (write-through; 128 = two beats) --------
                 S_WR: begin
-                    //  update cached line in place (no-allocate)
-                    if (!req_uncacheable && line_valid[req_idx]
-                        && (line_tag[req_idx]==req_tag)) begin
-                        if (req_w128) begin
-                            for (bi=0; bi<16; bi=bi+1)
-                                if (req_wstrb[bi])
-                                    line_data[req_idx][(req_dw*128)+bi*8 +: 8] <= req_wdata[bi*8 +: 8];
-                        end else begin
-                            for (bi=0; bi<8; bi=bi+1)
-                                if (req_wstrb[bi])
-                                    line_data[req_idx][(req_word*64)+bi*8 +: 8] <= req_wdata[bi*8 +: 8];
-                        end
-                    end
+                    //  update cached line in place (no-allocate) through line_data_u.
                     //  write the current 64-bit beat through to memory
                     m_awid<=req_id;
                     m_awaddr<= (req_w128 && beat) ? ({req_pa[31:4],4'b0}+32'd8)

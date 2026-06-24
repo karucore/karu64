@@ -158,11 +158,12 @@ vcu118-fuboot-rom-hex:	$(BUILD)/vcu118_fuboot_rom.bin flow/boot/fuboot_blobs.h f
 #	==========================================================
 
 HTIF_SRC =	rtl/htif_tb.v \
+			rtl/karu_ram_prim.v \
 			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
 			rtl/karu_sv39.v \
 			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v \
 			rtl/karu_m.v \
-			rtl/karu_fregfile.v rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/karu_fregfile.v rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
 			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
 			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v \
 			rtl/karu_fdiv.v rtl/karu_fsqrt.v rtl/karu_fcvt.v rtl/karu_fmisc.v \
@@ -421,11 +422,12 @@ vcwb-test:	$(VERI_CWB_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vfp_subj.hex \
 	done
 
 #	---- VPERM RAM-backed buffers (now always-on) + directed validation ----
-#	The VPERM pram/iram buffers live in distributed RAM (~4096 fewer flops +
-#	no GBUF barrel shifters) and serialize the window to 1 elem/cycle -- an area /
-#	congestion-relief baked into the full-vector bit. Own binary (Vhtif_vcwb
-#	precedent), built with the bit's structural vector knobs (CWB_STAGE + LANE_PIPE) so
-#	the validated config matches the synth. `vpermram-test` exercises the VPERM engine.
+#	The VPERM pram/iram buffers are isolated behind async RAM leaves (~4096
+#	fewer flops + no GBUF barrel shifters) and serialize the window to 1
+#	elem/cycle -- an area/congestion-relief baked into the full-vector bit.
+#	Own binary (Vhtif_vcwb precedent), built with the bit's structural vector
+#	knobs (CWB_STAGE + LANE_PIPE) so the validated config matches the synth.
+#	`vpermram-test` exercises the VPERM engine.
 VERI_PRAM_DIR	=	$(BUILD)/Vhtif_vpermram
 VERI_PRAM_BIN	=	$(VERI_PRAM_DIR)/Vhtif_tb
 $(VERI_PRAM_BIN): $(VERI_PRAM_DIR)/Vhtif_tb.mk
@@ -955,7 +957,7 @@ vfp-test:	$(VERI_FP_BIN) $(BUILD)/vfp_subj.hex
 .PHONY: vrf-bram-test
 vrf-bram-test:	| $(BUILD)
 	iverilog -g2012 -Irtl -o $(BUILD)/vrf_bram_tb \
-		test/karu_vrf_bram_tb.v rtl/karu_vrf_bram.v rtl/karu_vrf_assert.sv
+		test/karu_vrf_bram_tb.v rtl/karu_ram_prim.v rtl/karu_vrf_bram.v rtl/karu_vrf_assert.sv
 	$(BUILD)/vrf_bram_tb
 
 #	---- macro-VRF regression aliases ----
@@ -990,11 +992,12 @@ vrf-bram-core-test bwe-core-test:	$(VERI_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vp
 #	test/fw/ns16550.c) is baked into the on-chip BRAM as _build/firmware.hex.
 
 #	core RTL minus the sim-only testbench + assertion checker
-CORE_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
+CORE_RTL =	rtl/karu_ram_prim.v \
+			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
 			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v \
 			rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
 			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
-			rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
 			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
 			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v rtl/karu_fdiv.v \
 			rtl/karu_fsqrt.v rtl/karu_fcvt.v rtl/karu_fmisc.v rtl/karu_ffma.v \
@@ -1131,7 +1134,8 @@ ddr-irq-test:	$(DDR_SIM_BIN) $(BUILD)/irq_test.hex $(BUILD)/irq_rx.bin
 #	Override: KARUDEB_RV64IMAC_IMAGE=<dir> LINUX_IMG=<flat.img>
 #	          LINUX_DTB=<board.dtb>
 #	          LINUX_MAX_CYCLES=<n>
-LINUX_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
+LINUX_RTL =	rtl/karu_ram_prim.v \
+			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
 			rtl/karu_sv39.v rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v \
 			rtl/karu_csr.v rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
 			rtl/karu_fpu.v rtl/karu_fmul.v rtl/karu_fadd.v rtl/karu_fdiv.v \
@@ -1146,7 +1150,7 @@ LINUX_RTL =	rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/kar
 
 LINUX_V_RTL =	$(LINUX_RTL) \
 			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
-			rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
+			rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
 			rtl/zvk/keccak.v rtl/zvk/keccak_round.v $(ZVK_RTL)
 
 LINUX_DIR  =	$(BUILD)/Vlinux

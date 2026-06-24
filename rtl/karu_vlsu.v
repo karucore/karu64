@@ -138,8 +138,9 @@ module karu_vlsu #(
     reg [5:0]   mg;             //  current memory granule
     reg [5:0]   rg;             //  current register granule (global, 0..nrg-1)
 
-    reg [127:0] membuf [0:MAXMG-1];
-    reg [127:0] regbuf [0:MAXRG-1];     //  old vd (load tail) / store data
+    wire [127:0] asm_gran;
+    wire [127:0] st_wdata;
+    wire [15:0]  st_strb;
 
     //  ---- translation state (V2 preflight) ----
     reg         ff_q;                   //  latched fault-only-first
@@ -167,53 +168,6 @@ module karu_vlsu #(
     wire [4:0]      rg_reg = vd_q + rg[5:GW];   //  vd + (rg / GRAN)
     wire [GW-1:0]   rg_off = rg[GW-1:0];        //  rg % GRAN
 
-    //  ---- assemble one register granule for a load ----
-    reg [127:0] asm_gran;
-    integer k; reg [31:0] bi, sa, ej; reg [127:0] msel; reg act;
-    always @(*) begin
-        asm_gran = regbuf[rg[$clog2(MAXRG)-1:0]];
-        for (k = 0; k < 16; k = k + 1) begin
-            bi  = ({26'b0, rg} << 4) + k[31:0]; //  group byte index
-            ej  = bi >> eew_q;                  //  element index
-            act = vm_q || v0_q[ej[7:0]];
-            sa  = {28'b0, boff} + bi;
-            msel = membuf[sa[31:4]];
-            //  tail (bi>=nbytes), prestart (bi<vst_b, RVV 3.7) AND masked-off
-            //  (!act): agnostic-as-undisturbed (keep old vd). The ACT4/Sail golden
-            //  leaves all of these at their prior value -- it observes them when a
-            //  later op reinterprets+preserves them, so all-1s would diverge from
-            //  the reference. (This applies to the mask-agnostic body too.)
-            asm_gran[k*8 +: 8] =
-                (bi >= nbytes) ? regbuf[rg[$clog2(MAXRG)-1:0]][k*8 +: 8] :
-                (bi <  vst_b)  ? regbuf[rg[$clog2(MAXRG)-1:0]][k*8 +: 8] :
-                act            ? msel[ {sa[3:0], 3'b000} +: 8 ]
-                               : regbuf[rg[$clog2(MAXRG)-1:0]][k*8 +: 8];
-        end
-    end
-
-    //  ---- build one memory granule's write data/strobe for a store ----
-    reg [127:0] st_wdata;
-    reg [15:0]  st_strb;
-    integer p; reg [31:0] mabs; reg signed [31:0] ri; reg [31:0] rabs, sej; reg [127:0] rsel;
-    always @(*) begin
-        st_wdata = 128'b0;  st_strb = 16'b0;
-        mabs = 32'b0; ri = 32'sb0; rabs = 32'b0; sej = 32'b0; rsel = 128'b0;
-        for (p = 0; p < 16; p = p + 1) begin
-            mabs = ({26'b0, mg} << 4) + p[31:0];
-            ri   = $signed(mabs) - $signed({28'b0, boff});
-            //  prestart bytes (ri < vst_b) are never stored (RVV 3.7)
-            if (ri >= $signed(vst_b) && ri < $signed(nbytes)) begin
-                rabs = ri[31:0];
-                sej  = rabs >> eew_q;
-                if (vm_q || v0_q[sej[7:0]]) begin
-                    rsel = regbuf[rabs[31:4]];
-                    st_wdata[p*8 +: 8] = rsel[ {rabs[3:0], 3'b000} +: 8 ];
-                    st_strb[p] = 1'b1;
-                end
-            end
-        end
-    end
-
     //  ================= per-element engine (strided/indexed/segment) =========
     localparam integer MAXB = 8 * `KARU_VLENB;      //  register-group bytes at the 8-reg max
     reg         idx_mode_q;
@@ -227,25 +181,12 @@ module karu_vlsu #(
     reg [3:0]   pe_f;           //  field index within a segment
     reg [5:0]   pe_nrg, idx_nrg;    //  data / index group granule counts
     reg [127:0] g0d, g1d;       //  captured memory granules (element may straddle)
-    reg [7:0]   peb [0:MAXB-1]; //  flat data-group bytes (load dest / store src)
-    reg [7:0]   pib [0:MAXB-1]; //  flat index-group bytes (indexed)
-    integer     fk;             //  byte-loop counter for the per-element FSM
+    wire [63:0] idxv;
 
     wire [31:0] eewb   = 32'd1 << eew_q;                    //  data element bytes
     wire [31:0] fld_rb = {28'b0, nregf_q} * `KARU_VLENB;    //  bytes per field register-group
     wire [4:0]  idx_rreg = idx_vs_q + rg[5:GW];
     wire [GW-1:0] idx_roff = rg[GW-1:0];
-
-    //  index value for the current element (zero-extended, may straddle bytes)
-    reg  [63:0] idxv;   integer ik; reg [31:0] ibyte;
-    always @(*) begin
-        idxv = 64'b0;   ibyte = 32'b0;
-        for (ik = 0; ik < 8; ik = ik + 1)
-            if (ik < (32'd1 << idx_eew_q)) begin
-                ibyte = pe_i * (32'd1 << idx_eew_q) + ik[31:0];
-                idxv[ik*8 +: 8] = pib[ibyte[$clog2(MAXB)-1:0]];
-            end
-    end
 
     //  current element address + geometry (64-bit VA arithmetic, V1: strided
     //  offsets wrap in 64 bits like the scalar XLEN stride; indexed offsets
@@ -277,31 +218,9 @@ module karu_vlsu #(
     wire        pe_act = vm_q || v0_q[pe_i[7:0]];
     wire [31:0] rbyte0 = ({28'b0, pe_f} * fld_rb) + (pe_i * eewb);  //  flat dest/src byte base
 
-    //  store: assemble write data + strobe for the two possible granules
-    reg [127:0] pe_wd0, pe_wd1; reg [15:0] pe_st0, pe_st1;
-    integer sk; reg [31:0] mbk;
-    always @(*) begin
-        pe_wd0=0; pe_wd1=0; pe_st0=0; pe_st1=0; mbk=0;
-        for (sk = 0; sk < 8; sk = sk + 1)
-            if (sk < eewb) begin
-                mbk = {28'b0, pe_off} + sk[31:0];
-                if (mbk < 16) begin
-                    pe_wd0[mbk[3:0]*8 +: 8] = peb[(rbyte0+sk[31:0])>>0 & (MAXB-1)];
-                    pe_st0[mbk[3:0]] = 1'b1;
-                end else begin
-                    pe_wd1[(mbk-32'd16)*8 +: 8] = peb[(rbyte0+sk[31:0]) & (MAXB-1)];
-                    pe_st1[mbk[3:0]] = 1'b1;    //  mbk-16 low nibble == mbk[3:0]
-                end
-            end
-    end
-
-    //  load writeback: assemble dest granule rg from the flat byte buffer
-    reg [127:0] pe_wbgran;  integer wk;
-    always @(*) begin
-        pe_wbgran = 128'b0;
-        for (wk = 0; wk < 16; wk = wk + 1)
-            pe_wbgran[wk*8 +: 8] = peb[({26'b0, rg} << 4) + wk[31:0] & (MAXB-1)];
-    end
+    //  store/writeback data assembled from the isolated scratch buffer.
+    wire [127:0] pe_wd0, pe_wd1, pe_wbgran;
+    wire [15:0]  pe_st0, pe_st1;
 
     localparam [5:0] S_IDLE=6'd0, S_RDREG=6'd1, S_RDREG_W=6'd2,
                S_MEMRD=6'd3, S_MEMRD_W=6'd4, S_LDWR=6'd5,
@@ -313,9 +232,9 @@ module karu_vlsu #(
     //  post-translate destination for the current pelem element (derived from
     //  the S_PE_* states above; moved below the enum so it follows its decls).
     wire [5:0]  pe_run   = pe_pass1 ? S_PE_NEXT : (st_q ? S_PE_WR0 : S_PE_RD0);
-    //  Extra +1 wait states: the BRAM VRF granule read is REGISTERED (data one
-    //  cycle later than the combinational flop VRF), so each VRF-read issue
-    //  state needs one bubble before its capture state. See doc/architecture.md.
+    //  Extra +1 wait states: the macro-VRF granule read is registered, so each
+    //  VRF-read issue state needs one bubble before its capture state. See
+    //  doc/architecture.md.
     localparam [5:0] S_RDREG_B=6'd24, S_PE_IDX_B=6'd25, S_PE_RD_B=6'd26;
     //  V2 translation-preflight states: contiguous 2-page xlate (XLT*) and
     //  the per-element 1-or-2 page xlate (PE_XL*).
@@ -323,6 +242,22 @@ module karu_vlsu #(
                S_PE_XLA=6'd31, S_PE_XLAW=6'd32, S_PE_XLB=6'd33, S_PE_XLBW=6'd34;
     reg [5:0] state;
     assign busy = (state != S_IDLE);
+
+    karu_vlsu_buf #(.GRAN(GRAN), .GW(GW)) buf_u (
+        .clk(clk),
+        .rg(rg), .mg(mg), .boff(boff), .nbytes(nbytes), .vst_b(vst_b),
+        .eew_q(eew_q), .vm_q(vm_q), .v0_q(v0_q),
+        .asm_gran(asm_gran), .st_wdata(st_wdata), .st_strb(st_strb),
+        .idx_eew_q(idx_eew_q), .pe_i(pe_i), .rbyte0(rbyte0), .eewb(eewb),
+        .pe_off(pe_off), .idxv(idxv), .pe_wd0(pe_wd0), .pe_wd1(pe_wd1),
+        .pe_st0(pe_st0), .pe_st1(pe_st1), .pe_wbgran(pe_wbgran),
+        .regbuf_we(state == S_RDREG_W), .regbuf_wrg(rg), .regbuf_wdata(vg_rdata),
+        .membuf_we((state == S_MEMRD_W) && vmem_done), .membuf_wmg(mg), .membuf_wdata(vmem_rdata),
+        .pib_we(state == S_PE_IDXW), .pib_wrg(rg), .pib_wdata(vg_rdata),
+        .peb_gran_we(state == S_PE_RDW), .peb_wrg(rg), .peb_wdata(vg_rdata),
+        .peb_elem_we(state == S_PE_LDB), .peb_elem_base(rbyte0), .peb_elem_off(pe_off),
+        .peb_elem_g0(g0d), .peb_elem_g1(g1d)
+    );
 
     always @(posedge clk) begin
         if (rst) begin
@@ -372,7 +307,6 @@ module karu_vlsu #(
                 end
                 S_RDREG_B: state<=S_RDREG_W;    //  BRAM registered-read bubble
                 S_RDREG_W: begin
-                    regbuf[rg[$clog2(MAXRG)-1:0]] <= vg_rdata;
                     if (rg == nrg-1) begin
                         rg<=0;
                         //  no active bytes (vl == 0, or vstart >= vl) -> NO memory
@@ -460,7 +394,6 @@ module karu_vlsu #(
                     end
                 end
                 S_MEMRD_W: if (vmem_done) begin
-                    membuf[mg] <= vmem_rdata;
                     if (mg == n_mg-1) begin mg<=0; state<=S_LDWR; end
                     else begin mg<=mg+1; state<=S_MEMRD; end
                 end
@@ -500,8 +433,6 @@ module karu_vlsu #(
                 end
                 S_PE_IDX_B: state<=S_PE_IDXW;   //  BRAM registered-read bubble
                 S_PE_IDXW: begin
-                    for (fk = 0; fk < 16; fk = fk + 1)
-                        pib[(({26'b0, rg} << 4) + fk[31:0]) & (MAXB-1)] <= vg_rdata[fk*8 +: 8];
                     if (rg == idx_nrg-1) begin rg<=0; state<=S_PE_RD; end
                     else begin rg<=rg+1; state<=S_PE_IDX; end
                 end
@@ -512,8 +443,6 @@ module karu_vlsu #(
                 end
                 S_PE_RD_B: state<=S_PE_RDW;     //  BRAM registered-read bubble
                 S_PE_RDW: begin
-                    for (fk = 0; fk < 16; fk = fk + 1)
-                        peb[(({26'b0, rg} << 4) + fk[31:0]) & (MAXB-1)] <= vg_rdata[fk*8 +: 8];
                     if (rg == pe_nrg-1) begin
                         //  start the element walk at vstart (prestart elements are
                         //  never accessed); vstart >= vl touches no elements, same
@@ -596,11 +525,6 @@ module karu_vlsu #(
                 end
                 S_PE_RD1W: if (vmem_done) begin g1d<=vmem_rdata; state<=S_PE_LDB; end
                 S_PE_LDB: begin                 //  scatter the loaded element into peb
-                    for (fk = 0; fk < 8; fk = fk + 1)
-                        if (fk < eewb)
-                            peb[(rbyte0+fk[31:0]) & (MAXB-1)] <=
-                                ((pe_off+fk) < 16) ? g0d[(pe_off+fk)*8 +: 8]
-                                                   : g1d[(pe_off+fk-16)*8 +: 8];
                     state <= S_PE_NEXT;
                 end
                 S_PE_WR0: begin

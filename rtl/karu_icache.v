@@ -62,9 +62,16 @@ module karu_icache #(
     localparam integer TAGW   = `AXI_ADDR_W - IDXW - OFFW;
 
     //  storage: data[{index, word}] (8 64-bit words/line), tag, valid.
-    reg [63:0]          cdata [0:LINES*8-1];
-    reg [TAGW-1:0]      ctag  [0:LINES-1];
+    //  Data/tag arrays live in leaf RAM wrappers for ASIC macro substitution;
+    //  valid bits remain local control state.
     reg [LINES-1:0]     cvalid;
+
+    localparam S_IDLE=3'd0, S_SERVE=3'd1, S_MISS_AR=3'd2, S_MISS_R=3'd3,
+               S_UC_AR=3'd4, S_UC_R=3'd5;
+    reg [2:0]   state;
+    reg [2:0]   beat;           //  refill beat counter
+    reg [63:0]  serve_data;     //  the word to return (hit / refilled / uncached)
+    reg         poison;         //  a flush hit during this refill -> don't validate
 
     //  ---- request decode (latched on AR accept) ----
     reg [`AXI_ADDR_W-1:0]   addr_q;
@@ -73,15 +80,31 @@ module karu_icache #(
     wire [IDXW-1:0] a_idx = addr_q[OFFW+IDXW-1:OFFW];
     wire [2:0]      a_qw  = addr_q[5:3];                //  word within the line
     wire [TAGW-1:0] a_tag = addr_q[`AXI_ADDR_W-1:OFFW+IDXW];
+    wire [IDXW-1:0] s_idx = s_araddr[OFFW+IDXW-1:OFFW];
+    wire [2:0]      s_qw  = s_araddr[5:3];
+    wire [TAGW-1:0] s_tag = s_araddr[`AXI_ADDR_W-1:OFFW+IDXW];
+    wire [IDXW+2:0] cdata_raddr = {s_idx, s_qw};
+    wire [IDXW+2:0] cdata_waddr = {a_idx, beat};
+    wire [63:0]     cdata_rdata;
+    wire [TAGW-1:0] ctag_rdata;
+    wire            cdata_we = (state == S_MISS_R) && m_rvalid && m_rready;
+    wire            ctag_we  = cdata_we && m_rlast && !poison && !flush;
+    karu_1w1r_async_ram #(
+        .DATA_W(64), .DEPTH(LINES*8), .ADDR_W(IDXW+3)
+    ) cdata_u (
+        .clk(clk),
+        .we(cdata_we), .waddr(cdata_waddr), .wdata(m_rdata),
+        .raddr(cdata_raddr), .rdata(cdata_rdata)
+    );
+    karu_1w1r_async_ram #(
+        .DATA_W(TAGW), .DEPTH(LINES), .ADDR_W(IDXW)
+    ) ctag_u (
+        .clk(clk),
+        .we(ctag_we), .waddr(a_idx), .wdata(a_tag),
+        .raddr(s_idx), .rdata(ctag_rdata)
+    );
     //  (code lives in RAM 0x8xxx_xxxx; everything else bypasses -- decoded
     //  directly off the incoming s_araddr in S_IDLE below.)
-
-    localparam S_IDLE=3'd0, S_SERVE=3'd1, S_MISS_AR=3'd2, S_MISS_R=3'd3,
-               S_UC_AR=3'd4, S_UC_R=3'd5;
-    reg [2:0]   state;
-    reg [2:0]   beat;           //  refill beat counter
-    reg [63:0]  serve_data;     //  the word to return (hit / refilled / uncached)
-    reg         poison;         //  a flush hit during this refill -> don't validate
 
     integer i;
     always @(posedge clk) begin
@@ -109,10 +132,8 @@ module karu_icache #(
                         //  so it is forced down the (fresh) refill path.
                         if (s_araddr[31:28] != 4'h8) begin
                             state <= S_UC_AR;
-                        end else if (!flush
-                              && cvalid[s_araddr[OFFW+IDXW-1:OFFW]]
-                              && ctag[s_araddr[OFFW+IDXW-1:OFFW]] == s_araddr[`AXI_ADDR_W-1:OFFW+IDXW]) begin
-                            serve_data <= cdata[{s_araddr[OFFW+IDXW-1:OFFW], s_araddr[5:3]}];
+                        end else if (!flush && cvalid[s_idx] && ctag_rdata == s_tag) begin
+                            serve_data <= cdata_rdata;
                             state <= S_SERVE;
                         end else begin
                             poison <= 1'b0;
@@ -141,14 +162,12 @@ module karu_icache #(
                 end
                 S_MISS_R: begin
                     if (m_rvalid && m_rready) begin
-                        cdata[{a_idx, beat}] <= m_rdata;
                         if (beat == a_qw) serve_data <= m_rdata;    //  requested word
                         beat <= beat + 3'd1;
                         if (m_rlast) begin
                             m_rready <= 1'b0;
                             if (!poison && !flush) begin
                                 cvalid[a_idx] <= 1'b1;
-                                ctag[a_idx]   <= a_tag;
                             end
                             state <= S_SERVE;
                         end

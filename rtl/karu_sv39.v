@@ -116,7 +116,7 @@ module karu_sv39 #(
 
     reg [PWC_LINES-1:0]         pwc_v;
     reg [57:6]                  pwc_tag [0:PWC_LINES-1];
-    reg [511:0]                 pwc_data [0:PWC_LINES-1];
+    reg [511:0]                 pwc_fill_line;
     reg [1:0]                   pwc_replace;
     reg [1:0]                   fill_way_q;
 
@@ -229,6 +229,17 @@ module karu_sv39 #(
     reg pwc_hit;
     reg [1:0] pwc_hit_i;
     reg [63:0] pte_from_cache;
+    wire [511:0] pwc_hit_line;
+    wire [511:0] pwc_fill_next = line_put(pwc_fill_line, fill_beat_q, rdata);
+    wire         pwc_data_we = (state == S_R) && rvalid && rready;
+
+    karu_1w1r_async_ram #(
+        .DATA_W(512), .DEPTH(PWC_LINES), .ADDR_W(2)
+    ) pwc_data_u (
+        .clk(clk),
+        .we(pwc_data_we), .waddr(fill_way_q), .wdata(pwc_fill_next),
+        .raddr(pwc_hit_i), .rdata(pwc_hit_line)
+    );
 
     always @(*) begin
         tlb_hit = 1'b0;
@@ -254,7 +265,7 @@ module karu_sv39 #(
             if (pwc_v[i] && pwc_tag[i] == pte_addr_q[57:6] && !pwc_hit) begin
                 pwc_hit = 1'b1;
                 pwc_hit_i = i[1:0];
-                pte_from_cache = line_pte(pwc_data[i], pte_addr_q[5:3]);
+                pte_from_cache = line_pte(pwc_hit_line, pte_addr_q[5:3]);
             end
         end
     end
@@ -407,7 +418,7 @@ module karu_sv39 #(
                         end
                     end else begin
                         fill_way_q <= pwc_replace;
-                        pwc_data[pwc_replace] <= 512'b0;
+                        pwc_fill_line <= 512'b0;
                         araddr <= {pte_addr_q[`AXI_ADDR_W-1:6], 6'b0};
                         arid <= 0;
                         arlen <= 8'd7;
@@ -424,7 +435,7 @@ module karu_sv39 #(
                     if (arvalid && arready)
                         arvalid <= 1'b0;
                     if (rvalid && rready) begin
-                        pwc_data[fill_way_q] <= line_put(pwc_data[fill_way_q], fill_beat_q, rdata);
+                        pwc_fill_line <= pwc_fill_next;
                         if (rlast || fill_beat_q == 3'd7) begin
                             pwc_v[fill_way_q] <= 1'b1;
                             pwc_tag[fill_way_q] <= pte_addr_q[57:6];

@@ -86,6 +86,12 @@ latches `op3` as `fma_op3_q` because its add stage runs several cycles later).
   dmem master; vector and immu/dmmu PTW traffic arbitrated onto dmem in
   `karu64.v`). Everything outside the DRAM window is uncacheable by
   construction, so all MMIO bypasses the L1.
+- **Memory leaves** — large inferred arrays are kept behind named leaf modules
+  for ASIC macro substitution: `karu_ram_prim.v` contains the generic true
+  dual-port byte-enable and async-read RAM wrappers used by the VRF, caches,
+  PWC, and VPERM buffers; `karu_vlsu_buf.v` isolates the VLSU scratch buffers
+  behind a sequencer-facing interface. The leaf interfaces preserve the current
+  RTL timing models.
 
 ### Decode and scalar integer
 
@@ -182,7 +188,8 @@ replicated lane array so synthesis maps one lane and copies it:
   granule access for straddling elements). The VLSU **translates through the
   shared Sv39 DMMU** with a preflight pass (only ACTIVE elements translated,
   precise fault-abort), so vector page faults trap/delegate with exact
-  cause/tval/epc. `vle*ff`/`vlseg*ff` trim on a faulting tail.
+  cause/tval/epc. Its temporary register, memory, index, and element buffers
+  live in `karu_vlsu_buf`. `vle*ff`/`vlseg*ff` trim on a faulting tail.
 - **`karu_vest7`** — the 7-bit `vfrec7`/`vfrsqrt7` estimates (a verbatim port of
   spike's `fall_reciprocal.c`).
 

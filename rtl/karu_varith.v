@@ -327,20 +327,25 @@ module karu_varith (
     wire [4:0] r_dbl  = {r, 1'b0} + {4'b0, nph};        //  2r + phase
     //  ---- VPERM (cross-lane) buffers & geometry (forward-declared) ----
     localparam GBUF = VLEN*8;                           //  max group bits (LMUL<=8)
-    //  slice (b): the perm source/index buffers are distributed-RAM word
-    //  arrays instead of GBUF-wide flop vectors -- deletes the 4096 buffer
-    //  flops and (with the serialized window) turns the two GBUF->64
-    //  variable barrel shifters (pelem/gidx) into native 64-bit word reads.
+    //  slice (b): the perm source/index buffers live behind async RAM leaves
+    //  instead of GBUF-wide flop vectors -- deletes the 4096 buffer flops and
+    //  (with the serialized window) turns the two GBUF->64 variable barrel
+    //  shifters (pelem/gidx) into native 64-bit word reads.
     //  Writes happen only in S_PLOAD, reads only in S_PCOMP/S_CMP_SCAN, so
     //  there is no read-during-write hazard.
     localparam WPR    = VLEN/64;                    //  64-bit words per v-reg
     localparam WPW    = (WPR > 1) ? $clog2(WPR) : 1;
     localparam PDEPTH = GBUF/64;                    //  words per source-group buffer
     localparam PWW    = $clog2(PDEPTH);             //  word-address width (any VLEN)
-    (* ram_style = "distributed" *) reg [63:0] pram [0:PDEPTH-1];   //  vs2 source group
-    (* ram_style = "distributed" *) reg [63:0] iram [0:PDEPTH-1];   //  vs1 index/mask group
     reg [WPW-1:0] plw;                              //  word subcounter within a reg
     reg [PWW-1:0] plwa;                             //  running load word address
+    wire [PWW-1:0] pram_src_raddr, pram_mask_raddr;
+    wire [PWW-1:0] iram_idx_raddr, iram_cmp_raddr;
+    wire [63:0]    pram_src_word, pram_mask_word;
+    wire [63:0]    iram_idx_word, iram_cmp_word;
+    wire           pbuf_we;
+    wire [63:0]    pbuf_vs2_word = vs2_g[plw[0]*64 +: 64];
+    wire [63:0]    pbuf_vs1_word = vs1_g[plw[0]*64 +: 64];
     reg [3:0]  pli;                                     //  perm load counter
     reg        ld_active;                               //  high during the perm load phase
     reg [31:0] iota_acc;                                //  viota running prefix (carried per window)
@@ -1141,22 +1146,34 @@ module karu_varith (
     //  Both source groups are buffered first (S_PLOAD), then one dest
     //  register is computed+written per cycle (S_PCOMP) from the buffers.
     //  ========================================================
-    //  source element g (SEW-wide) out of the source RAM pram
-    function [63:0] pelem; input [31:0] g; reg [63:0] sm; reg [31:0] sh;
+    //  source element g (SEW-wide) out of one 64-bit source-RAM word.
+    function [PWW-1:0] pelem_addr; input [31:0] g; reg [31:0] sh;
+        begin
+            sh = g << sew_lg;                   //  == g * sewb (sewb = 2^sew_lg); shift, not DSP
+            pelem_addr = sh[6 +: PWW];
+        end
+    endfunction
+    function [63:0] pelem_word; input [31:0] g; input [63:0] word; reg [63:0] sm; reg [31:0] sh;
         begin
             sm = (sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
             sh = g << sew_lg;                   //  == g * sewb (sewb = 2^sew_lg); shift, not DSP
             //  SEW divides 64, so an element never straddles a word
-            pelem = (pram[sh[6 +: PWW]] >> sh[5:0]) & ~sm;
+            pelem_word = (word >> sh[5:0]) & ~sm;
         end
     endfunction
-    //  gather index value at element ge (SEW-wide from iram; ei16 -> 16-bit)
-    function [63:0] gidx; input [31:0] ge; reg [63:0] sm; reg [31:0] sh; reg [6:0] iw;
+    //  gather index value at element ge (SEW-wide from iram; ei16 -> 16-bit).
+    function [PWW-1:0] gidx_addr; input [31:0] ge; reg [31:0] sh;
+        begin
+            sh = ge << (is_gei16 ? 6'd4 : sew_lg);  //  == ge * iw (iw = 2^lg); shift, not DSP
+            gidx_addr = sh[6 +: PWW];
+        end
+    endfunction
+    function [63:0] gidx_word; input [31:0] ge; input [63:0] word; reg [63:0] sm; reg [31:0] sh; reg [6:0] iw;
         begin
             iw = is_gei16 ? 7'd16 : sewb;
             sm = (iw >= 7'd64) ? 64'h0 : ({64{1'b1}} << iw);
             sh = ge << (is_gei16 ? 6'd4 : sew_lg);  //  == ge * iw (iw = 2^lg); shift, not DSP
-            gidx = (iram[sh[6 +: PWW]] >> sh[5:0]) & ~sm;
+            gidx_word = (word >> sh[5:0]) & ~sm;
         end
     endfunction
 
@@ -1192,8 +1209,8 @@ module karu_varith (
     reg [31:0]     cse;             //  source element index being examined
     reg [31:0]     out_idx;         //  packed count so far = next free dest slot
     reg [31:0]     cmp_count;       //  final packed count (latched at scan end)
-    wire           cmp_sel = (cse < vl_q) && iram[cse[6 +: PWW]][cse[5:0]]; //  in-vl & mask-selected
-    wire [63:0]    cmp_src = pelem(cse) & ~elem_sm;         //  one source element
+    wire           cmp_sel = (cse < vl_q) && iram_cmp_word[cse[5:0]]; //  in-vl & mask-selected
+    wire [63:0]    cmp_src = pelem_word(cse, pram_src_word) & ~elem_sm; //  one source element
     integer csb;
 
     //  -- per-dest-register compute, WINDOWED to PLANES elements/cycle.
@@ -1224,19 +1241,19 @@ module karu_varith (
                 //  consume pval under their own bound checks. An out-of-range
                 //  index may wrap the RAM word address; every arm that can
                 //  produce one discards pval on exactly that condition.
-                pidx = gidx(pge);
+                pidx = gidx_word(pge, iram_idx_word);
                 prd  = is_gscalar  ? gidx_sx[31:0]
                      : is_gvv      ? pidx[31:0]
                      : is_slideup  ? (pge - slide_off[31:0])
                      : is_slide1up ? (pge - 32'd1)
                      : is_slidedn  ? (pge + slide_off[31:0])
                      :               (pge + 32'd1);     //  slide1dn
-                pval = pelem(prd);
+                pval = pelem_word(prd, pram_src_word);
                 if (is_viota) begin
                     praw = {32'b0, icnt};
                     pwr  = (pge < vl_q);
                     //  count active source-mask bits strictly before the NEXT element
-                    psrcbit = pram[pge[6 +: PWW]][pge[5:0]];    //  vs2 mask register, bit pge
+                    psrcbit = pram_mask_word[pge[5:0]];    //  vs2 mask register, bit pge
                     if (pge < vl_q && pact && psrcbit) icnt = icnt + 32'd1;
                 end else if (is_gscalar) begin
                     praw = (gidx_sx < {32'b0, vlmax}) ? pval : 64'd0;
@@ -1383,6 +1400,29 @@ module karu_varith (
                , S_CSTAGE=6'd49
 `endif
                ;
+
+    assign pbuf_we        = (state == S_PLOAD) && !op_stall;
+    assign pram_src_raddr = is_compress ? pelem_addr(cse) : pelem_addr(prd);
+    assign pram_mask_raddr= pge[6 +: PWW];
+    assign iram_idx_raddr = gidx_addr(pge);
+    assign iram_cmp_raddr = cse[6 +: PWW];
+
+    karu_1w2r_async_ram #(
+        .DATA_W(64), .DEPTH(PDEPTH), .ADDR_W(PWW)
+    ) pram_u (
+        .clk(clk),
+        .we(pbuf_we), .waddr(plwa), .wdata(pbuf_vs2_word),
+        .raddr0(pram_src_raddr), .rdata0(pram_src_word),
+        .raddr1(pram_mask_raddr), .rdata1(pram_mask_word)
+    );
+    karu_1w2r_async_ram #(
+        .DATA_W(64), .DEPTH(PDEPTH), .ADDR_W(PWW)
+    ) iram_u (
+        .clk(clk),
+        .we(pbuf_we), .waddr(plwa), .wdata(pbuf_vs1_word),
+        .raddr0(iram_idx_raddr), .rdata0(iram_idx_word),
+        .raddr1(iram_cmp_raddr), .rdata1(iram_cmp_word)
+    );
 
 `ifdef KARU_V_CWB_STAGE
     reg  [`KARU_VLEN-1:0]  cwb_asm; //  cold assembly-output stage (placed near the assembly)
@@ -2462,14 +2502,12 @@ module karu_varith (
                 end
 
                 //  ---- VPERM load: buffer the source/index groups, one reg/cycle ----
-                S_PLOAD: begin
-                    //  one 64-bit word/cycle; pli (the VRF read address) advances
-                    //  only after WPR word writes, so d_vs1/d_vs2 are held stable
-                    //  stage-4: the snapshot words come from the granule feed
-                    //  (vs*_g holds granule plw[WPW-1]; low bit = word within it)
-                    pram[plwa] <= vs2_g[plw[0]*64 +: 64];
-                    iram[plwa] <= vs1_g[plw[0]*64 +: 64];
-                    plwa <= plwa + 1'b1;
+                    S_PLOAD: begin
+                        //  one 64-bit word/cycle; pli (the VRF read address) advances
+                        //  only after WPR word writes, so d_vs1/d_vs2 are held stable
+                        //  stage-4: the snapshot words come from the granule feed
+                        //  (vs*_g holds granule plw[WPW-1]; low bit = word within it)
+                        plwa <= plwa + 1'b1;
                     if (plw != WPR - 1) plw <= plw + 1'b1;
                     else begin
                         plw <= {WPW{1'b0}};

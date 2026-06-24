@@ -227,11 +227,12 @@ and the D-precision combinational multiplier costs another 38 kGE.
 | rest (small FP units, RVC, decoder)              | ~27 | 11% |
 
 The two big remaining contributors (`karu_fdiv_d` at 71 kGE and the
-register files at 56 kGE combined) are not affected by the multiplier
-flags — they're already iterative (the D divider is bit-serial by
-construction) or are flop-based register files where the cell count is
-data, not logic. Switching to an SRAM-backed regfile would shrink that
-last 56 kGE by ~3× but is not in scope for this flow.
+scalar/FP register files at 56 kGE combined) are not affected by the
+multiplier flags — they're already iterative (the D divider is bit-serial by
+construction) or are flop-based register files where the cell count is data,
+not logic. The vector VRF and other large inferred arrays are isolated behind
+memory leaves for ASIC macro substitution; compiled scalar/FP regfiles are
+still outside this flow.
 
 ### Timing observations
 
