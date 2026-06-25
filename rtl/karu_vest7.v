@@ -23,43 +23,85 @@ module karu_vest7 (
     output reg  [4:0]   flags
 );
     //  ---- the two 128-entry tables (verbatim from fall_reciprocal.c) ----
-    reg [6:0] rsq [0:127];
-    reg [6:0] rcp [0:127];
-    initial begin
-        rsq[  0]=52;rsq[  1]=51;rsq[  2]=50;rsq[  3]=48;rsq[  4]=47;rsq[  5]=46;rsq[  6]=44;rsq[  7]=43;
-        rsq[  8]=42;rsq[  9]=41;rsq[ 10]=40;rsq[ 11]=39;rsq[ 12]=38;rsq[ 13]=36;rsq[ 14]=35;rsq[ 15]=34;
-        rsq[ 16]=33;rsq[ 17]=32;rsq[ 18]=31;rsq[ 19]=30;rsq[ 20]=30;rsq[ 21]=29;rsq[ 22]=28;rsq[ 23]=27;
-        rsq[ 24]=26;rsq[ 25]=25;rsq[ 26]=24;rsq[ 27]=23;rsq[ 28]=23;rsq[ 29]=22;rsq[ 30]=21;rsq[ 31]=20;
-        rsq[ 32]=19;rsq[ 33]=19;rsq[ 34]=18;rsq[ 35]=17;rsq[ 36]=16;rsq[ 37]=16;rsq[ 38]=15;rsq[ 39]=14;
-        rsq[ 40]=14;rsq[ 41]=13;rsq[ 42]=12;rsq[ 43]=12;rsq[ 44]=11;rsq[ 45]=10;rsq[ 46]=10;rsq[ 47]= 9;
-        rsq[ 48]= 9;rsq[ 49]= 8;rsq[ 50]= 7;rsq[ 51]= 7;rsq[ 52]= 6;rsq[ 53]= 6;rsq[ 54]= 5;rsq[ 55]= 4;
-        rsq[ 56]= 4;rsq[ 57]= 3;rsq[ 58]= 3;rsq[ 59]= 2;rsq[ 60]= 2;rsq[ 61]= 1;rsq[ 62]= 1;rsq[ 63]= 0;
-        rsq[ 64]=127;rsq[ 65]=125;rsq[ 66]=123;rsq[ 67]=121;rsq[ 68]=119;rsq[ 69]=118;rsq[ 70]=116;rsq[ 71]=114;
-        rsq[ 72]=113;rsq[ 73]=111;rsq[ 74]=109;rsq[ 75]=108;rsq[ 76]=106;rsq[ 77]=105;rsq[ 78]=103;rsq[ 79]=102;
-        rsq[ 80]=100;rsq[ 81]= 99;rsq[ 82]= 97;rsq[ 83]= 96;rsq[ 84]= 95;rsq[ 85]= 93;rsq[ 86]= 92;rsq[ 87]= 91;
-        rsq[ 88]= 90;rsq[ 89]= 88;rsq[ 90]= 87;rsq[ 91]= 86;rsq[ 92]= 85;rsq[ 93]= 84;rsq[ 94]= 83;rsq[ 95]= 82;
-        rsq[ 96]= 80;rsq[ 97]= 79;rsq[ 98]= 78;rsq[ 99]= 77;rsq[100]= 76;rsq[101]= 75;rsq[102]= 74;rsq[103]= 73;
-        rsq[104]= 72;rsq[105]= 71;rsq[106]= 70;rsq[107]= 70;rsq[108]= 69;rsq[109]= 68;rsq[110]= 67;rsq[111]= 66;
-        rsq[112]= 65;rsq[113]= 64;rsq[114]= 63;rsq[115]= 63;rsq[116]= 62;rsq[117]= 61;rsq[118]= 60;rsq[119]= 59;
-        rsq[120]= 59;rsq[121]= 58;rsq[122]= 57;rsq[123]= 56;rsq[124]= 56;rsq[125]= 55;rsq[126]= 54;rsq[127]= 53;
+    //  Expressed as combinational case-ROM functions rather than an initial
+    //  block: portable Verilog-2001 that synthesises to a logic cone / ROM on
+    //  both ASIC and FPGA flows (array `initial` writes are handled
+    //  inconsistently across ASIC synthesis).
+    function [6:0] rsq_lut; input [6:0] i;
+        case (i)
+              0: rsq_lut = 7'd52 ;    1: rsq_lut = 7'd51 ;    2: rsq_lut = 7'd50 ;    3: rsq_lut = 7'd48 ;
+              4: rsq_lut = 7'd47 ;    5: rsq_lut = 7'd46 ;    6: rsq_lut = 7'd44 ;    7: rsq_lut = 7'd43 ;
+              8: rsq_lut = 7'd42 ;    9: rsq_lut = 7'd41 ;   10: rsq_lut = 7'd40 ;   11: rsq_lut = 7'd39 ;
+             12: rsq_lut = 7'd38 ;   13: rsq_lut = 7'd36 ;   14: rsq_lut = 7'd35 ;   15: rsq_lut = 7'd34 ;
+             16: rsq_lut = 7'd33 ;   17: rsq_lut = 7'd32 ;   18: rsq_lut = 7'd31 ;   19: rsq_lut = 7'd30 ;
+             20: rsq_lut = 7'd30 ;   21: rsq_lut = 7'd29 ;   22: rsq_lut = 7'd28 ;   23: rsq_lut = 7'd27 ;
+             24: rsq_lut = 7'd26 ;   25: rsq_lut = 7'd25 ;   26: rsq_lut = 7'd24 ;   27: rsq_lut = 7'd23 ;
+             28: rsq_lut = 7'd23 ;   29: rsq_lut = 7'd22 ;   30: rsq_lut = 7'd21 ;   31: rsq_lut = 7'd20 ;
+             32: rsq_lut = 7'd19 ;   33: rsq_lut = 7'd19 ;   34: rsq_lut = 7'd18 ;   35: rsq_lut = 7'd17 ;
+             36: rsq_lut = 7'd16 ;   37: rsq_lut = 7'd16 ;   38: rsq_lut = 7'd15 ;   39: rsq_lut = 7'd14 ;
+             40: rsq_lut = 7'd14 ;   41: rsq_lut = 7'd13 ;   42: rsq_lut = 7'd12 ;   43: rsq_lut = 7'd12 ;
+             44: rsq_lut = 7'd11 ;   45: rsq_lut = 7'd10 ;   46: rsq_lut = 7'd10 ;   47: rsq_lut = 7'd9  ;
+             48: rsq_lut = 7'd9  ;   49: rsq_lut = 7'd8  ;   50: rsq_lut = 7'd7  ;   51: rsq_lut = 7'd7  ;
+             52: rsq_lut = 7'd6  ;   53: rsq_lut = 7'd6  ;   54: rsq_lut = 7'd5  ;   55: rsq_lut = 7'd4  ;
+             56: rsq_lut = 7'd4  ;   57: rsq_lut = 7'd3  ;   58: rsq_lut = 7'd3  ;   59: rsq_lut = 7'd2  ;
+             60: rsq_lut = 7'd2  ;   61: rsq_lut = 7'd1  ;   62: rsq_lut = 7'd1  ;   63: rsq_lut = 7'd0  ;
+             64: rsq_lut = 7'd127;   65: rsq_lut = 7'd125;   66: rsq_lut = 7'd123;   67: rsq_lut = 7'd121;
+             68: rsq_lut = 7'd119;   69: rsq_lut = 7'd118;   70: rsq_lut = 7'd116;   71: rsq_lut = 7'd114;
+             72: rsq_lut = 7'd113;   73: rsq_lut = 7'd111;   74: rsq_lut = 7'd109;   75: rsq_lut = 7'd108;
+             76: rsq_lut = 7'd106;   77: rsq_lut = 7'd105;   78: rsq_lut = 7'd103;   79: rsq_lut = 7'd102;
+             80: rsq_lut = 7'd100;   81: rsq_lut = 7'd99 ;   82: rsq_lut = 7'd97 ;   83: rsq_lut = 7'd96 ;
+             84: rsq_lut = 7'd95 ;   85: rsq_lut = 7'd93 ;   86: rsq_lut = 7'd92 ;   87: rsq_lut = 7'd91 ;
+             88: rsq_lut = 7'd90 ;   89: rsq_lut = 7'd88 ;   90: rsq_lut = 7'd87 ;   91: rsq_lut = 7'd86 ;
+             92: rsq_lut = 7'd85 ;   93: rsq_lut = 7'd84 ;   94: rsq_lut = 7'd83 ;   95: rsq_lut = 7'd82 ;
+             96: rsq_lut = 7'd80 ;   97: rsq_lut = 7'd79 ;   98: rsq_lut = 7'd78 ;   99: rsq_lut = 7'd77 ;
+            100: rsq_lut = 7'd76 ;  101: rsq_lut = 7'd75 ;  102: rsq_lut = 7'd74 ;  103: rsq_lut = 7'd73 ;
+            104: rsq_lut = 7'd72 ;  105: rsq_lut = 7'd71 ;  106: rsq_lut = 7'd70 ;  107: rsq_lut = 7'd70 ;
+            108: rsq_lut = 7'd69 ;  109: rsq_lut = 7'd68 ;  110: rsq_lut = 7'd67 ;  111: rsq_lut = 7'd66 ;
+            112: rsq_lut = 7'd65 ;  113: rsq_lut = 7'd64 ;  114: rsq_lut = 7'd63 ;  115: rsq_lut = 7'd63 ;
+            116: rsq_lut = 7'd62 ;  117: rsq_lut = 7'd61 ;  118: rsq_lut = 7'd60 ;  119: rsq_lut = 7'd59 ;
+            120: rsq_lut = 7'd59 ;  121: rsq_lut = 7'd58 ;  122: rsq_lut = 7'd57 ;  123: rsq_lut = 7'd56 ;
+            124: rsq_lut = 7'd56 ;  125: rsq_lut = 7'd55 ;  126: rsq_lut = 7'd54 ;  127: rsq_lut = 7'd53 ;
+            default: rsq_lut = 7'd0;
+        endcase
+    endfunction
 
-        rcp[  0]=127;rcp[  1]=125;rcp[  2]=123;rcp[  3]=121;rcp[  4]=119;rcp[  5]=117;rcp[  6]=116;rcp[  7]=114;
-        rcp[  8]=112;rcp[  9]=110;rcp[ 10]=109;rcp[ 11]=107;rcp[ 12]=105;rcp[ 13]=104;rcp[ 14]=102;rcp[ 15]=100;
-        rcp[ 16]= 99;rcp[ 17]= 97;rcp[ 18]= 96;rcp[ 19]= 94;rcp[ 20]= 93;rcp[ 21]= 91;rcp[ 22]= 90;rcp[ 23]= 88;
-        rcp[ 24]= 87;rcp[ 25]= 85;rcp[ 26]= 84;rcp[ 27]= 83;rcp[ 28]= 81;rcp[ 29]= 80;rcp[ 30]= 79;rcp[ 31]= 77;
-        rcp[ 32]= 76;rcp[ 33]= 75;rcp[ 34]= 74;rcp[ 35]= 72;rcp[ 36]= 71;rcp[ 37]= 70;rcp[ 38]= 69;rcp[ 39]= 68;
-        rcp[ 40]= 66;rcp[ 41]= 65;rcp[ 42]= 64;rcp[ 43]= 63;rcp[ 44]= 62;rcp[ 45]= 61;rcp[ 46]= 60;rcp[ 47]= 59;
-        rcp[ 48]= 58;rcp[ 49]= 57;rcp[ 50]= 56;rcp[ 51]= 55;rcp[ 52]= 54;rcp[ 53]= 53;rcp[ 54]= 52;rcp[ 55]= 51;
-        rcp[ 56]= 50;rcp[ 57]= 49;rcp[ 58]= 48;rcp[ 59]= 47;rcp[ 60]= 46;rcp[ 61]= 45;rcp[ 62]= 44;rcp[ 63]= 43;
-        rcp[ 64]= 42;rcp[ 65]= 41;rcp[ 66]= 40;rcp[ 67]= 40;rcp[ 68]= 39;rcp[ 69]= 38;rcp[ 70]= 37;rcp[ 71]= 36;
-        rcp[ 72]= 35;rcp[ 73]= 35;rcp[ 74]= 34;rcp[ 75]= 33;rcp[ 76]= 32;rcp[ 77]= 31;rcp[ 78]= 31;rcp[ 79]= 30;
-        rcp[ 80]= 29;rcp[ 81]= 28;rcp[ 82]= 28;rcp[ 83]= 27;rcp[ 84]= 26;rcp[ 85]= 25;rcp[ 86]= 25;rcp[ 87]= 24;
-        rcp[ 88]= 23;rcp[ 89]= 23;rcp[ 90]= 22;rcp[ 91]= 21;rcp[ 92]= 21;rcp[ 93]= 20;rcp[ 94]= 19;rcp[ 95]= 19;
-        rcp[ 96]= 18;rcp[ 97]= 17;rcp[ 98]= 17;rcp[ 99]= 16;rcp[100]= 15;rcp[101]= 15;rcp[102]= 14;rcp[103]= 14;
-        rcp[104]= 13;rcp[105]= 12;rcp[106]= 12;rcp[107]= 11;rcp[108]= 11;rcp[109]= 10;rcp[110]=  9;rcp[111]=  9;
-        rcp[112]=  8;rcp[113]=  8;rcp[114]=  7;rcp[115]=  7;rcp[116]=  6;rcp[117]=  5;rcp[118]=  5;rcp[119]=  4;
-        rcp[120]=  4;rcp[121]=  3;rcp[122]=  3;rcp[123]=  2;rcp[124]=  2;rcp[125]=  1;rcp[126]=  1;rcp[127]=  0;
-    end
+    function [6:0] rcp_lut; input [6:0] i;
+        case (i)
+              0: rcp_lut = 7'd127;    1: rcp_lut = 7'd125;    2: rcp_lut = 7'd123;    3: rcp_lut = 7'd121;
+              4: rcp_lut = 7'd119;    5: rcp_lut = 7'd117;    6: rcp_lut = 7'd116;    7: rcp_lut = 7'd114;
+              8: rcp_lut = 7'd112;    9: rcp_lut = 7'd110;   10: rcp_lut = 7'd109;   11: rcp_lut = 7'd107;
+             12: rcp_lut = 7'd105;   13: rcp_lut = 7'd104;   14: rcp_lut = 7'd102;   15: rcp_lut = 7'd100;
+             16: rcp_lut = 7'd99 ;   17: rcp_lut = 7'd97 ;   18: rcp_lut = 7'd96 ;   19: rcp_lut = 7'd94 ;
+             20: rcp_lut = 7'd93 ;   21: rcp_lut = 7'd91 ;   22: rcp_lut = 7'd90 ;   23: rcp_lut = 7'd88 ;
+             24: rcp_lut = 7'd87 ;   25: rcp_lut = 7'd85 ;   26: rcp_lut = 7'd84 ;   27: rcp_lut = 7'd83 ;
+             28: rcp_lut = 7'd81 ;   29: rcp_lut = 7'd80 ;   30: rcp_lut = 7'd79 ;   31: rcp_lut = 7'd77 ;
+             32: rcp_lut = 7'd76 ;   33: rcp_lut = 7'd75 ;   34: rcp_lut = 7'd74 ;   35: rcp_lut = 7'd72 ;
+             36: rcp_lut = 7'd71 ;   37: rcp_lut = 7'd70 ;   38: rcp_lut = 7'd69 ;   39: rcp_lut = 7'd68 ;
+             40: rcp_lut = 7'd66 ;   41: rcp_lut = 7'd65 ;   42: rcp_lut = 7'd64 ;   43: rcp_lut = 7'd63 ;
+             44: rcp_lut = 7'd62 ;   45: rcp_lut = 7'd61 ;   46: rcp_lut = 7'd60 ;   47: rcp_lut = 7'd59 ;
+             48: rcp_lut = 7'd58 ;   49: rcp_lut = 7'd57 ;   50: rcp_lut = 7'd56 ;   51: rcp_lut = 7'd55 ;
+             52: rcp_lut = 7'd54 ;   53: rcp_lut = 7'd53 ;   54: rcp_lut = 7'd52 ;   55: rcp_lut = 7'd51 ;
+             56: rcp_lut = 7'd50 ;   57: rcp_lut = 7'd49 ;   58: rcp_lut = 7'd48 ;   59: rcp_lut = 7'd47 ;
+             60: rcp_lut = 7'd46 ;   61: rcp_lut = 7'd45 ;   62: rcp_lut = 7'd44 ;   63: rcp_lut = 7'd43 ;
+             64: rcp_lut = 7'd42 ;   65: rcp_lut = 7'd41 ;   66: rcp_lut = 7'd40 ;   67: rcp_lut = 7'd40 ;
+             68: rcp_lut = 7'd39 ;   69: rcp_lut = 7'd38 ;   70: rcp_lut = 7'd37 ;   71: rcp_lut = 7'd36 ;
+             72: rcp_lut = 7'd35 ;   73: rcp_lut = 7'd35 ;   74: rcp_lut = 7'd34 ;   75: rcp_lut = 7'd33 ;
+             76: rcp_lut = 7'd32 ;   77: rcp_lut = 7'd31 ;   78: rcp_lut = 7'd31 ;   79: rcp_lut = 7'd30 ;
+             80: rcp_lut = 7'd29 ;   81: rcp_lut = 7'd28 ;   82: rcp_lut = 7'd28 ;   83: rcp_lut = 7'd27 ;
+             84: rcp_lut = 7'd26 ;   85: rcp_lut = 7'd25 ;   86: rcp_lut = 7'd25 ;   87: rcp_lut = 7'd24 ;
+             88: rcp_lut = 7'd23 ;   89: rcp_lut = 7'd23 ;   90: rcp_lut = 7'd22 ;   91: rcp_lut = 7'd21 ;
+             92: rcp_lut = 7'd21 ;   93: rcp_lut = 7'd20 ;   94: rcp_lut = 7'd19 ;   95: rcp_lut = 7'd19 ;
+             96: rcp_lut = 7'd18 ;   97: rcp_lut = 7'd17 ;   98: rcp_lut = 7'd17 ;   99: rcp_lut = 7'd16 ;
+            100: rcp_lut = 7'd15 ;  101: rcp_lut = 7'd15 ;  102: rcp_lut = 7'd14 ;  103: rcp_lut = 7'd14 ;
+            104: rcp_lut = 7'd13 ;  105: rcp_lut = 7'd12 ;  106: rcp_lut = 7'd12 ;  107: rcp_lut = 7'd11 ;
+            108: rcp_lut = 7'd11 ;  109: rcp_lut = 7'd10 ;  110: rcp_lut = 7'd9  ;  111: rcp_lut = 7'd9  ;
+            112: rcp_lut = 7'd8  ;  113: rcp_lut = 7'd8  ;  114: rcp_lut = 7'd7  ;  115: rcp_lut = 7'd7  ;
+            116: rcp_lut = 7'd6  ;  117: rcp_lut = 7'd5  ;  118: rcp_lut = 7'd5  ;  119: rcp_lut = 7'd4  ;
+            120: rcp_lut = 7'd4  ;  121: rcp_lut = 7'd3  ;  122: rcp_lut = 7'd3  ;  123: rcp_lut = 7'd2  ;
+            124: rcp_lut = 7'd2  ;  125: rcp_lut = 7'd1  ;  126: rcp_lut = 7'd1  ;  127: rcp_lut = 7'd0  ;
+            default: rcp_lut = 7'd0;
+        endcase
+    endfunction
 
     function [6:0] clz64; input [63:0] v; integer i; reg done;
         begin clz64 = 7'd64; done = 1'b0;
@@ -89,11 +131,14 @@ module karu_vest7 (
     wire [63:0] sig_eff = is_sub ? (({12'b0, sig} << (lz + 7'd1)) & sigmask) : {12'b0, sig};
 
     //  ---- table index + significand ----
-    wire [63:0] srsq = sig_eff >> (is_d ? 7'd46 : 7'd17);   //  top 6 bits of the s-bit field
-    wire [63:0] srcp = sig_eff >> (is_d ? 7'd45 : 7'd16);   //  top 7 bits
-    wire [6:0]  idx_rsq = {exp_eff[0], srsq[5:0]};
-    wire [6:0]  idx_rcp = srcp[6:0];
-    wire [6:0]  tabval  = is_rec ? rcp[idx_rcp] : rsq[idx_rsq];
+    //  top 6 / top 7 bits of the s-bit field, taken directly via indexed
+    //  part-select (== sig_eff >> 46/17 then [5:0], etc.) -- no wide
+    //  intermediate, so no unused-bit truncation for lint-gated flows.
+    wire [5:0]  srsq = sig_eff[(is_d ? 6'd46 : 6'd17) +: 6];
+    wire [6:0]  srcp = sig_eff[(is_d ? 6'd45 : 6'd16) +: 7];
+    wire [6:0]  idx_rsq = {exp_eff[0], srsq};
+    wire [6:0]  idx_rcp = srcp;
+    wire [6:0]  tabval  = is_rec ? rcp_lut(idx_rcp) : rsq_lut(idx_rsq);
     wire [63:0] out_sig0 = {57'b0, tabval} << (is_d ? 7'd45 : 7'd16);   //  << (s-7)
 
     //  ---- output exponents (64-bit modular arithmetic, matching the C) ----
