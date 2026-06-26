@@ -13,8 +13,7 @@
 //
 //  FMA is fused (single rounding): routed to karu_ffma (F) / karu_ffma_d
 //  (D), which compute a*b +/- c over a full-width intermediate and round
-//  once. (The older composed mul->add sequencer path was removed 2026-06;
-//  FMA now parks in ST_WAIT like any other multi-cycle sub-unit.)
+//  once. FMA parks in ST_WAIT like any other multi-cycle sub-unit.
 //
 //  The result-width discriminator (rd_is_f) is set by the decoder; this
 //  module produces a 64-bit `res`:
@@ -151,8 +150,8 @@ module karu_fpu (
     //  The int<->float / S<->D conversions are deep combinational cones. They
     //  run the cycle AFTER their operand is registered (cvt_op1_q), so the
     //  front-end (IFU/decode/operand-select) is not in series with the
-    //  conversion + result mux -- that combined cone was the last 125 MHz
-    //  limiter. cf_op1q = NaN-box-checked single view of the registered operand.
+    //  conversion + result mux. cf_op1q = NaN-box-checked single view of the
+    //  registered operand.
     reg [63:0]  cvt_op1_q;
     reg [2:0]   cvt_rm_q;
     reg         cvt_long_q, cvt_unsigned_q;
@@ -386,7 +385,7 @@ module karu_fpu (
         .done(s_fma_done), .res(s_fma_res), .flags(s_fma_flags), .latency());
 
     //  D-FMA req is driven by the dispatcher FSM; keep the reg even when D
-    //  is compiled out (the FSM still references it under a dead is_d path).
+    //  is compiled out (the FSM still references it under an unreachable is_d path).
     reg         d_fma_req;
 
     //  ==================================================================

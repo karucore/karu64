@@ -1,6 +1,5 @@
 //  karu_vrf_bram.v
-//  Dual-port BRAM-backed vector register file (the macro-VRF -- the only
-//  VRF since the 2026-06-12 collapse).
+//  Dual-port BRAM-backed vector register file (the macro-VRF).
 //  See doc/architecture.md for the architecture + access schedule.
 //
 //  32 x VLEN-bit registers stored as 32*VGRAN entries of VBUS_W bits in ONE

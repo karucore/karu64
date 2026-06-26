@@ -1,7 +1,7 @@
 //  karu_lsu.v
-//  Load/store unit with an AXI4 master port. Single in-flight
-//  transaction for Phase 2 (no pipelining). Misaligned accesses that
-//  cross an 8-byte beat are split into two aligned 64-bit transactions.
+//  Load/store unit with an AXI4 master port. Single in-flight transaction
+//  (no pipelining). Misaligned accesses that cross an 8-byte beat are split
+//  into two aligned 64-bit transactions.
 
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"

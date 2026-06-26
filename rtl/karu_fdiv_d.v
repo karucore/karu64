@@ -4,8 +4,8 @@
 //
 //  The mantissa quotient is produced by an ITERATIVE restoring
 //  digit-recurrence (radix 2^KARU_D_DIV_CYCLES, default 1 bit/cycle) instead
-//  of a combinational Verilog `/` -- the combinational 108-bit divide was the
-//  125 MHz timing wall (a ~5900-bit ripple-carry cone). The result is
+//  of a combinational Verilog `/`. This avoids a 108-bit divide cone in the
+//  125 MHz timing path. The result is
 //  bit-identical to floor((a_mfull<<55)/b_mfull): q_shift = (a_mfull>=b_mfull)
 //  is quot[55], then Nfrac=55 restoring steps give quot[54:0], and the residue
 //  after those steps is exactly num%den for the sticky bit.

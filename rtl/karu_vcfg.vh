@@ -43,15 +43,9 @@
 //  KARU_VGRAN granule passes (VLEN scales by cycle budget, not lane width).
 `define KARU_VRF_NLANES (`KARU_VBUS_W / 64)
 
-//  ---- macro-VRF collapse (2026-06-12) ----
-//  The BRAM-backed macro VRF (karu_vrf_bram + the karu_vrf_bram_wr
-//  sequencing adapter) with EXACT byte-enable writeback is the ONLY
-//  datapath: the flop VRF (karu_vregfile) and the KARU_VRF_BRAM /
-//  KARU_VRF_BWE knobs were deleted, along with their dependents
-//  (KARU_V_WB_STAGE / KARU_V_FPWB_STAGE are compiled in; KARU_V_WB_PIPE
-//  and KARU_V_WB2 are gone -- the former was incompatible with the exact
-//  byte-enable compute, the latter was moot once the hot path wrote
-//  granules). Keep-old is realised purely by byte enables; old-vd is read
-//  only as a genuine operand (doc/architecture.md).
+//  The vector register file is the BRAM-backed macro VRF
+//  (karu_vrf_bram + karu_vrf_bram_wr) with exact byte-enable writeback.
+//  Keep-old is realised by byte enables; old-vd is read only as a genuine
+//  operand (doc/architecture.md).
 
 `endif // KARU_VCFG_VH

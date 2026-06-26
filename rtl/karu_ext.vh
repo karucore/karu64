@@ -1,7 +1,6 @@
 //  karu_ext.vh
 //  High-level RTL configuration: ISA-extension enable resolution plus the
-//  system/board knobs that used to live in config.vh (now folded in here so
-//  there is a single configuration header).
+//  system/board knobs, kept in one configuration header.
 //
 //  Base core is RV64I. The C, A, M, B, F, D and V extensions are individually
 //  pluggable. Vector crypto (Zvk*) is opt-IN, scoped by its own KARU_ZVK*
@@ -36,7 +35,7 @@
 `define KARU_EXT_VH
 
 //  ======================================================================
-//  System / board configuration (formerly config.vh)
+//  System / board configuration
 //  ======================================================================
 `timescale  1 ns / 1 ps
 `default_nettype none
@@ -182,9 +181,8 @@
 //  --- Smcntrpmf (counter privilege-mode filtering) ---
 //  Opt-IN only (default OFF). mcyclecfg(0x321)/minstretcfg(0x322) add per-privilege
 //  inhibit bits (MINH/SINH/UINH) to the fixed mcycle/minstret counters, so a
-//  lower-privilege rdcycle/rdinstret can be made to count only its own mode (the
-//  user-only-count fix). The cfg CSRs are M-mode; no hard S dependency (SINH is moot
-//  without S).
+//  lower-privilege rdcycle/rdinstret can be made to count only its own mode. The
+//  cfg CSRs are M-mode; no hard S dependency (SINH is moot without S).
 `ifdef KARU_SMCNTRPMF
     `define KARU_EN_SMCNTRPMF
 `endif

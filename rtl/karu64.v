@@ -1,6 +1,6 @@
 //  karu64.v
-//  Top of the rearchitected RV64 core. Phase 2: single-issue,
-//  in-order, AXI4 imem + dmem master ports, modular FUs.
+//  Top-level RV64 core: single-issue, in-order, AXI4 imem + dmem
+//  master ports, modular FUs.
 //
 //  Front-end decode feeds a one-entry ID/EX packet. Execute/writeback
 //  control is driven from that packet, with bypass into the packet latch
@@ -14,11 +14,11 @@
 module karu64 #(
     parameter [63:0] RESET_PC = 64'h0000_0000_8000_0000,
     parameter [31:0] RESET_SP = 32'h8001_0000,
-    //  EXT_TIME=1: CSR `time` (rdtime, 0xC01) reads the external `time_in` (the SoC's
-    //  CLINT mtime) instead of the raw cycle counter -- required so rdtime and the CLINT
-    //  mtimecmp share one counter domain (Linux timer deadlines). EXT_TIME=0 (default)
-    //  keeps the legacy behaviour (time == cycle counter), so non-CLINT builds are
-    //  byte-identical and need not connect time_in.
+    //  EXT_TIME=1: CSR `time` (rdtime, 0xC01) reads the external `time_in`
+    //  (the SoC's CLINT mtime) instead of the raw cycle counter -- required so
+    //  rdtime and the CLINT mtimecmp share one counter domain (Linux timer
+    //  deadlines). EXT_TIME=0 (default) uses the cycle counter, so non-CLINT
+    //  builds need not connect time_in.
     parameter        EXT_TIME = 0
 ) (
     input  wire         clk,
@@ -460,8 +460,8 @@ module karu64 #(
         if (rst) perf_cyc <= 64'b0;
         else     perf_cyc <= perf_cyc + 64'b1;
     end
-    //  rdtime source: the external CLINT mtime (EXT_TIME=1, CLINT SoCs) so rdtime and
-    //  mtimecmp share one domain; else the cycle counter (legacy / non-CLINT builds).
+    //  rdtime source: the external CLINT mtime (EXT_TIME=1, CLINT SoCs) so
+    //  rdtime and mtimecmp share one domain; otherwise the local cycle counter.
     wire [63:0] csr_time_in = EXT_TIME ? time_in : perf_cyc;
 
     //  V-extension CSR-side wires (computed further below; declared here so
@@ -568,15 +568,14 @@ module karu64 #(
     assign      varith_vxsat = varith_done && varith_vsat;
     wire [63:0] varith_x;
     wire [4:0]  varith_r_vs1, varith_r_vs2, varith_r_vold;
-    //  karu_varith now also handles vector FP (OPFVV/OPFVF) -- one merged FU
-    //  (the lanes carry karu_fpu). FP-specific outputs: fflags + the vfmv.f.s
-    //  scalar f-register write.
+    //  karu_varith handles vector FP (OPFVV/OPFVF); the lanes carry karu_fpu.
+    //  FP-specific outputs: fflags + the vfmv.f.s scalar f-register write.
     wire        varith_ff_set, varith_writes_f;
     wire [4:0]  varith_fflags;
     wire [63:0] varith_f_res;
     wire        varith_fp_lane_active;  //  debug/assert: lane FP unit(s) active
-    //  Keccak (vkeccak) is folded into karu_varith (no separate FU): it reads via
-    //  varith's r_vold and writes via the same VRF write path as every other op
+    //  Keccak (vkeccak) uses karu_varith: it reads via varith's r_vold and
+    //  writes via the same VRF write path as every other op
     //  (the granule g_* port through S_CWB).
     //  Vector memory port <-> karu_mem (unified write-through L1). The scalar
     //  LSU and this 128-bit vector port share one coherent L1; karu_mem drives
@@ -596,11 +595,10 @@ module karu64 #(
     wire [127:0] vg_rdata, vg_wdata;
     wire        vg_we;
 
-    //  karu_varith granule write port (the canonical write: the
-    //  hot integer/FP paths write one VBUS_W granule per pulse instead of a
-    //  256-bit whole register). (Pre-collapse this was tied off in the
-    //  whole-reg vr_* port there). The adapter's single granule write port is
-    //  shared varith/vlsu (single-issue: never concurrent) -- muxed by varith_busy.
+    //  karu_varith granule write port (the canonical write): the hot integer/FP
+    //  paths write one VBUS_W granule per pulse. The adapter's single granule
+    //  write port is shared varith/vlsu (single-issue: never concurrent) --
+    //  muxed by varith_busy.
     wire            varith_g_we, varith_g_wlast;
     wire [4:0]      varith_g_wd;
     wire [VGW-1:0]  varith_g_wg;
@@ -664,9 +662,9 @@ module karu64 #(
     wire        issue_vkeccak_mode, issue_vcrypto_mode;
 
 `ifdef KARU_EN_V
-    //  BRAM-backed VRF via the sequencing adapter (the only VRF since the
-    //  2026-06-12 collapse). The adapter freezes karu_varith (vrf_op_stall)
-    //  while it fills the granule operand latches from BRAM. Keyed off the
+    //  BRAM-backed VRF via the sequencing adapter. The adapter freezes
+    //  karu_varith (vrf_op_stall) while it fills the granule operand latches
+    //  from BRAM. Keyed off the
     //  *_busy outputs (combinational state!=IDLE) so the final-write cycle
     //  commits directly. See doc/architecture.md
     wire vrf_op_stall;
@@ -680,8 +678,7 @@ module karu64 #(
         .src_vs1(varith_rdu_vs1g), .src_vs2(varith_rdu_vs2g),
         .src_vold(varith_rdu_voldg),
         .vs1_g(vrf_vs1_g), .vs2_g(vrf_vs2_g), .vold_g(vrf_vold_g),
-        //  writes are granule-only now (g_* port); the whole-register vr_* WRITE
-        //  port was deleted with the macro-VRF migration. vr_* READs remain.
+        //  Writes use the granule g_* port; vr_* carry read addresses.
         .g_rs(vg_rs), .g_rg(vg_rg), .g_rdata(vg_rdata),
         .g_we(gw_we), .g_wd(gw_wd), .g_wg(gw_wg), .g_wdata(gw_wdata),
         .g_wbe(gw_wbe), .g_wlast(gw_wlast),
@@ -728,9 +725,8 @@ module karu64 #(
     wire [31:0] vlsu_vstart = (|v_vstart[63:21]) ? 32'hFFFF_FFFF :
                               vlsu_whole ? (v_vstart[31:0] << ex_size) :
                                            v_vstart[31:0];
-    //  mask loads (vlm): bytes past evl=ceil(vl/8) are left undisturbed (the
-    //  ACT4 golden keeps the old register there and the length-suite check
-    //  compares them as active at VLMAX). Other loads use vtype.vta.
+    //  mask loads (vlm): bytes past evl=ceil(vl/8) are left undisturbed and
+    //  checked as active at VLMAX. Other loads use vtype.vta.
     wire        vlsu_vta = vlsu_mask ? 1'b0 : v_vtype[6];
     //  register-group count = EMUL = (EEW/SEW) * LMUL. For indexed the data
     //  EMUL = LMUL (data EEW = SEW); for strided/unit it follows the insn EEW.
@@ -783,13 +779,11 @@ module karu64 #(
                           && v_idx_ovl
                           && ((vlsu_nf != 4'd1) || !(v_ovl_eq || v_ovl_high || v_ovl_low));
     wire        v_resv_ill  = v_vill_ill || v_idxov_ill;
-    //  ---- vector-FP SEW legality (Zvfhmin scope, 2026-06-13) ----
+    //  ---- vector-FP SEW legality (Zvfhmin scope) ----
     //  The FP datapath supports SEW=32 (F) and SEW=64 (D). e8 is never legal.
     //  e16 is legal ONLY for the two Zvfhmin conversions (vfwcvt.f.f.v /
     //  vfncvt.f.f.w = VFUNARY0 .v, vs1[2:1]==10 f.f, vs1[4:3]==01 widen or 10
-    //  narrow); full Zvfh arithmetic is NOT implemented and traps. (Closes a
-    //  latent gap: e16 FP used to be silently mis-run as FP32 -- ACT4 never
-    //  emits e16 FP, so it was never caught.)
+    //  narrow); full Zvfh arithmetic is NOT implemented and traps.
     wire [2:0]  v_fp_sew    = v_vtype[5:3];
     //  EXACT vs1. Zvfhmin = {vfwcvt.f.f.v (01100), vfncvt.f.f.w (10100)} ONLY
     //  (confirmed against spike rv64gcv_zvfhmin). The e16 vfncvt.rod.f.f.w
@@ -880,7 +874,7 @@ module karu64 #(
         .fflags_set(varith_ff_set), .fflags(varith_fflags),
         .writes_f(varith_writes_f), .f_res(varith_f_res),
         .fp_lane_active(varith_fp_lane_active),
-        //  -- experimental single-instruction Keccak-f1600 (vkeccak), folded in --
+        //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
         .is_keccak(issue_vkeccak_mode),
         //  -- standard vector crypto (Zvk*) -- registered ex_sub, NOT dec_sub,
         //  so the cop selector is stable for the whole multi-cycle op --
@@ -917,8 +911,8 @@ module karu64 #(
 `endif
 
     //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
-    //  No separate FU: folded into karu_varith as a keccak mode (is_keccak),
-    //  using its VRF read/write ports. One isolated 1600-bit permutation,
+    //  No separate FU: karu_varith handles vkeccak as a keccak mode
+    //  (is_keccak), using its VRF read/write ports. One isolated 1600-bit permutation,
     //  instantiated inside karu_varith under KARU_EN_KECCAK.
 
     //  ==================================================================
@@ -1550,8 +1544,8 @@ module karu64 #(
     wire issue_m    = issuing && ex_unit == `UNIT_M;
     wire issue_fpu  = issuing && ex_unit == `UNIT_FPU && !fs_off_ill;
     wire issue_vcfg   = issuing && ex_unit == `UNIT_VCFG && !vs_off_ill;
-    //  one merged vector-exec FU: integer-V (UNIT_VARITH), FP-V (UNIT_VFPU) and
-    //  the folded-in Keccak (UNIT_VKECCAK) all issue to karu_varith, which
+    //  Single vector-exec FU: integer-V (UNIT_VARITH), FP-V (UNIT_VFPU) and
+    //  Keccak (UNIT_VKECCAK) all issue to karu_varith, which
     //  dispatches on vfunct3 (OPFVV/OPFVF) / is_keccak.
     //  SHA-2 at SEW=64 is legal only with Zvknhb (SHA-512); with Zvknha-only it
     //  traps. (Registered ex_* operands, not dec_*: the ID/EX latch holds them
@@ -1561,9 +1555,9 @@ module karu64 #(
     //  vector-crypto op is reserved unless SEW=32 (v_vtype[5:3]==3'd2 = e32),
     //  EXCEPT SHA-2 (vsha2ch/cl/ms), which also allows SEW=64 (3'd3 = e64) but
     //  ONLY when Zvknhb is present (Zvknha-only => SHA-512 reserved). e8/e16 are
-    //  always reserved for crypto. AES/SM3/SM4/GHASH at non-e32 now trap too
-    //  (previously only SHA-2 e64 was checked). The decode is width-agnostic, so
-    //  the check lives here beside the other vector reserved-encoding traps.
+    //  always reserved for crypto. AES/SM3/SM4/GHASH require e32. The decode is
+    //  width-agnostic, so the check lives here beside the other vector
+    //  reserved-encoding traps.
     wire ex_vcrypto_is_sha2 = (ex_sub == `VCRYPTO_SHA2CH ||
                                ex_sub == `VCRYPTO_SHA2CL ||
                                ex_sub == `VCRYPTO_SHA2MS);
@@ -1848,11 +1842,11 @@ module karu64 #(
         || (m_active      && m_done)
         || (fpu_active    && fpu_done)
         || (vlsu_active   && vlsu_done)
-        || (varith_active && varith_done)   //  keccak retires via varith_done (folded in)
+        || (varith_active && varith_done)   //  keccak retires via varith_done
         || (cacheop_active && cache_flush_done);
 
     //  ---- fflags accumulation: any FPU op done sets sticky fflags ----
-    //  (scalar FPU or the merged vector FU; single-issue => never same cycle)
+    //  (scalar FPU or vector FU; single-issue => never same cycle)
     assign fflags_set = wb_fpu_f || wb_fpu_x
                      || (fpu_active && fpu_done)    //  even for store-target (none) ops
                      || (varith_active && varith_done && varith_ff_set);
@@ -2009,11 +2003,10 @@ module karu64 #(
             end
 
             //  Genuinely-illegal opcodes and illegal vector-crypto encodings
-            //  now VECTOR as cause-2 illegal-instruction exceptions (sys_ill_trap
-            //  / issue_vcrypto_trap in the trap terms above) so an OS can SIGILL
-            //  the offender -- the old halt-the-core behavior (trap <= 1, "as in
-            //  vk") is retired; the `trap` output remains for the testbenches but
-            //  is never set. A bad mtvec now ends a sim by timeout, not halt.
+            //  vector as cause-2 illegal-instruction exceptions (sys_ill_trap
+            //  / issue_vcrypto_trap in the trap terms above), so an OS can
+            //  SIGILL the offender. The `trap` output remains for testbenches
+            //  but is never set; a bad mtvec ends a sim by timeout, not halt.
         end
     end
 

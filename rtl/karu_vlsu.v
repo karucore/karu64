@@ -159,7 +159,7 @@ module karu_vlsu #(
                                         //  everything before the first byte hits memory)
 // synthesis translate_off
     initial if (8 * `KARU_VLENB > 4096) begin
-        $display("karu_vlsu: register group (8*VLENB=%0d) exceeds a 4 KiB page; the 2-page contiguous preflight no longer covers it", 8*`KARU_VLENB);
+        $display("karu_vlsu: register group (8*VLENB=%0d) exceeds a 4 KiB page; the 2-page contiguous preflight does not cover it", 8*`KARU_VLENB);
         $finish(1);
     end
 // synthesis translate_on

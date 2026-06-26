@@ -253,7 +253,7 @@ module linux_tb (
 		.irq_s		(external_irq_s)
 	);
 
-	//	== Ethernet (LiteEth) MMIO @0x1100_0000 -- sim MII loopback (Phase E1) ==
+		//	== Ethernet (LiteEth) MMIO @0x1100_0000 -- sim MII loopback ==
 	//	karu_eth wraps the generated liteeth_core + an MII TX->RX loopback and a
 	//	wishbone bridge presenting karu64's strobed-MMIO slave convention. Reads
 	//	and writes are multi-cycle; the dmem read/write FSMs below gate rvalid /
@@ -534,13 +534,10 @@ module linux_tb (
 		end
 	endtask
 
-	//	+xpage_stats: count translated (S/U-mode, Sv39) misaligned SCALAR accesses
-	//	that straddle a 4 KiB page -- the exact path the misaligned-cross-page fix
-	//	corrects (doc/fpga.md "second candidate"). Counted
-	//	at LSU ISSUE (cleanest ex_* context), broken down by load/store and S/U
-	//	privilege; the first XP_SAMPLE_MAX hits print pc/va/size/sub/priv. Passive:
-	//	only observes cpu.* debug wires. Supporting evidence for the HW Run-12
-	//	retest -- nonzero => the live workload exercises the fixed path.
+		//	+xpage_stats: count translated (S/U-mode, Sv39) misaligned SCALAR accesses
+		//	that straddle a 4 KiB page. Counted at LSU ISSUE (cleanest ex_* context),
+		//	broken down by load/store and S/U privilege; the first XP_SAMPLE_MAX hits
+		//	print pc/va/size/sub/priv. Passive: only observes cpu.* debug wires.
 	localparam				XP_SAMPLE_MAX = 4'd8;
 	reg						xpage_stats = 1'b0;
 	reg [63:0]				xp_s_load = 64'd0, xp_s_store = 64'd0;

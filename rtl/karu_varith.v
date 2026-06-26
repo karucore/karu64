@@ -51,9 +51,8 @@ module karu_varith (
     input  wire [4:0]   vs2_base,
     input  wire [`KARU_VLEN-1:0] v0,    //  mask register
 
-    //  operand READ ADDRESSES (the adapter's granule fills key on these +
-    //  the rdu_g* indices below; the whole-register d_* operand buses and
-    //  their rd1/rd2/rd3 latches were DELETED -- subgoal)
+    //  operand READ ADDRESSES (the adapter's granule fills key on these plus
+    //  the rdu_g* indices below)
     output wire [4:0]   r_vs1,
     output wire [4:0]   r_vs2,
     output wire [4:0]   r_vold,
@@ -94,9 +93,8 @@ module karu_varith (
     //  subunit req. See doc/architecture.md
     , input wire        op_stall
     //  ---- granule source feed (the ONLY operand path) ----
-    //  The adapter serves the CURRENT granule(s) each op needs instead of
-    //  whole-register reads (the rd1/rd2/rd3 latches are deleted). Every op
-    //  is a granule consumer (the classification below assigns exactly one
+    //  The adapter serves the current granule(s) each op needs. Every op
+    //  is a granule consumer; the classification below assigns exactly one
     //  GRAN class; rdu_gran is high whenever state != IDLE).
     //    rdu_vs1_g/rdu_vs2_g/rdu_vold_g = which sources this op reads NOW
     //      (phase-gated, so a writeback-only phase fills nothing);
@@ -407,7 +405,7 @@ module karu_varith (
     //  OP is associative+commutative for all eight, so a balanced tree of
     //  these gives the same result as a linear fold (with identity-filled
     //  inactive lanes); min/max sign-extend the low `sw` bits to compare but
-    //  return the raw operand, exactly like the old in-line fold.
+    //  return the raw operand.
     function [63:0] redop;  input [63:0] a, b; input [2:0] op; input [6:0] sw;
         reg signed [63:0] sa, sb;
         begin
@@ -432,9 +430,9 @@ module karu_varith (
     //  ========================================================
     //  element-producing datapath: VLEN/64 sub-word-SIMD lanes (karu_vlane).
     //  Each lane owns one contiguous 64-bit chunk of the register and computes
-    //  64/SEW elements; their res_chunks concatenate into grp_res. Replaces the
-    //  old flat all-element-parallel loop so synthesis maps ONE lane and
-    //  replicates it (see karu_vlane.v) instead of a VLEN-wide fused cone.
+    //  64/SEW elements; their res_chunks concatenate into grp_res. Synthesis
+    //  maps one lane and replicates it (see karu_vlane.v) instead of a
+    //  VLEN-wide fused cone.
     //  ========================================================
     //  Step C: compute lanes track the VRF bus (KARU_VRF_NLANES = VBUS_W/64 = 2).
     //  VGRAN_C = CPR/NLANES granule passes cover a register (2 with the
@@ -560,7 +558,6 @@ module karu_varith (
             .clk(clk), .rst(rst),
             //  stage-3: GRAN ops take the adapter's granule latches (granule
             //  g = chunks [g*NLANES, (g+1)*NLANES) -- same window as gcL)
-            //  granule latches only (the whole-register fallback is gone)
             .vs2_chunk (vs2_g [L*64 +: 64]),
             .vs1_chunk (vs1_g [L*64 +: 64]),
             .vold_chunk(vold_g[L*64 +: 64]),
@@ -1286,8 +1283,8 @@ module karu_varith (
                         pwr  = 1'b1;
                     end
                 end
-                //  write merge (per byte): tail -> vta?FF:old; masked/prestart -> old
-                //  (vcompress is no longer here -- it has its own S_CMP_* path)
+                //  write merge (per byte): tail -> vta?FF:old; masked/prestart -> old.
+                //  vcompress uses the S_CMP_* pack path.
                 for (pbb = 0; pbb < 8; pbb = pbb + 1)
                     if (pbb < (sewb >> 3)) begin
                         //  6c-b: unwritten bytes keep the seed/pacc carry --
@@ -1316,7 +1313,7 @@ module karu_varith (
     //  ========================================================
     //  Vector floating-point datapath (OPFVV/OPFVF). Per-element reuse of the
     //  in-lane karu_fpu / karu_vest7. 2b sequences elements through lane 0's
-    //  FPU (bit-identical to the old karu_vfpu); 2d dispatches the element-wise
+    //  FPU; 2d dispatches the element-wise
     //  ops across all NLANES lane FPUs in parallel. All FP-local signals carry a
     //  vf_ prefix to avoid colliding with the integer datapath; the shared
     //  latched fields (f3_q/f6_q/vsew_q/vl_q/vm_q/vta_q/vma_q/v0_q/vd_q/vs1_q/
@@ -1516,8 +1513,7 @@ module karu_varith (
     //  src=FP32 (the FP32<->FP64 cvt assumptions don't apply at e16).
     wire        vf_dest64  = vf_zfh ? 1'b0 : ((vf_is_wcvt || vf_is_warith) ? 1'b1 : (vf_is_ncvt ? 1'b0 : vf_is_d));
     wire        vf_src64   = vf_zfh ? 1'b0 : (vf_is_ncvt ? 1'b1 : (vf_is_wcvt ? 1'b0 : vf_is_d));
-    //  dest/src element width as log2(bytes): adds the e16 case (=1) for
-    //  Zvfhmin; otherwise == the old (vf_dest64 ? 3 : 2) / (vf_src64 ? 3 : 2).
+    //  dest/src element width as log2(bytes): e16 (=1), e32 (=2), e64 (=3).
     wire [2:0]  vf_dlg     = vf_zfh_n ? 3'd1 : (vf_dest64 ? 3'd3 : 3'd2);
     wire [2:0]  vf_slg     = vf_zfh_w ? 3'd1 : (vf_src64  ? 3'd3 : 3'd2);
     wire        vf_cvt_long = vf_cvt_f2i ? vf_dest64 : vf_src64;
@@ -1527,8 +1523,7 @@ module karu_varith (
     //  ================================================================
     //  Read-use classification (the adapter contract; doc/architecture.md
     //  ). EVERY op is a granule consumer: per-operand need flags +
-    //  granule indices below. The old whole-register rdu_vold contract
-    //  died with the rd1/rd2/rd3 latches.
+    //  granule indices below.
     //  rdu_vs1 / rdu_vs2 are the LANE-GROUP (grp_gran) operand-need codes
     //  (consumed only by the grp_gran arm of rdu_vs*_g below): 00 = operand
     //  not read, 01 = the current granule suffices, 10 = whole register
@@ -1545,10 +1540,8 @@ module karu_varith (
     //  f6=101xx1 pattern-matches is_mac). They are NOT whole-register
     //  consumers: czv_gran/czk_gran feed them granules too (EGW groups /
     //  keccak state collected one granule per cycle). cz_q just keeps the
-    //  dispatch priority (is_vcrypto/is_keccak over the f6 classes)
-    //  mirrored here. (The first granule-feed run, before this split, had
-    //  the zvk/keccak KATs fail loudly -- the classification tripwire's
-    //  predecessor.)
+    //  dispatch priority (is_vcrypto/is_keccak over the f6 classes) mirrored
+    //  here.
     localparam [1:0] RDU_NONE = 2'b00, RDU_GRAN = 2'b01, RDU_WHOLE = 2'b10;
     wire grp_gran = !cz_q && is_grp && !((BS_MUL && (is_mul || is_mac || is_vsmul)) || (BS_DIV && is_div));
     wire [1:0] rdu_vs1 = cz_q ? RDU_WHOLE
@@ -1804,8 +1797,8 @@ module karu_varith (
     //  ---- 6c: whole-register byte enables for the COLD (S_CWB) writes ----
     //  Each S_CWB client loads cwb_be (+ the VRF6 qualifiers) alongside
     //  cwb_buf; the funnel slices one granule of enables per write. Same
-    //  exact-write-set discipline as the hot paths. The pre-merge is GONE
-    //  and these enables are the ONLY keep-old -- exactness is mandatory,
+    //  exact-write-set discipline as the hot paths. These enables carry
+    //  keep-old semantics, so exactness is mandatory,
     //  not an optimization (the slideup elo bound and the vfmv.s.f
     //  element-0 case exist for this).
     //  act_be: in [elo, vl) AND active at the dest element width; lo_be:
@@ -1814,9 +1807,9 @@ module karu_varith (
         input [31:0] eb0;   //  group-global element index of byte 0
         input [2:0]  dlg;   //  log2(dest element bytes) (0=e8..3=e64)
         input [31:0] elo;   //  first WRITABLE element (vslideup: the offset;
-                            //  everything else: 0). Mandatory under 6c-b --
-                            //  with the pre-merge seeds gone, an over-enabled
-                            //  below-offset byte would write garbage.
+                            //  everything else: 0). Mandatory under 6c-b:
+                            //  an over-enabled below-offset byte would write
+                            //  undefined assembly data.
         integer ab; reg [31:0] ae;
         begin
             for (ab = 0; ab < `KARU_VLENB; ab = ab + 1) begin
@@ -2537,8 +2530,8 @@ module karu_varith (
                 //  ---- vcompress: serial pack, one source element/cycle ----
                 S_CMP_SCAN: begin
                     if (cse >= vl_q) begin              //  scanned all in-vl sources
-                        //  streaming: full regs were drained mid-scan; r continues
-                        //  at the partial register (do NOT reset)
+                        //  streaming: full dest regs are already complete;
+                        //  r continues at the partial register (do NOT reset)
                         cmp_count <= out_idx;   state <= S_CMP_WR;
                     end else begin
                         if (cmp_sel) begin              //  mask-selected -> place at slot out_idx
@@ -2785,7 +2778,6 @@ module karu_varith (
                         if (r == vf_nregd - 1) begin
                             g_we    <= 1'b1; g_wd <= vd_q; g_wg <= gpass;
                             //  raw fmbuf bits where active, vold_g where not
-                            //  (the fmbuf d_vold seed is gone)
                             g_wdata <= (vold_g & ~cmp_actall[gpass*`KARU_VBUS_W +: `KARU_VBUS_W])
                                      | (fmbuf[gpass*`KARU_VBUS_W +: `KARU_VBUS_W]
                                         & cmp_actall[gpass*`KARU_VBUS_W +: `KARU_VBUS_W]);
@@ -2923,9 +2915,7 @@ module karu_varith (
     end
 // synthesis translate_off
     //  Classification tripwire (sim only): every op must belong to a GRAN
-    //  class -- an unclassified op would silently read stale operand
-    //  latches (the old whole-register poison tripwire died with the
-    //  rd1/rd2/rd3 latches).
+    //  class -- an unclassified op would silently read stale operand latches.
     always @(posedge clk) if (!rst && (state != S_IDLE) && !rdu_gran) begin
         $display("[VARITH-ASSERT] unclassified op (rdu_gran=0) in state %0d @%0t", state, $time);
         $finish;

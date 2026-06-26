@@ -28,7 +28,7 @@
 module karu_assert #(
     //  Per-FU completion deadline: a multi-cycle unit that stays active
     //  this many cycles without asserting done is treated as hung. The FP
-    //  sub-units are now multi-cycle pipelines (iterative dividers ~56/58 cyc,
+    //  sub-units are multi-cycle pipelines (iterative dividers ~56/58 cyc,
     //  digit-recurrence sqrt ~25/54, multi-stage FMA/add, 2-cycle conversions),
     //  and the integer divider is bit-serial (KARU_M_DIV_CYCLES up to 64) -- so
     //  the slowest legitimate scalar op is ~60-64 cycles, leaving the 1000-cycle
@@ -92,7 +92,7 @@ module karu_assert #(
     input  wire         varith_done,
     input  wire         vfpu_req,
     input  wire         vfpu_done,
-    input  wire         vfp_lane_active,    //  any in-lane FP unit active (post-merge)
+    input  wire         vfp_lane_active,    //  any in-lane FP unit active
     input  wire         vfp_req_busy,       //  a lane FP req issued to an already-busy lane (must be 0)
     input  wire         lane_warm_bad,      //  KARU_V_LANE_PIPE warm-cycle leaked outside is_grp S_RUN (must be 0)
     input  wire         vkeccak_req,
@@ -377,21 +377,18 @@ module karu_assert #(
         `KCHK(!(m_req      && m_active),      "INV4 m_req while m_active")
         `KCHK(!(fpu_req    && fpu_active),    "INV5 fpu_req while fpu_active")
         //  The FPU is single-issue internally: it launches at most one of its
-        //  multi-cycle sub-units (fmul/fadd/fdiv/fsqrt/ffma, F and D) per op, so
-        //  at most one dispatch strobe is high per cycle. Guards a future
-        //  FPU-dispatch / dual-issue-into-FPU regression at the source.
+        //  multi-cycle sub-units (fmul/fadd/fdiv/fsqrt/ffma, F and D) per op,
+        //  so at most one dispatch strobe is high per cycle.
         `KCHK(((fpu_sub_req & (fpu_sub_req - 10'b1)) == 10'b0),
               "INV5h >1 FP sub-unit dispatched in one cycle")
         `KCHK(!(vlsu_req   && vlsu_active),   "INV5d vlsu_req while vlsu_active")
         `KCHK(!(varith_req && varith_active), "INV5e varith_req while varith_active")
-        `KCHK(!(vfpu_req   && vfpu_active),   "INV5f vfpu_req while vfpu_active")   //  vacuous post-merge (vfpu_* tied 0)
+        `KCHK(!(vfpu_req   && vfpu_active),   "INV5f vfpu_req while vfpu_active")   //  vfpu_* tied 0
         `KCHK(!(vkeccak_req && vkeccak_active), "INV5g vkeccak_req while vkeccak_active")
-        //  Post lane-redesign the vector-FP units live inside karu_varith and run
-        //  across NLANES lane FPUs. They are sub-FU (so INV1's single-issue is not
-        //  violated by the simultaneous lane fires), but they must only be active
-        //  as part of an in-flight vector op -> any lane FP activity implies
-        //  varith_active. Catches a spurious-lane / mis-gated-merge regression that
-        //  the vacuous vfpu_* INV5f/INV6f no longer would.
+        //  Vector-FP units live inside karu_varith and run across NLANES lane
+        //  FPUs. They are sub-FU (so INV1's single-issue is not violated by
+        //  simultaneous lane fires), but they must only be active as part of an
+        //  in-flight vector op: any lane FP activity implies varith_active.
         `KCHK(!(vfp_lane_active && !varith_active),
               "INV5j lane FP unit active outside varith_active")
         //  Per-lane FP handshake well-formedness: the vector FSM must never issue
@@ -720,7 +717,7 @@ module karu_assert #(
     a_inv5h_fpu_sub:     assert property ((fpu_sub_req & (fpu_sub_req - 10'b1)) == 10'b0);
     a_inv5d_vlsu_req_idle:   assert property (vlsu_req   |-> !vlsu_active);
     a_inv5e_varith_req_idle: assert property (varith_req |-> !varith_active);
-    a_inv5f_vfpu_req_idle:   assert property (vfpu_req   |-> !vfpu_active); //  vacuous post-merge
+    a_inv5f_vfpu_req_idle:   assert property (vfpu_req   |-> !vfpu_active); //  vfpu_* tied 0
     a_inv5g_vkeccak_req_idle:assert property (vkeccak_req |-> !vkeccak_active);
     a_inv5j_lane_fp:         assert property (vfp_lane_active |-> varith_active);
     a_inv19_fp_req_busy:     assert property (!vfp_req_busy);
@@ -833,7 +830,7 @@ bind karu64 karu_assert u_karu_assert (
     .clk(clk), .rst(rst), .trap(trap),
     .issuing(issuing),
     .lsu_active(lsu_active), .m_active(m_active), .fpu_active(fpu_active),
-    .vlsu_active(vlsu_active), .varith_active(varith_active), .vfpu_active(1'b0),   //  vfpu merged into varith
+    .vlsu_active(vlsu_active), .varith_active(varith_active), .vfpu_active(1'b0),
     .vkeccak_active(1'b0),
     .lsu_req(lsu_req), .lsu_done(lsu_done),
     .m_req(m_req),     .m_done(m_done),

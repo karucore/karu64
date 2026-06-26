@@ -4,13 +4,11 @@
 //  form) + softfloat_roundPackToF64. Covers all four RISC-V variants via
 //  np (negate product) / nc (negate addend).
 //
-//  Datapath is the same combinational SoftFloat port as before, but split
-//  into a 5-stage multi-cycle pipeline (one op in flight; the core is
+//  Split into a 5-stage multi-cycle pipeline (one op in flight; the core is
 //  single-issue and gates on busy/done) so no single cycle carries the
 //  53x53 multiply + 128-bit align/add + normalize + roundpack in series
-//  (that ~35 ns cone was the 125 MHz timing wall once the divider was fixed).
-//  Every expression is preserved verbatim; only registered cut points are
-//  inserted, so results are bit-identical to the old combinational form.
+//  (that ~35 ns cone is the 125 MHz timing wall). Registered cut points do not
+//  change IEEE result/flag semantics.
 //  Stages: S1 unpack+multiply | S2 prod-normalize+align | S3 add/sub |
 //          S4 sub-normalize+pick | S5 roundPackToF64.
 

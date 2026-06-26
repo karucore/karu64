@@ -2,8 +2,8 @@
 //	Simulation-only MII PHY loopback for the generated liteeth_core (E1).
 //
 //	The liteeth core is generated with LiteEthPHYMII, whose MII pads are normally
-//	wired to an external 10/100 PHY. For sim bring-up we don't have (or need) a
-//	PHY: this shim drives the eth tx/rx clocks and feeds the MAC's transmitted
+//	wired to an external 10/100 PHY. In simulation, this shim drives the eth
+//	tx/rx clocks and feeds the MAC's transmitted
 //	nibble stream straight back into its receiver, so a frame the driver sends is
 //	delivered back to an RX slot (MAC-to-MAC loopback). The MAC still inserts the
 //	preamble/SFD/FCS on TX and strips/checks them on RX, so this is a faithful

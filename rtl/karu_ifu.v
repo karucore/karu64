@@ -11,8 +11,8 @@
 //
 //  `redir` flushes the buffers and restarts fetch at `redir_pc`.
 //
-//  One in-flight AR at a time (Phase 2). The karu_lsu / IFU pair share
-//  the dmem and imem bus respectively, no arbitration needed.
+//  One in-flight AR at a time. The karu_lsu / IFU pair share the dmem and
+//  imem bus respectively, no arbitration needed.
 
 `include "karu_axi_defs.vh"
 

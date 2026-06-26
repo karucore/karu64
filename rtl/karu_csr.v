@@ -225,13 +225,9 @@ module karu_csr (
     localparam [63:0] MIP_HW = 64'h0000_0000_0000_0a80; //  MTIP(7)|SEIP(9)|MEIP(11)
     //  FS (14:13) and VS (10:9) are writable only when the matching extension
     //  exists (read-only 0 otherwise); XS (16:15) is read-only 0 (no custom
-    //  stateful extensions -- it was writable by historical accident, fixed
-    //  2026-06-12); SD (63) is no longer writable -- it is DERIVED read-only
-    //  from FS/VS/XS dirty (sd_w below). Base masks exclude all four fields.
-    //  (Base = the old 0x7ff9aa minus FS minus XS: 0x7ff9aa & ~0x6000 &
-    //  ~0x18000 = 0x7e19aa -- a review caught an earlier transposition that
-    //  silently dropped MPRV(17)+SUM(18); the fsvs census case pins every
-    //  expected-writable bit AND the read-only XS.)
+    //  stateful extensions); SD (63) is derived read-only from FS/VS/XS dirty
+    //  (sd_w below). Base masks exclude all four fields; the fsvs census case
+    //  pins every expected-writable bit and the read-only XS field.
     localparam [63:0] MSTATUS_WMASK = 64'h0000_0000_007e_19aa
 `ifdef KARU_EN_F
         | 64'h0000_0000_0000_6000       //  FS
@@ -407,7 +403,7 @@ module karu_csr (
     endfunction
 `ifdef KARU_EN_SSCOFPMF
     //  Sscofpmf per-privilege inhibit for an HPM counter, from its mhpmevent
-    //  MINH(62)/SINH(61)/UINH(60) bits at the CURRENT privilege (SINH dead without S).
+    //  MINH(62)/SINH(61)/UINH(60) bits at the CURRENT privilege.
     function hpm_pinh;
         input [63:0] ev;
         begin
@@ -937,8 +933,8 @@ module karu_csr (
 
     assign op_rd_v  = rd_v_w;
     //  tvec[1:0] = mode: 0 direct (all traps -> BASE), 1 vectored (interrupts ->
-    //  BASE + 4*cause, exceptions -> BASE). BASE is the value with the mode bits
-    //  masked off, so a vectored or low-bit-set tvec no longer corrupts the target.
+    //  BASE + 4*cause, exceptions -> BASE). BASE is the tvec value with the mode
+    //  bits masked off.
 `ifdef KARU_EN_S
     wire [63:0] tvec_sel  = trap_deleg ? csr_stvec : csr_mtvec;
 `else

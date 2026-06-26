@@ -198,9 +198,9 @@ module karu_axi_mem #(
 
 	//	Both read ports use a 3-state FSM (IDLE accept AR -> RD launch the
 	//	registered BRAM read -> VLD present the beat). The registered read
-	//	`*_q <= ram[*_idx]` is what makes Vivado infer Block RAM. This costs
-	//	one extra beat-cycle vs the old combinational model (2 cyc/beat);
-	//	correct under any rready backpressure. A 1-beat/cycle pipelined
+	//	`*_q <= ram[*_idx]` is what makes Vivado infer Block RAM. The
+	//	three-state reader is correct under any rready backpressure. A
+	//	1-beat/cycle pipelined
 	//	reader (with a skid buffer) is a later throughput optimisation.
 	localparam R_IDLE = 2'd0, R_RD = 2'd1, R_VLD = 2'd2;
 

@@ -5,14 +5,13 @@
 //	flags any violation of the contracts the bridge is built on. No data-path
 //	semantics (it never checks "the frame round-trips" -- that's make eth-sim).
 //
-//	Two of these would have fired on bugs hit during bring-up:
-//	  - ETH3 (no *_req while busy) is exactly the caller contract the linux_tb
-//	    AR/AW busy-gate enforces; a master that violated it (dropping a request)
-//	    trips here at the offending cycle instead of hanging the AXI side.
+//	Key contracts:
+//	  - ETH3 (no *_req while busy) is the caller contract the linux_tb AR/AW
+//	    busy-gate enforces; a master that violates it trips here at the offending
+//	    cycle instead of hanging the AXI side.
 //	  - the per-beat gap states (S_R0G/S_W0G) are mandatory between wishbone
 //	    transfers (LiteX slaves register ack); ETH-TRANS forbids S_R0->S_R1 /
-//	    S_W0->S_W1 directly, so a regression that re-introduced the stale-ack
-//	    back-to-back bug is caught structurally.
+//	    S_W0->S_W1 directly.
 //
 //	Sim path: instantiated by flow/fpga/linux_tb.sv with hierarchical refs into the
 //	karu_eth instance (iverilog 14 has no `bind`). Formal path: define
@@ -152,10 +151,10 @@ module karu_eth_assert #(
 		`ECHK(!(st == S_W1 && sel_hi == 4'b0), "ETH12 S_W1 with empty sel_hi")
 
 		//	================= state-transition legality =================
-		//	The only legal successors of each state. Notably S_R0 -> S_R1 and
-		//	S_W0 -> S_W1 are FORBIDDEN: a gap state (stb low, wait for ack to
-		//	clear) must sit between beats, else a registered-ack slave's stale
-		//	ack/data is captured (the back-to-back bug fixed during bring-up).
+			//	The only legal successors of each state. Notably S_R0 -> S_R1 and
+			//	S_W0 -> S_W1 are FORBIDDEN: a gap state (stb low, wait for ack to
+			//	clear) must sit between beats, else a registered-ack slave's stale
+			//	ack/data can be captured.
 		case (st_q)
 			S_IDLE: `ECHK(st==S_IDLE || st==S_R0 || st==S_W0 || st==S_W1,
 						  "ETH-TRANS illegal IDLE successor")

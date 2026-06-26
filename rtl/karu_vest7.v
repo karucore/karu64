@@ -1,18 +1,12 @@
 //  karu_vest7.v
-//  (Extracted from karu_vfpu.v 2026-06-11 when the dead karu_vfpu module
-//  shell was removed -- the vector-FP FSM lives in karu_varith since the
-//  merge; this combinational estimate helper is instantiated per-lane in
-//  karu_vlane and was the only live module left in that file.)
 
 `include "karu_fpkg.vh"
 //  ---------------------------------------------------------------------------
-//  karu_vest7 — combinational 7-bit reciprocal (vfrec7) / reciprocal-square-
-//  root (vfrsqrt7) estimate. Bit-exact port of spike's softfloat
-//  fall_reciprocal.c (recip7 / rsqrte7). SEW32 -> F (e=8,s=23), SEW64 -> D
-//  (e=11,s=52); e16/e8 never reach here (same SEW dispatch as the rest of
-//  the vector-FP path in karu_varith). The only "loop" in the reference
-//  (subnormal normalisation) is a
-//  leading-zero count + shift, so the whole thing is one combinational cone.
+//  karu_vest7 -- combinational 7-bit reciprocal (vfrec7) /
+//  reciprocal-square-root (vfrsqrt7) estimate. Bit-exact with Spike's
+//  softfloat fall_reciprocal.c for SEW32 and SEW64; e16/e8 never reach this
+//  helper. Subnormal normalisation is a leading-zero count plus shift, so the
+//  whole module is one combinational cone.
 //  ---------------------------------------------------------------------------
 module karu_vest7 (
     input  wire [63:0]  a,          //  source element (F in [31:0], D = full 64)
@@ -22,11 +16,9 @@ module karu_vest7 (
     output reg  [63:0]  res,
     output reg  [4:0]   flags
 );
-    //  ---- the two 128-entry tables (verbatim from fall_reciprocal.c) ----
-    //  Expressed as combinational case-ROM functions rather than an initial
-    //  block: portable Verilog-2001 that synthesises to a logic cone / ROM on
-    //  both ASIC and FPGA flows (array `initial` writes are handled
-    //  inconsistently across ASIC synthesis).
+    //  ---- the two 128-entry Spike tables ----
+    //  Case-ROM functions keep this Verilog-2001 portable across ASIC and FPGA
+    //  synthesis flows.
     function [6:0] rsq_lut; input [6:0] i;
         case (i)
               0: rsq_lut = 7'd52 ;    1: rsq_lut = 7'd51 ;    2: rsq_lut = 7'd50 ;    3: rsq_lut = 7'd48 ;
@@ -131,9 +123,7 @@ module karu_vest7 (
     wire [63:0] sig_eff = is_sub ? (({12'b0, sig} << (lz + 7'd1)) & sigmask) : {12'b0, sig};
 
     //  ---- table index + significand ----
-    //  top 6 / top 7 bits of the s-bit field, taken directly via indexed
-    //  part-select (== sig_eff >> 46/17 then [5:0], etc.) -- no wide
-    //  intermediate, so no unused-bit truncation for lint-gated flows.
+    //  Top 6 / top 7 significand bits used by the Spike table index.
     wire [5:0]  srsq = sig_eff[(is_d ? 6'd46 : 6'd17) +: 6];
     wire [6:0]  srcp = sig_eff[(is_d ? 6'd45 : 6'd16) +: 7];
     wire [6:0]  idx_rsq = {exp_eff[0], srsq};

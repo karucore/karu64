@@ -233,12 +233,8 @@ module karu_i2f (
     //  `shift_amt` low bits of mag. round_bit = mag[shift_amt-1];
     //  sticky_bit = OR of bits [shift_amt-2 : 0].
     //
-    //  The earlier version of this block clamped both at shift_amt=24
-    //  (so round_bit was always mag[23] and sticky_mask was always
-    //  bits[22:0]) for the "shift_amt >= 24" case, missing NX for
-    //  int->float conversions where the leading 1 sits above bit 23
-    //  but the discarded bits aren't all zero. shift_amt's actual
-    //  range here is [0, 40] (msb_pos <= 63), so 6 bits is enough.
+    //  shift_amt's actual range here is [0, 40] (msb_pos <= 63), so the
+    //  round/sticky extraction must cover shifts above 24. Six bits is enough.
     wire [5:0]  sa = shift_amt[5:0];
     wire [63:0] dropped_mask64 =
         (shift_amt >= 8'sd2) ? ((64'b1 << (sa - 6'd1)) - 64'b1) : 64'b0;

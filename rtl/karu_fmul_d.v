@@ -44,9 +44,7 @@ module karu_fmul_d (
     reg [63:0] a_q, b_q;
     reg [2:0]  rm_q;    //  rm must be latched too: the iterative path rounds at
                         //  RESULT time (cycle req+53), by when the live `rm` reflects
-                        //  a LATER instruction (issue advances). Reading it live made
-                        //  directed-rounding results issue-timing dependent (wrong in
-                        //  the fpga_top path, right in htif_tb -- a real bug).
+                        //  a later instruction (issue advances).
     always @(posedge clk) if (req) begin a_q <= a; b_q <= b; rm_q <= rm; end
     wire [63:0] opa = (D_MUL_CYCLES == 1) ? a : a_q;
     wire [63:0] opb = (D_MUL_CYCLES == 1) ? b : b_q;

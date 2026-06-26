@@ -630,11 +630,9 @@ module karu_dec (
                     unit = `UNIT_SYS;
                     rd   = 5'd0; rs1 = 5'd0; rs2 = 5'd0;
                     //  SFENCE.VMA is funct7=0001001 with rs1(vaddr)/rs2(asid)
-                    //  OPERANDS, so it must be matched on funct7 -- not the full
-                    //  funct12. The old `12'h120` only matched the rs2==0 flush-all
-                    //  form; Linux issues ASID/VA-targeted sfence.vma (rs2!=0) at
-                    //  context switch, which fell through to SYS_TRAP and halted
-                    //  the core at the userspace transition. karu's MMU flushes the
+                    //  operands, so it must be matched on funct7, not the full
+                    //  funct12. Linux issues ASID/VA-targeted sfence.vma
+                    //  (rs2!=0) at context switch. karu's MMU flushes the
                     //  whole TLB on any sfence.vma, so rs1/rs2 stay unused (0).
                     case (ins[31:20])
                         12'h000: sub = `SYS_ECALL;
@@ -676,9 +674,9 @@ module karu_dec (
 
             //  ---- OP-VE (0x77): standard Zvk and experimental vkeccak ----
             //  Standard vector crypto (Zvk*, spec Ch. 30.4) also lives under
-            //  OP-VE. Keccak is separate from that table (spec Ch. 31), but this
-            //  core implements the older keccak-xrv full-permutation custom op, so
-            //  match its full `.insn r 0x77,0x2,0x53` template rather than every
+            //  OP-VE. Keccak is separate from that table (spec Ch. 31); this core
+            //  implements the keccak-xrv full-permutation custom op, so match its
+            //  full `.insn r 0x77,0x2,0x53` template rather than every
             //  funct6=101001 encoding. Otherwise standard VAES.vs forms alias as
             //  Keccak.
             5'b11101: begin

@@ -13,8 +13,7 @@
 //  Split into a 4-stage multi-cycle pipeline (one op in flight; the core is
 //  single-issue and gates on busy/done) so no single cycle carries the
 //  24x24 multiply + 64-bit align/add + normalize + roundpack in series.
-//  Every expression is preserved verbatim; only registered cut points are
-//  inserted, so results are bit-identical to the old combinational form.
+//  Registered cut points do not change IEEE result/flag semantics.
 //  Stages: S1 unpack+multiply | S2 prod-normalize+align+add/sub |
 //          S3 sub-normalize+pick | S4 roundPackToF32.
 

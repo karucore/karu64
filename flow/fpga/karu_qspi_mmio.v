@@ -1,7 +1,7 @@
 //	karu_qspi_mmio.v
 //	=== Minimal STARTUPE3-backed SPI flash byte-transfer engine.
 //
-//	This is intentionally a small bring-up block, not a high-throughput QSPI
+//	This is intentionally a small byte-transfer block, not a high-throughput QSPI
 //	controller. Firmware controls chip-select, writes one TX byte to start an
 //	8-bit SPI transfer, polls BUSY/DONE, and reads the received byte. That is
 //	enough for a bootloader to send 0x03 + 24-bit flash offset and stream a
@@ -149,13 +149,10 @@ module karu_qspi_mmio #(
 						if (bitcnt == 4'd1) begin
 							active <= 1'b0;
 							done <= 1'b1;
-							//	sh_rx already holds the 8 bits sampled on the
-							//	8 rising edges (b1..b8). Latch it directly.
-							//	The previous {sh_rx[6:0], su_di[1]} dropped the
-							//	MSB and re-sampled MISO on this falling edge --
-							//	where the flash still holds the prior bit -- so
-							//	every byte came out shifted left by one bit
-							//	(HW: JEDEC 20 BB 21 read back as 40 77 43).
+								//	sh_rx already holds the 8 bits sampled on the
+								//	8 rising edges (b1..b8). Latch it directly;
+								//	MISO must not be re-sampled on this falling edge,
+								//	where the flash still holds the prior bit.
 							rx_byte <= sh_rx;
 							sck <= 1'b0;
 						end

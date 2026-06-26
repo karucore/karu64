@@ -21,8 +21,8 @@
 //	AN status/control-page (a status check), while the 4-wire-CDR vs 6-wire-refclk
 //	*mode* bit is SGMIICTL1 0x00D3[14]. Add once the PCS/PMA mode + board clocking
 //	are decided (which also settles the GTH-vs-SelectIO question -- see UG1224).
-//	There is no board here: this is sim-validated framing/sequencing (make
-//	mdio-test), not on-wire bring-up.
+//	There is no board here: this is sim-validated framing/sequencing
+//	(make mdio-test), not a live-board link test.
 //
 //	MDIO timing (Clause 22): MDC = clk/(2*MDC_DIV) (keep <= 25 MHz). MDIO is driven
 //	on the MDC **falling** edge and sampled on the **rising** edge, both directions.

@@ -6,9 +6,9 @@
 //	vcu118_ddr_top under `ifdef KARU_ETH_PHY; also the top for `make elab-eth` (so the
 //	front-end elaborates in Vivado without the SoC's generated IP black boxes).
 //
-//	This is the PHY MANAGEMENT/reset path only. The SGMII datapath (the SelectIO/LVDS
-//	1G Ethernet PCS/PMA -- B1 settled 2026-06-15, see doc/fpga.md) is a
-//	later slice.
+//	This is the PHY MANAGEMENT/reset path only. The SGMII datapath
+//	(SelectIO/LVDS 1G Ethernet PCS/PMA, see doc/fpga.md) is outside this
+//	front-end.
 
 `timescale 1ns/1ps
 `default_nettype none

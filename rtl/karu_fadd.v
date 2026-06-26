@@ -4,8 +4,7 @@
 //  Split into a 3-stage multi-cycle pipeline (one op in flight; the core is
 //  single-issue and gates on busy/done) so no single cycle carries the
 //  56-bit align shift + 28-bit add + CLZ-normalize + denormalize + round in
-//  series. Every expression is preserved verbatim; only registered cut points
-//  are inserted, so results are bit-identical to the old combinational form.
+//  series. Registered cut points do not change IEEE result/flag semantics.
 //  Stages: S1 unpack+swap+align | S2 add+normalize | S3 denormalize+round+pack.
 //
 //  Full IEEE subnormal support: subnormal inputs are real operands (leading 0,

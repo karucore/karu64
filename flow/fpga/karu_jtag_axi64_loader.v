@@ -1,7 +1,7 @@
 //	karu_jtag_axi64_loader.v
 //	=== 32-bit JTAG AXI master -> 64-bit AXI loader adapter.
 //
-//	This is a bring-up loader, not a general interconnect. It is clocked in the
+//	This is a loader, not a general interconnect. It is clocked in the
 //	MIG ui_clk domain and is used while the CPU is held in reset. Full 32-bit
 //	addresses from Vivado/XSDB are mapped to the DDR offset window by dropping
 //	bit 31, so writes to 0x8000_0000 reach MIG address 0.

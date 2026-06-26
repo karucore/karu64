@@ -147,8 +147,8 @@
 //  26 (F).
 //
 //  NOTE: this is deliberately INDEPENDENT of the integer `KARU_DIV_CYCLES`
-//  (whose "1 = single combinational divide" semantics is exactly the 125 MHz
-//  timing wall removed here — an FP *combinational* divide is never generated).
+//  (whose "1 = single combinational divide" semantics does not apply here).
+//  An FP combinational divide is never generated.
 `ifndef KARU_F_DIV_CYCLES
     `define KARU_F_DIV_CYCLES 1
 `endif

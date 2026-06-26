@@ -1,7 +1,6 @@
 //  karu_regfile.v
 //  32x64-bit integer register file. x0 hard-wired to zero.
-//  2 read ports (rs1, rs2), 1 write port (rd) for Phase 2; Phase 3 will
-//  add more write ports for multi-FU completion.
+//  2 read ports (rs1, rs2), 1 write port (rd).
 
 module karu_regfile (
     input  wire         clk,

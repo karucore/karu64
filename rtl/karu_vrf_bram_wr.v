@@ -1,8 +1,7 @@
 //  karu_vrf_bram_wr.v
 //  Sequencing adapter: presents the whole-register + granule operand
 //  interface to karu_varith / karu_vlsu, backed by the dual-port BRAM VRF
-//  (karu_vrf_bram). The ONLY VRF access path since the 2026-06-12 collapse
-//  (see doc/architecture.md).
+//  (karu_vrf_bram). See doc/architecture.md.
 //
 //  Contract (the conditions on the global op_stall freeze):
 //    * op_stall = varith_active && need_fill, and need_fill is purely
@@ -20,10 +19,7 @@
 //  per element via the lanes, so g_wbe is full today; partial g_wbe is the
 //  undisturbed-without-RMW path once reads narrow). g_wlast (op's final granule)
 //  drives read-cache coherence. The g_we port is shared varith/vlsu (single-
-//  issue; muxed in karu64 by write signal). The old whole-register vr_* write
-//  port is DELETED (macro-VRF milestone) -- all varith writes are granules
-//  now. (The flop VRF and its whole-register write were DELETED in the
-//  2026-06-12 macro-VRF collapse; this adapter is the only VRF access path.)
+//  issue; muxed in karu64 by write signal).
 //
 //  READS: per-operand GRANULE latches (vs1_g/vs2_g/vold_g) refilled whenever a
 //  requested address changes; varith is stalled meanwhile. v0 is the BRAM flop
@@ -41,14 +37,13 @@ module karu_vrf_bram_wr #(
     input  wire                 clk,
     input  wire                 rst,
 
-    //  ---- karu_varith operand read ADDRESSES (granule fills key on these;
-    //  the whole-register rd1/rd2/rd3 latches are DELETED) ----
+    //  ---- karu_varith operand read ADDRESSES (granule fills key on these) ----
     input  wire [4:0]           vr_rs,      //  old vd
     input  wire [4:0]           vr_rs2,     //  vs1
     input  wire [4:0]           vr_rs3,     //  vs2
     output wire [VLEN-1:0]      vr_v0,      //  mask (from BRAM flop shadow)
 
-    //  ---- granule source feed (the ONLY operand path) ----
+    //  ---- granule source feed ----
     //  vs1_g/vs2_g/vold_g are filled per (address, per-operand granule
     //  index) as the need flags demand; varith stalls (op_stall) until the
     //  requested granules land. Overlap/coherence: ops walk granules
@@ -123,8 +118,8 @@ module karu_vrf_bram_wr #(
     assign g_rdata = a_rdata;   //  vlsu granule read (registered; +1 wait in karu_vlsu)
 
     //  ---- granule operand latches + (address, granule) tags ----
-    //  (the whole-register rd1/rd2/rd3 latches, their la*/valid tracking
-    //  and the F_RD0..3 fill path were DELETED with the read retirement)
+    //  Operand cache: one VBUS_W granule per source operand, tagged by source
+    //  register and granule index.
     reg  [VBUS_W-1:0]   vs1_gq, vs2_gq, vold_gq;
     reg  [4:0]  g2a, g3a, g1a;
     reg         g2g, g3g, g1g;
@@ -141,7 +136,7 @@ module karu_vrf_bram_wr #(
     //  when needed. 2-3 cycles per fill.
     localparam F_IDLE=4'd0, F_DRAIN=4'd1, G_RD0=4'd6, G_RD1=4'd7, G_RD2=4'd8;
     reg [3:0]       fs;
-    //  edge-captured GRANULE write (the only varith write path now): held while a
+    //  edge-captured granule write: held while a
     //  write coincides with a fill, drained in F_DRAIN.
     reg [4:0]       whold_wd;
     reg             whold_wg;       //  captured granule index
@@ -271,10 +266,9 @@ module karu_vrf_bram_wr #(
 // synthesis translate_off
     //  VRF8 (read-cache coherence, granule-tag form): a committed op-final
     //  write (g_wlast) must invalidate ALL the granule operand tags, so the
-    //  next op refills from BRAM. The regression guard for the load->reuse
-    //  stale-operand class. The F_DRAIN write-with-fill path is exempt (its
-    //  tag-clear + following fill re-read are checked by VRF5b); a varith
-    //  mid-loop write (g_wlast=0) deliberately KEEPS the tags.
+    //  next op refills from BRAM. The F_DRAIN write-with-fill path is exempt
+    //  (its tag-clear + following fill re-read are checked by VRF5b); a
+    //  varith mid-loop write (g_wlast=0) deliberately KEEPS the tags.
     reg vrf8_wr_q;
     always @(posedge clk) vrf8_wr_q <= !rst && (direct_gw && g_wlast);
     always @(posedge clk) if (!rst && vrf8_wr_q && (g1v || g2v || g3v)) begin

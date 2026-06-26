@@ -19,9 +19,8 @@
 //	is held until DDR4 calibration completes (c0_init_calib_complete) and the MIG
 //	UI reset deasserts, then the CPU boots automatically from the on-chip fu-boot
 //	ROM at RESET_PC=0x0000_1000, which loads/inflates payloads into DDR and jumps
-//	to 0x8000_0000. (The legacy DDR4-debug scaffolding -- VIO probe_out0[0] CPU
-//	hold + the jtag_axi_0 load-then-release host loader -- is now compiled out by
-//	default and only returns under `KARU_DDR_HOST_DBG`.)
+//	to 0x8000_0000. Optional DDR4 host-debug scaffolding is enabled only under
+//	`KARU_DDR_HOST_DBG`.
 //
 //	*** NOT yet hardware-validated (no VCU118 attached). ***  The ddr4_0 and
 //	axi_dwidth_converter_0 instances are black boxes until generated
@@ -110,8 +109,8 @@ module vcu118_ddr_top (
 	wire		host_cpu_hold = host_ctl[0];		//	VIO default=1: hold CPU for JTAG-AXI DRAM load
 	wire		host_cpu_reset = host_ctl[1];	//	manual reset pulse/level
 `else
-	//	DDR4-debug hold + JTAG-AXI host loader removed: the CPU comes out of reset
-	//	automatically once MIG calibration completes and owns the DRAM AXI directly.
+	//	Default boot: the CPU comes out of reset automatically once MIG calibration
+	//	completes and owns the DRAM AXI directly.
 	//	(const-0 so core_arst / use_host_axi / led_o below resolve unchanged.)
 	wire		host_cpu_hold = 1'b0;
 	wire		host_cpu_reset = 1'b0;
@@ -517,7 +516,7 @@ module vcu118_ddr_top (
 	assign c_rvalid = use_host_axi ? 1'b0 : s_rvalid;
 	assign s_rready = use_host_axi ? h_rready : c_rready;
 `else
-	//	Host loader removed: the CPU's 64-bit AXI drives the converter slave directly.
+	//	CPU path: the core's 64-bit AXI drives the converter slave directly.
 	assign s_awid    = c_awid;
 	assign s_awaddr  = c_awaddr;
 	assign s_awlen   = c_awlen;

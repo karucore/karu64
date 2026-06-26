@@ -107,9 +107,9 @@ module karu_sv39 #(
     reg [7:0]                   tlb_perm [0:TLB_ENTRIES-1];
     reg [1:0]                   tlb_level [0:TLB_ENTRIES-1];
     //  Address-space tag: a TLB entry only matches when the current satp ASID
-    //  and root PPN match the ones the entry was filled under. Without this the
-    //  VPN-only match aliases across address spaces, so a Linux ASID context
-    //  switch (new satp, no sfence.vma) wrongly reuses the previous mapping.
+    //  and root PPN match the ones the entry was filled under. A VPN-only match
+    //  would alias across address spaces when Linux switches ASIDs without
+    //  sfence.vma.
     reg [15:0]                  tlb_asid [0:TLB_ENTRIES-1];
     reg [43:0]                  tlb_root [0:TLB_ENTRIES-1];
     reg [1:0]                   tlb_replace;

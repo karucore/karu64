@@ -15,8 +15,8 @@
 //     (sat/avg/ssr/vsmul), and combinational mul/mac/div (gated by MUL_COMB/
 //     DIV_COMB -- when the serial multiplier/divider is configured the parent
 //     runs those and the lane's mul/div logic constant-folds away). Output:
-//     res_chunk (+ lane_sat). The element expressions are a verbatim extraction
-//     of the old karu_varith per-element loop body -> bit-identical by design.
+    //     res_chunk (+ lane_sat). The element expressions match karu_varith's
+    //     per-element arithmetic semantics.
 //
 //  2. A rolled-in scalar FP unit: one karu_fpu (F+D) + karu_vest7 (the
 //     combinational 7-bit vfrec7/vfrsqrt7 estimate). The PARENT computes the
@@ -35,10 +35,9 @@
 module karu_vlane #(
     parameter integer MUL_COMB = 1,         //  1 = combinational mul/mac in-lane
     parameter integer DIV_COMB = 1          //  1 = combinational div in-lane
-    //  keep-old merging is GONE (macro-VRF collapse): every byte gets raw
-    //  eres; the parent's exact-write-set byte enables (gwbe_*) do all
-    //  preservation, and vold_chunk feeds only the MAC. (The old NOMERGE
-    //  knob and its flop-path merge mux were deleted with the flop VRF.)
+    //  Keep-old preservation is controlled by the parent's exact-write-set
+    //  byte enables (gwbe_*); this lane always returns the raw element bytes.
+    //  vold_chunk feeds only the MAC path.
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -386,11 +385,9 @@ module karu_vlane #(
                        && ((is_satadd & sat) | (is_vsmul & sm_sat));
                 if (el_sat) lane_sat = 1'b1;
                 //  -- write with mask/tail policy (per byte of the element) --
-                //  the keep-old merge is GONE -- every byte gets
-                //  the raw element result, and tail/masked-off keep-old is the
-                //  suppressed BRAM byte enable (the parent's exact-write-set
-                //  gwbe_*). The constant-parameter if folds at elaboration, so
-                //  (macro-VRF collapse: enables are mandatory-exact).
+                //  Every byte gets the raw element result; tail/masked-off
+                //  keep-old is represented by the parent's exact-write-set
+                //  byte enables (gwbe_*).
                 for (bb = 0; bb < 8; bb = bb + 1) begin
                     if (bb < (sewbP >> 3))
                         res_chunk[(j*(sewbP>>3)+bb)*8 +: 8] = eres[bb*8 +: 8];

@@ -113,9 +113,8 @@ module htif_tb (input wire clk);
 
     //  imem read slave model -- supports INCR bursts (ARLEN>0). The Sv39 immu
     //  reads 64-byte page-table lines as 8-beat bursts on the imem master, so
-    //  this must honour arlen/rlast (it previously single-beated, which fed the
-    //  immu garbage PTEs and faulted every translated fetch). One transaction
-    //  at a time; 8-byte (one ram word) increment per beat. arlen=0 fetches
+    //  this must honour arlen/rlast. One transaction at a time; 8-byte (one
+    //  ram word) increment per beat. arlen=0 fetches
     //  (the plain IFU path) still work (cnt=0 -> rlast on the first beat).
     reg                     imem_r_pending;
     reg [`AXI_ID_W-1:0]     imem_r_id;
@@ -273,12 +272,10 @@ module htif_tb (input wire clk);
         end
     end
 
-    //  ==== dmem AW/AR backpressure injection (repro; doc/fpga.md step 1) ====
-    //  OFF by default (byte-identical to a normal run). +ddr_stall=N holds dmem awready/arready
-    //  low for ~N cycles after a request first asserts, so the core's AW/AR is HELD against
-    //  backpressure -- opening the "VALID && !READY" window in which a higher-priority PTW writeback
-    //  can preempt the AXI payload. On the pre-fix arbiter the karu_assert dmem AW/AR-stability KCHK
-    //  then fires; on the sticky-grant fix it stays green. win_*_cyc confirm the window opened.
+    //  ==== dmem AW/AR backpressure injection ====
+    //  OFF by default. +ddr_stall=N holds dmem awready/arready low for ~N cycles
+    //  after a request first asserts, so the core's AW/AR is held against
+    //  backpressure. win_*_cyc confirm the "VALID && !READY" window opened.
     reg [31:0]  ddr_stall;
     reg [31:0]  aw_cnt, ar_cnt;
     reg     aw_armed, ar_armed;
@@ -313,8 +310,8 @@ module htif_tb (input wire clk);
         if (dmem_arvalid && !dmem_arready) win_ar_cyc <= win_ar_cyc + 1;
     end
 
-    //  workload characterization: do >=2 write masters ever contend, and do the
-    //  immu/dmmu PTE A/D writebacks (the bug's aggressor) actually fire?
+    //  Workload characterization: do >=2 write masters ever contend, and do the
+    //  immu/dmmu PTE A/D writebacks actually fire?
     integer cont_aw_cyc, n_immu_aw, n_dmmu_aw, n_km_aw;
     integer cont_imem_ar, n_immu_ar, n_ifm_ar;
     initial begin cont_aw_cyc = 0; n_immu_aw = 0; n_dmmu_aw = 0; n_km_aw = 0;
@@ -478,8 +475,8 @@ module htif_tb (input wire clk);
         .fpu_active     (cpu.fpu_active),
         .vlsu_active    (cpu.vlsu_active),
         .varith_active  (cpu.varith_active),
-        .vfpu_active    (1'b0), //  vector FP merged into karu_varith (tracked via varith_*)
-        .vkeccak_active (1'b0), //  keccak folded into karu_varith (tracked via varith_*)
+        .vfpu_active    (1'b0), //  vector FP tracked via varith_*
+        .vkeccak_active (1'b0), //  keccak tracked via varith_*
         .lsu_req        (cpu.lsu_req),
         .lsu_done       (cpu.lsu_done),
         .m_req          (cpu.m_req),
@@ -495,9 +492,9 @@ module htif_tb (input wire clk);
         .vlsu_done      (cpu.vlsu_done),
         .varith_req     (cpu.varith_req),
         .varith_done    (cpu.varith_done),
-        .vfpu_req       (1'b0), //  merged into karu_varith
+        .vfpu_req       (1'b0), //  tracked via karu_varith
         .vfpu_done      (1'b0),
-        .vfp_lane_active(cpu.varith_fp_lane_active),    //  post-merge lane FP activity
+        .vfp_lane_active(cpu.varith_fp_lane_active),    //  lane FP activity
 `ifdef KARU_EN_V
         .vfp_req_busy   (cpu.varith_u.dbg_fp_req_busy), //  lane FP req to a busy lane (must be 0)
         .lane_warm_bad  (cpu.varith_u.dbg_lane_warm_bad),   //  KARU_V_LANE_PIPE warm-cycle leak (must be 0)
@@ -505,7 +502,7 @@ module htif_tb (input wire clk);
         .vfp_req_busy   (1'b0),
         .lane_warm_bad  (1'b0),
 `endif
-        .vkeccak_req    (1'b0), //  folded into karu_varith
+        .vkeccak_req    (1'b0), //  tracked via karu_varith
         .vkeccak_done   (1'b0),
         .wb_we          (cpu.wb_we),
         .wb_rd          (cpu.wb_rd),

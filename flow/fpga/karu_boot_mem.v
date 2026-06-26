@@ -5,20 +5,18 @@
 //                                       payload images (fu-boot auto-copies them to DDR).
 //   SRAM_BASE .. SRAM_BASE+SRAM_BYTES   boot scratch SRAM (64 KiB): fu-boot stack/data/bss.
 //
-// The ROM grew from 60 KiB to 1 MiB so the whole boot chain (OpenSBI + U-Boot + DTB)
-// ships inside the bitstream -- no JTAG/host stage to bring up the board. The scratch
-// SRAM used to sit at 0x0001_0000, which is now inside the 1 MiB ROM, so it moved up to
-// 0x0010_1000 (directly above the ROM). Index widths are derived from the sizes.
+// The whole boot chain (OpenSBI + U-Boot + DTB) ships inside the bitstream -- no
+// JTAG/host stage is needed to bring up the board. The scratch SRAM sits directly
+// above the 1 MiB ROM. Index widths are derived from the sizes.
 //
 // BRAM-mapping discipline (load-bearing at 1 MiB): each memory drives its OWN
 // unconditionally-registered read output -- the canonical block-RAM template -- and the
 // imem/dmem datum is a *post-register* select. Folding both memories into one muxed
 // output reg (an `if (is_rom) rdata<=rom[..] else if (is_sram) rdata<=sram[..] else 0`
 // style) makes Vivado declare ram_style="block" "infeasible" and fall back to distributed
-// RAM. That silently fit when the ROM was 60 KiB but is catastrophic at 1 MiB (it would
-// need ~580k LUTRAM + a 131072-deep address mux). The ROM is read-only with two read
-// ports, so it maps to a true-dual-port block RAM; the SRAM is 2R/1W (3 ports), so it
-// stays distributed RAM -- fine at 64 KiB.
+// RAM, which is not viable for a 1 MiB ROM. The ROM is read-only with two read ports,
+// so it maps to a true-dual-port block RAM; the SRAM is 2R/1W (3 ports), so it stays
+// distributed RAM -- fine at 64 KiB.
 
 module karu_boot_mem #(
 	parameter		 ROM_HEX    = "vcu118_fuboot.hex",

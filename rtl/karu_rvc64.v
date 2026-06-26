@@ -23,9 +23,7 @@ module karu_rvc64(
             c[15:13] == 3'b000 ?                        //  c.addi4spn
                 //  nzuimm == 0 is RESERVED -- and the all-zeros halfword is
                 //  the architecturally DEFINED illegal instruction. Expand to
-                //  an invalid 32-bit word so decode raises the cause-2 trap
-                //  (this previously expanded to addi s0,sp,0 and executed
-                //  silently -- a latent hole the vresv illegal case exposed).
+                //  an invalid 32-bit word so decode raises the cause-2 trap.
                 (c[12:5] == 8'b0 ? 32'hFFFF_FFFF :
                 //  addi rd', x2, nzuimm[9:2]
                 { 2'b00, c[10:7], c[12:11], c[5], c[6], 2'b00,
