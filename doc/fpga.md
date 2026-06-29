@@ -24,7 +24,7 @@ a legacy Verilator into the environment that shadows the one used for the sims.
 Bring Vivado in only when needed:
 
 ```sh
-alias xilinx='source $HOME/Xilinx/2026.1/Vivado/.settings64-Vivado.sh'
+alias xilinx='source $HOME/Xilinx/2026.1/Vivado/settings64.sh'
 xilinx
 make vcu118-ddr          # synth + place + route -> _build/vcu118_ddr.bit
 make prog_vcu118_ddr     # program a connected board over JTAG
@@ -47,6 +47,14 @@ sim/spike targets must run in a shell where `xilinx` has **not** been sourced.
 flashes whatever `_build/vcu118_ddr.bit` exists (a prerequisite would let make
 decide the bitstream is stale and silently start a multi-hour resynth). Build
 first, then program.
+
+Programming is **Vivado-version-tolerant**: the bitstream is opaque configuration
+data streamed to the FPGA over JTAG, so a lab box running an *older* Vivado can
+flash a bit built on a newer one. The deployed full-vector ROM bit (built on
+2026.1) programs and boots from a **2025.2.1** `hw_server` / `prog_vcu118_ddr`
+without issue. `flow/with_vivado.sh` sources 2026.1 if installed and otherwise
+falls back to 2025.2.1, so the same command works on the build host and the lab
+JTAG host.
 
 For one-off Vivado/JTAG work without changing your shell, `flow/with_vivado.sh
 <cmd>` sources the settings in a subshell only (e.g. `flow/with_vivado.sh make
@@ -256,12 +264,15 @@ repository.
 
 ### Open items
 
-- On-board retest of the full-vector bit carrying the latest RTL fixes (auto-boot
-  reset removal; the Zvk three-operand `.vv` general-`vs1` SHA-2/SM3/GHASH decode
-  that OpenSSL's runtime-dispatched vector SHA-2 needs). Re-synth is done: the
-  `vcu118-ddr-sgmii-rom-vec` bit rebuilt on **Vivado 2026.1** and **closed timing**
-  (post-route WNS +0.015 ns, cpu_clk-region cone +0.021 ns, 0 failing endpoints,
-  DRC 0 errors; LUTs 29.8 %). Programming/retest happens on a separate JTAG host.
+- Runtime functional retest of the vector-crypto paths — the Zvk three-operand
+  `.vv` general-`vs1` SHA-2/SM3/GHASH decode that OpenSSL's runtime-dispatched
+  vector SHA-2 needs — under the on-board benchmarks. The **boot-level** retest is
+  done: the `vcu118-ddr-sgmii-rom-vec` bit (rebuilt on **Vivado 2026.1**, **closed
+  timing** — post-route WNS +0.015 ns, cpu_clk-region cone +0.021 ns, 0 failing
+  endpoints, DRC 0 errors, LUTs 29.8 %) was programmed from the lab JTAG host's
+  older **2025.2.1** Vivado and auto-booted hands-off — validating the auto-boot
+  reset removal — through OpenSBI → U-Boot → NFS-root **Linux 7.1.2** to userspace
+  with no panic. What remains is exercising the crypto at runtime.
 - QSPI config-flash hardware reads.
 - LiteEth throughput tuning (~150 KB/s today).
 - Advertising the standard Zvk leaves in the DTB `riscv,isa` string for
