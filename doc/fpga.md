@@ -1,7 +1,8 @@
 # FPGA — VCU118 / xcvu9p
 
 `karu64` targets the **Xilinx VCU118** board (part `xcvu9p-flga2104-2L-e`,
-Virtex UltraScale+ VU9P), built with **Vivado 2025.2.1**. The part is wildly
+Virtex UltraScale+ VU9P), built with **Vivado 2026.1** (previously 2025.2.1; the
+full-vector ROM bit was last reproduced on 2026.1). The part is wildly
 over-provisioned for this core (6840 DSP48E2, 4320 BRAM), so **area is a
 non-issue — timing is the only question.**
 
@@ -23,10 +24,19 @@ a legacy Verilator into the environment that shadows the one used for the sims.
 Bring Vivado in only when needed:
 
 ```sh
-alias xilinx='source $HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh'
+alias xilinx='source $HOME/Xilinx/2026.1/Vivado/.settings64-Vivado.sh'
 xilinx
 make vcu118-ddr          # synth + place + route -> _build/vcu118_ddr.bit
 make prog_vcu118_ddr     # program a connected board over JTAG
+```
+
+The boot/ROM builds compile bare-metal fu-boot with the `XCHAIN` toolchain
+(default `riscv64-unknown-elf-`). If only a Linux GNU cross toolchain is
+installed, override it — fu-boot is freestanding, so it builds fine:
+
+```sh
+make vcu118-ddr-sgmii-rom-vec XCHAIN=riscv64-linux-gnu- \
+     VIVADO_VMEM_KB=84000000 VIVADO_THREADS=8
 ```
 
 The Makefile launches Vivado from `_build`, so journals, logs, `.Xil`, generated
@@ -146,6 +156,35 @@ instruction-memory latency.
   in reset, load DRAM over JTAG-AXI, release via VIO" bring-up path is gated
   behind `KARU_DDR_HOST_DBG` (off by default; no debug scaffold in the shipped
   bitstream).
+
+  The 1 MiB ROM is packed by `flow/build_fuboot_rom.sh` at the offsets defined in
+  the Makefile (`FUBOOT_*_OFF`); the same offsets are baked into fu-boot via the
+  generated `flow/boot/fuboot_blobs.h`, so the two must agree exactly. Current map:
+
+  | Blob    | ROM offset | copied by fu-boot to |
+  |---------|-----------|----------------------|
+  | fu-boot | `0x00000` | (runs in place)      |
+  | OpenSBI | `0x10000` | `0x80000000`         |
+  | U-Boot  | `0x60000` | `0x80200000`         |
+  | DTB     | `0xFC000` | `0x81B00000`         |
+
+  `FUBOOT_DTB_OFF` was moved `0xF0000`→`0xFC000` once a U-Boot v2025.01 built with
+  `riscv64-linux-gnu` gcc-15 grew to ~579 KiB and overran the old 576 KiB U-Boot
+  region; the move enlarges that region to 624 KiB while the ~2.8 KiB DTB still
+  has a 16 KiB region (ROM stays 1 MiB — no `karu_boot_mem` change). If U-Boot
+  ever overruns again, `build_fuboot_rom.sh` aborts with an explicit
+  `... overruns its region` error before P&R, so the failure is fast and obvious.
+
+  After U-Boot relocates to DRAM, its baked netboot bootcmd (from the per-profile
+  one-liner in `../karudeb/build/karu64/tftp/<variant>/uboot-netboot-one-line.txt`)
+  TFTPs the kernel to `0x80200000` and the board DTB to `0x84000000`, then
+  `booti 0x80200000 - 0x84000000`. The kernel `Image` `text_offset` is `0x200000`
+  and DRAM base is `0x80000000`, so `0x80200000` is the required load address; the
+  DTB at `0x84000000` (64 MiB in) clears the ~5 MiB kernel image. The one-liner's
+  `serverip`/`ipaddr`/`nfsroot` must match the deployment's link — regenerate the
+  staged files in `../karudeb` (e.g. `TFTP_SERVER=… NFS_SERVER=… GUEST_IP=…
+  DTB_VARIANT=zvk-ddr ./scripts/stage-karu64-tftp.sh`) so the baked bootcmd and the
+  control DTB agree on the network before building the ROM bit.
 - **Bitstream variants** (one shared OpenSBI, per-profile control DTB +
   netboot bootcmd, sourced from `../karudeb`):
   - `make vcu118-ddr` — DDR4 Linux bring-up bit (`KARU_NO_V`, IMAFDC).
@@ -202,7 +241,7 @@ fit a 32 GB box; the full-vector build wants more (≈84 GB box, 8 threads).
   with 2 GiB DRAM and a working **LiteEth network stack** (eth0 up, ping + TCP +
   wget) on the real board.
 - **Full-vector Linux on hardware:** the RV64GCV + Zvk bitstream boots **Debian
-  trixie NFS-root to a root shell** (`root@karudeb:~#`, kernel `7.1.1-zvk`) —
+  trixie NFS-root to a root shell** (`root@karudeb:~#`, kernel `7.1.2-zvk`) —
   the first RV64GCV bit to reach userspace on hardware. Timing closed with
   `KARU_V_CWB_STAGE` plus a MIG `DM_NO_DBI` fix (post-route WNS +0.040 ns,
   0 failing endpoints). OpenSBI enables `mstatus.VS` from `misa.V`; the kernel
@@ -217,9 +256,12 @@ repository.
 
 ### Open items
 
-- Re-synth + on-board retest of the full-vector bit carrying the latest RTL
-  fixes (auto-boot reset removal; the Zvk three-operand `.vv` general-`vs1`
-  SHA-2/SM3/GHASH decode that OpenSSL's runtime-dispatched vector SHA-2 needs).
+- On-board retest of the full-vector bit carrying the latest RTL fixes (auto-boot
+  reset removal; the Zvk three-operand `.vv` general-`vs1` SHA-2/SM3/GHASH decode
+  that OpenSSL's runtime-dispatched vector SHA-2 needs). Re-synth is done: the
+  `vcu118-ddr-sgmii-rom-vec` bit rebuilt on **Vivado 2026.1** and **closed timing**
+  (post-route WNS +0.015 ns, cpu_clk-region cone +0.021 ns, 0 failing endpoints,
+  DRC 0 errors; LUTs 29.8 %). Programming/retest happens on a separate JTAG host.
 - QSPI config-flash hardware reads.
 - LiteEth throughput tuning (~150 KB/s today).
 - Advertising the standard Zvk leaves in the DTB `riscv,isa` string for

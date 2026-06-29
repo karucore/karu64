@@ -115,7 +115,11 @@ FUBOOT_ROM_DTB ?= $(KARUDEB)/build/karu64/karu64-rv64imac-ddr.dtb
 #	ROM offsets (source of truth -- mirrored into flow/boot/fuboot_blobs.h AND the assembler)
 FUBOOT_OPENSBI_OFF = 0x10000
 FUBOOT_UBOOT_OFF   = 0x60000
-FUBOOT_DTB_OFF     = 0xF0000
+#	U-Boot region is 0x60000..FUBOOT_DTB_OFF. v2025.01 built with riscv64-linux-gnu
+#	gcc-15 lands ~579 KiB, overflowing the old 0xF0000 (576 KiB) limit, so the DTB
+#	offset moves up to 0xFC000: U-Boot gets 624 KiB (~45 KiB slack) and the ~2.8 KiB
+#	DTB still has a 16 KiB region. ROM stays 1 MiB (no karu_boot_mem change).
+FUBOOT_DTB_OFF     = 0xFC000
 
 #	FORCE-regenerated every build. The prerequisites are the blob FILES, but a caller
 #	(e.g. vcu118-ddr-sgmii-rom-vec) repoints FUBOOT_* to a different image; if those

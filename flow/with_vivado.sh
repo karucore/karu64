@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#	with_vivado.sh -- run a command inside the Vivado 2025.2.1 environment.
+#	with_vivado.sh -- run a command inside the Vivado environment.
 #
 #	Vivado's settings prepend its own bin/ (incl. a bundled verilator) to PATH,
 #	which would shadow the sim toolchain (~/.local/bin/verilator, iverilog,
@@ -12,7 +12,17 @@
 #	    flow/with_vivado.sh make vcu118-ddr
 #	    flow/with_vivado.sh vivado -version
 set -euo pipefail
-VIVADO_SETTINGS="${VIVADO_SETTINGS:-$HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh}"
+if [ -z "${VIVADO_SETTINGS:-}" ]; then
+	for candidate in \
+		"$HOME/Xilinx/2026.1/Vivado/settings64.sh" \
+		"$HOME/Xilinx/2025.2.1/Vivado/.settings64-Vivado.sh"; do
+		if [ -r "$candidate" ]; then
+			VIVADO_SETTINGS="$candidate"
+			break
+		fi
+	done
+fi
+VIVADO_SETTINGS="${VIVADO_SETTINGS:-$HOME/Xilinx/2026.1/Vivado/settings64.sh}"
 if [ ! -r "$VIVADO_SETTINGS" ]; then
 	echo "with_vivado.sh: ERROR: cannot read $VIVADO_SETTINGS" >&2
 	exit 1

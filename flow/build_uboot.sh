@@ -6,13 +6,25 @@
 #	Output: $UBOOT_DIR/u-boot.bin  (load at 0x8020_0000 = OpenSBI fw_jump target).
 #
 #	Env:  UBOOT_DIR (default ../u-boot)   UBOOT_REF (default v2025.01)
-#	      CROSS_COMPILE (default riscv64-unknown-elf-)
+#	      CROSS_COMPILE (default: first available RISC-V toolchain)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UBOOT_DIR="${UBOOT_DIR:-$HERE/../u-boot}"
 UBOOT_REF="${UBOOT_REF:-v2025.01}"
-export CROSS_COMPILE="${CROSS_COMPILE:-riscv64-unknown-elf-}"
+if [ -z "${CROSS_COMPILE:-}" ]; then
+	if command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then
+		CROSS_COMPILE=riscv64-unknown-elf-
+	elif command -v riscv64-unknown-linux-gnu-gcc >/dev/null 2>&1; then
+		CROSS_COMPILE=riscv64-unknown-linux-gnu-
+	elif command -v riscv64-linux-gnu-gcc >/dev/null 2>&1; then
+		CROSS_COMPILE=riscv64-linux-gnu-
+	else
+		echo "ERROR: missing RISC-V compiler (tried unknown-elf, unknown-linux-gnu, linux-gnu)" >&2
+		exit 1
+	fi
+fi
+export CROSS_COMPILE
 
 if [ ! -d "$UBOOT_DIR" ]; then
 	echo "== cloning U-Boot $UBOOT_REF =="
