@@ -932,6 +932,7 @@ VERI_KEC_BIN	=	$(VERI_KEC_DIR)/Vhtif_tb
 $(VERI_KEC_BIN): $(VERI_KEC_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_KEC_DIR) -f Vhtif_tb.mk
 $(VERI_KEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	@mkdir -p $(VERI_KEC_DIR)
 	verilator $(VFLAGS) -Mdir $(VERI_KEC_DIR) --cc --exe \
 		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_KECCAK \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
@@ -968,6 +969,7 @@ VERI_ZVKKEC_BIN	=	$(VERI_ZVKKEC_DIR)/Vhtif_tb
 $(VERI_ZVKKEC_BIN): $(VERI_ZVKKEC_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_ZVKKEC_DIR) -f Vhtif_tb.mk
 $(VERI_ZVKKEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp Makefile
+	@mkdir -p $(VERI_ZVKKEC_DIR)
 	verilator $(VFLAGS) -Mdir $(VERI_ZVKKEC_DIR) --cc --exe \
 		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 $(ZVK_FLAGS) -DKARU_KECCAK \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
