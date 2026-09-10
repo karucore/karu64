@@ -171,12 +171,24 @@ module tb_zvk_decode;
             $finish(1);
         end
 
+        //  ---- Zvknhk vkeccak.vi (riscv-pqc): funct6=101001 vm=1, vs1 field=10010,
+        //  imm5 in the vs2 field. MATCH 0xa6092077 / MASK 0xfe0ff07f. ----
 `ifdef KARU_EN_KECCAK
-        ins = 32'ha788a0f7; #1; // local full-permutation Keccak custom word
-        if (unit !== `UNIT_VKECCAK || rd !== 5'd1) begin
-            $display("FAIL keccak custom unit=%0d sub=%0d rd=%0d", unit, sub, rd);
+        ins = 32'ha6092077; #1;     // vkeccak.vi v0, 0   (24 rounds)
+        if (unit !== `UNIT_VKECCAK || rd !== 5'd0 || imm[4:0] !== 5'd0) begin
+            $display("FAIL vkeccak.vi v0,0 unit=%0d sub=%0d rd=%0d imm=%0d", unit, sub, rd, imm[4:0]);
             $finish(1);
         end
+        ins = 32'ha6192477; #1;     // vkeccak.vi v8, 1   (12 rounds)
+        if (unit !== `UNIT_VKECCAK || rd !== 5'd8 || imm[4:0] !== 5'd1) begin
+            $display("FAIL vkeccak.vi v8,1 unit=%0d sub=%0d rd=%0d imm=%0d", unit, sub, rd, imm[4:0]);
+            $finish(1);
+        end
+        check_trap(32'ha6292077, "vkeccak imm5=2");   // reserved imm5
+        check_trap(32'ha4092077, "vkeccak vm=0");     // masked form reserved
+        check_trap(32'ha788a0f7, "old keccak-xrv");   // pre-Zvknhk word (x17/x24)
+`else
+        check_trap(32'ha6092077, "vkeccak.vi");
 `endif
 
         //  ---- Zvkb (plain OP-V 0x57 -> UNIT_VARITH, unlike the OP-VE leaves) ----

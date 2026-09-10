@@ -88,11 +88,11 @@
     `endif
 `endif
 
-//  --- experimental Zvknhk single-instruction Keccak-f1600 (`vkeccak`) ---
+//  --- Zvknhk single-instruction Keccak-p[1600] (`vkeccak.vi`, riscv-pqc) ---
 //  Opt-IN only (default OFF): the 1600-bit round datapath is large and the
-//  encoding is a non-standard custom opcode, so it is never in a default
-//  build. Enable with -DKARU_KECCAK. Needs the vector unit (VRF + group
-//  access), so it is suppressed when V is compiled out.
+//  extension is still a draft (riscv-pqc zvknhk.adoc), so it is never in a
+//  default build. Enable with -DKARU_KECCAK. Needs the vector unit (VRF +
+//  group access), so it is suppressed when V is compiled out.
 `ifdef KARU_KECCAK
     `ifndef KARU_NO_V
         `define KARU_EN_KECCAK

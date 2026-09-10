@@ -35,7 +35,7 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 ## Repo layout
 
     rtl/                    core RTL; top is rtl/karu64.v
-      zvk/                  vector-crypto RTL, including custom keccak.v /
+      zvk/                  vector-crypto RTL, including the Zvknhk keccak.v /
                             keccak_round.v
     test/fw/                bare-metal firmware and directed firmware tests
                             formerly under drv/
