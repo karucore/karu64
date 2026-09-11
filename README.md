@@ -12,7 +12,7 @@
 
 # karu64
 
-**`karu64`** is an RV64 core (and FPGA bring-up tree). The Linux baseline is RV64GCV (RV64IMAFDCV + Zicsr + Zifencei, RVV 1.0 with Zvl256b), with M/S/U privilege, Sv39 translation, generic CLINT/PLIC/NS16550 platform services (interrupts and serial console). We also have full Zvkt (vector cryptography) extensions and Keccak available. We implemented Karu CPU in portable Verilog, and it is released under a permissive (BSD 3-Clause) license.
+**`karu64`** is an RV64 core (and FPGA bring-up tree). The Linux baseline is RV64GCV (RV64IMAFDCV + Zicsr + Zifencei, RVV 1.0 with Zvl256b), with M/S/U privilege, Sv39 translation, generic CLINT/PLIC/NS16550 platform services (interrupts and serial console). We also have the full Zvk vector-cryptography extensions and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`, RISC-V PQC TG, [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc) `src/zvknhk.adoc`) available. We implemented Karu CPU in portable Verilog, and it is released under a permissive (BSD 3-Clause) license.
 
 For testing on the [VCU118](https://www.amd.com/en/products/adaptive-socs-and-fpgas/evaluation-boards/vcu118.html) (Xilinx UltraScale+ FPGA) target, we instantiate a SoC with Xilinx DDR4 IP components for 2 GB of memory and [LiteEth/LiteX](https://github.com/enjoy-digital/liteeth) for a basic Gbit Ethernet that supports network boot and a filesystem.
 
@@ -31,6 +31,8 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   divergence technique.
 - [doc/fpga.md](doc/fpga.md) — the VCU118 SoC (BRAM and DDR4), NS16550 console,
   clocking/timing knobs, bitstream variants, and hardware/Linux status.
+- [CHANGELOG.md](CHANGELOG.md) — release notes; the Zvknhk `vkeccak.vi`
+  encoding change is a breaking change for software built for the June tree.
  
 ## Repo layout
 
@@ -53,7 +55,7 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 ## Current status
 
-- Scalar tests pass: `make test` is 110/110. Full generated RV64GCV [ACT4](test/act4-karu/): 2220 PASS / 0 FAIL — ACT4-clean. Targeted Zvk tests and end-to-end OpenSSL Crypto tests pass.
+- Scalar tests pass: `make test` is 110/110. Full generated RV64GCV [ACT4](test/act4-karu/): 2220 PASS / 0 FAIL — ACT4-clean. Targeted Zvk tests and end-to-end OpenSSL Crypto tests pass. The Zvknhk `vkeccak.vi` implementation matches the riscv-pqc specification and its Spike/QEMU reference models: `make keccak-kat keccak-test keccak-test-zvk` run the spec's KECCAK-P / KECCAK-P12 vectors, the fixed-group / state-tail / `vl`-independence rules, and the reserved-encoding traps (see [rtl/zvk/README.md](rtl/zvk/README.md)).
 - Generated artifacts are built under `_build`: hello firmware, UART hello, `firmware.hex`, `vcu118_fuboot.hex`, commit logs, Vivado journals/logs, generated IP/project state, reports, checkpoints, and bitstreams.
 - VCU118 DDR4 hardware is proven through MIG calibration, DDR memtest, hands-off boot from the bitstream-baked boot ROM, Debian Linux, and LiteEth networking.
 

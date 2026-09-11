@@ -129,8 +129,10 @@ do not hand-derive funct6 from memory.**
 ### Zvknhk `vkeccak.vi` (riscv-pqc)
 
 `-DKARU_KECCAK` adds the draft **Zvknhk** Vector Keccak extension of the RISC-V
-PQC TG (`riscv-pqc/src/zvknhk.adoc`; reference models under
-`riscv-pqc/zvknhk/{spike,qemu}`). One instruction, `vkeccak.vi vd, imm5`:
+PQC TG: [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc), `src/zvknhk.adoc` (implemented against
+commit `260e14b`, "Add the Zvknhk Vector Keccak extension"); reference models
+under `zvknhk/{spike,qemu}` and known-answer tests under `zvknhk/test` in that
+repository. One instruction, `vkeccak.vi vd, imm5`:
 
     .insn r 0x77, 0x2, 0x53, vd, x18, imm5     # MATCH 0xa6092077 / MASK 0xfe0ff07f
 

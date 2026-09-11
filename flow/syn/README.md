@@ -131,7 +131,7 @@ It covers:
 - Optional scalar-B, S-mode/Sv39, HPM, and scalar no-L1 scoping rows.
 - Integer M, F-mul, D-mul, and FMA serialization knobs.
 - RV64GCV baseline and vector multiplier knobs.
-- Standard Zvk vector-crypto leaf rows, umbrella Zvk, and custom Keccak opt-ins.
+- Standard Zvk vector-crypto leaf rows, umbrella Zvk, and Zvknhk Keccak opt-ins.
 
 See [`AREA_MATRIX.md`](AREA_MATRIX.md) for the recommended scalar and vector
 batches, CSV column definitions, and delta recipes. Typical selected run:

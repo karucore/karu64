@@ -2,7 +2,8 @@
 
 `karu64` (`rtl/karu64.v`) is a small **RV64GC** soft-core — RV64IMAFDC +
 Zicsr/Zifencei, the full RVV 1.0 **V** vector set, optional **Zvk**
-vector-crypto, and a custom `vkeccak` — with **M/S/U privilege, Sv39 paging,
+vector-crypto, and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`,
+riscv-pqc) — with **M/S/U privilege, Sv39 paging,
 and trap delegation**. It is **single-issue, in-order**, with a registered
 **ID/EX stage** and a **64-bit PC**, and it boots Linux to userspace on FPGA.
 

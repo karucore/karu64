@@ -874,7 +874,7 @@ module karu64 #(
         .fflags_set(varith_ff_set), .fflags(varith_fflags),
         .writes_f(varith_writes_f), .f_res(varith_f_res),
         .fp_lane_active(varith_fp_lane_active),
-        //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
+        //  -- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600], riscv-pqc) --
         .is_keccak(issue_vkeccak_mode),
         //  -- standard vector crypto (Zvk*) -- registered ex_sub, NOT dec_sub,
         //  so the cop selector is stable for the whole multi-cycle op --
@@ -910,7 +910,7 @@ module karu64 #(
     assign varith_g_wb_vsew = 3'b0;     assign varith_g_wb_epr = 16'b0;
 `endif
 
-    //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
+    //  -- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600], riscv-pqc) --
     //  No separate FU: karu_varith handles vkeccak as a keccak mode
     //  (is_keccak), using its VRF read/write ports. One isolated 1600-bit permutation,
     //  instantiated inside karu_varith under KARU_EN_KECCAK.
