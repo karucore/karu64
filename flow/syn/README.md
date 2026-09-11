@@ -14,11 +14,42 @@ Fmax targets.
 ## Requirements
 
 - [Yosys](https://github.com/YosysHQ/yosys) (tested with 0.65)
-- [OpenSTA](https://github.com/parallaxsw/OpenSTA) (tested with 3.1)
+- [OpenSTA](https://github.com/parallaxsw/OpenSTA) (tested with 2.4.0 and
+  3.1; `tcl/sta_run_reports.tcl` probes for the `-group_count` vs
+  `-group_path_count` spelling so both work)
 - `sv2v` for the optional `make ibex` comparison target
-- NanGate45 typical-corner liberty file at
-  `../../src/flow/NangateOpenCellLibrary_typical.lib` (relative to this
-  directory). Override via `$KARU_LIB`.
+- NanGate45 typical-corner liberty file `NangateOpenCellLibrary_typical.lib`,
+  looked up in `../../../src/flow` (a `src/` checkout next to `karu64/`, the
+  usual layout) and then `../../src/flow` (inside the checkout). Override via
+  `$KARU_LIB`.
+
+## Flow status (checked 2026-09-11)
+
+Re-validated on a 31 GB / no-swap workstation with Yosys 0.65+73 and OpenSTA
+2.4.0. Four things were broken and are fixed in the tree:
+
+- `syn_setup.sh` only looked for the liberty file inside the checkout, so
+  `make synth` died before Yosys started.
+- OpenSTA 2.4 rejected `report_checks -group_path_count`, so every timing
+  report was empty and the summary printed `WNS: n/a`.
+- `KARU_LTP=1` ran `ltp` on the *mapped* netlist; with liberty `DFF_X1`
+  cells ltp no longer recognises flops, reads every Q→D feedback as a loop
+  and wrote a 3 GB `depth.rpt` of `Detected loop` lines with bogus lengths
+  for every module. It now runs on the pre-map netlist with the `karu64`
+  top and `karu_mem` excluded (both trip the sort through submodule
+  reconvergence); one clean line per leaf module, 0.4 MB.
+- The fast ABC script produced netlists whose STA slack is meaningless (see
+  *Timing observations*); timing runs now use the full script.
+
+What works: `make synth` (area + real STA) for the scalar configurations,
+`make depth`, `make sweep`/`make area-matrix` for scalar rows (~2 GB peak).
+The full RV64GCV+Zvk+Keccak row is **not runnable on a 31 GB / no-swap
+host**: Yosys' `opt` on `karu_varith` aborted with an allocation failure under
+a 22 GB `ulimit -v` (18 GB resident at that point), and a retry under a 27 GB
+cap was still growing past 21 GB resident when it took the whole machine
+down. `ulimit -v` is not a physical-memory bound. Run vector rows on the
+86 GB box as `AREA_MATRIX.md` says, and if a local guard is ever needed use
+a cgroup limit (`systemd-run --user --scope -p MemoryMax=20G ...`).
 
 ## First-time setup
 
@@ -46,7 +77,8 @@ All set via env vars in `syn_setup.sh` or one-shot on the make line:
 | `KARU_OUT_DIR` | `_build/syn_out/karu64_<timestamp>/` | Run output tree |
 | `KARU_DEFINES` | `KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64` | Space-separated `-D` flags passed to `read_verilog`. Default is the "small core" config; see results below. Set to empty (`KARU_DEFINES=""`) to pass no explicit defines and let the RTL headers resolve their non-SIM defaults. Use `KARU_MUL_CYCLES=1 KARU_DIV_CYCLES=1` for the all-combinational variant. **Feature gating** also goes here: `KARU_NO_F` / `KARU_NO_D` / `KARU_NO_V` (cascade `V⊃D⊃F`) drop FP/vector units; `KARU_NO_B` drops scalar Zba/Zbb/Zbs; `KARU_NO_S` drops S-mode/Sv39 and prunes both MMU walkers; `KARU_NO_HPM` drops `mhpmcounter3..31`/`mhpmevent3..31`; `KARU_NO_MEM` drops the scalar L1/cache wrapper in non-vector builds. `hierarchy -top` then prunes disabled modules/state. |
 | `KARU_NOSHARE` | unset | When set, passes `-noshare` to Yosys `synth`, skipping SAT-based resource sharing. Use this for first-pass vector/Zvk/Keccak area rows; the default `share` pass was CPU-bound in `karu_varith`/`karu_vlsu` and produced no completed vector rows in a 13-minute local attempt. |
-| `KARU_LTP` | unset | When set (`KARU_LTP=1`), emit `reports/depth.rpt` — per-module library-independent combinational logic depth (`ltp -noff`) on the **un-flattened** mapped netlist (one `Longest topological path in <mod> (length=N)` line per module). Cheap and memory-light. **Caveat:** the stateful control modules (`karu_m`/`karu_csr`/`karu_lsu`/`karu_mem`/`karu_regfile`/IFU/top) trip ltp's topological sort on bit-level reconvergence (`Detected loop ...`) and report a bogus length — ignore those; the FP/vector compute leaves (`karu_fdiv`, `karu_fsqrt`, `karu_*_d`, `karu_varith`) are clean. `make sweep` already filters the looped modules out. |
+| `KARU_LTP` | unset | When set (`KARU_LTP=1`), emit `reports/depth.rpt` — per-module library-independent combinational logic depth (`ltp -noff`) on the **pre-map** generic-gate netlist (after `synth`, before `dfflibmap`; on the mapped netlist ltp cannot see the liberty flops and floods the report with false loops). The `karu64` top and `karu_mem` are excluded because bit-level reconvergence through their submodule instances trips ltp's topological sort; override the skip list with `KARU_LTP_SKIP="mod ..."`. One `Longest topological path in <mod> (length=N)` line per module; N is un-mapped 2-input gate stages (abc shortens them), so use it as a relative/upper-bound depth like `syn_depth.sh`. Cheap: ~15 s. |
+| `KARU_ABC_FULL` / `KARU_ABC_FAST` | unset | Which ABC script maps the netlist. Default: the **full** Yosys liberty script (`&nf` map + `buffer; upsize; dnsize`) whenever STA runs, the custom `abc_fast.script` (no buffering/sizing) for area-only runs (`KARU_NO_STA=1`, i.e. `area-matrix`/`sweep`, keeping their kGE comparable with the published rows). `KARU_ABC_FULL=1` / `KARU_ABC_FAST=1` force either. The fast netlist's STA slack is not meaningful (thousands of ns on one unbuffered gate); the full script is not slower on this design (~4.5 min vs ~6 min, scalar core). |
 
 Shortcut:
 
@@ -234,30 +266,52 @@ not logic. The vector VRF and other large inferred arrays are isolated behind
 memory leaves for ASIC macro substitution; compiled scalar/FP regfiles are
 still outside this flow.
 
-### Timing observations
+### Timing observations (re-measured 2026-09-11, Yosys 0.65+73 / OpenSTA 2.4.0)
 
-`WNS (reg2reg)` is reported around `−249 ns` in every config above. **This
-number is not real** — the fast abc script we use (`strash; dretime;
-retime; map`) skips the cell-resizing (`buffer; upsize; dnsize`) passes
-because those crashed with `node has no fanout` errors on the
-DFFE-heavy LSU / FPU modules. Without sizing, OpenSTA scores the
-high-fanout inverter at the integer regfile read-mux output with
-~125 ns of delay per gate, dominating the slack.
+Same RV64GC (`KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64 KARU_NO_V`) RTL, two ABC
+scripts, 4 ns (250 MHz) target:
 
-The **structural critical path** is real, and identical across all
-multiplier configs: PC reg → IFU prefetch → RVC expand → decoder →
-regfile read → FU operand input → first FU state register, about
-~30 gates in the front-end plus ~84 gates of FU operand-stage logic
-ending in `karu_fdiv_d`'s first state register. This is a single
-"issue cycle" combinational chain. The realistic input-side critical
-path (`in2reg`) is `dmem_bvalid → 18 gates of LSU atomic/SC-aware
-writeback logic → LSU state reg`, with `−0.73 ns` slack at the 4 ns
-target — the only real timing violator the flow surfaces.
+| abc script | area (µm²) | WNS reg2reg | WNS in2reg | worst reg2reg path |
+|---|---:|---:|---:|---|
+| `abc_fast.script` (old default) | 688,328 | −2174 ns | −13.3 ns | one unbuffered `INV_X1` in the L1 data array with 2008 ns on that single gate |
+| full Yosys script (new default for STA runs) | 618,460 | **−2.71 ns** | +0.98 ns | 123 stages, `fpu/u_fr_f2i_d` → `fpu/u_fr_i2f_d`, 6.67 ns |
 
-If you need realistic absolute Fmax numbers (rather than relative
-comparisons), set `KARU_ABC_FULL=1` and `KARU_CLK_PS=10000` (10 ns
-target). The full-quality abc script takes 30–60 min hierarchically vs.
-~3 min for the fast script.
+The fast-script slack is an artefact: without `buffer; upsize; dnsize`
+every high-fanout net (the cache-array enable here; the integer regfile
+read mux in older runs) hangs off one X1 gate and OpenSTA extrapolates
+thousands of ns for it. All 100 reported worst paths share that one gate.
+The custom script exists because `map` followed by `buffer` aborts with
+`node N has no fanout` on `karu_lsu`; Yosys' default `&nf`-based script
+does not trip that abort, and on this Yosys it is not slower.
+
+With a buffered netlist the numbers are meaningful. The RV64GC core's
+critical path is the Zfa `fround.d`/`froundnx.d` compose: `karu_fpu` chains
+a dedicated `karu_f2i_d` into a `karu_i2f_d` in one cycle (`u_fr_f2i_d`,
+`u_fr_i2f_d`), 6.67 ns in NanGate45 typical, i.e. ~150 MHz. 63 of the 100
+worst reg→reg endpoints are in `karu_fpu`, the other 34 in the integer
+register file. Inputs and outputs meet the generic 30 %/70 % IO budget.
+Registering the `fround` compose would remove that path at the cost of one
+cycle of `fround` latency; not done (irrelevant at the 75 MHz FPGA clock).
+
+The L1 data array is a 348 kGE flop sea in this flow (it would be an SRAM
+macro in silicon), so the processor-only row is the one to quote. Same
+knobs plus `KARU_NO_MEM`, full ABC script, `KARU_LTP=1`:
+
+| row | area | WNS reg2reg | WNS in2reg | WNS reg2out | worst path | wall |
+|---|---:|---:|---:|---:|---|---:|
+| RV64GC core, no L1 (`KARU_NO_V KARU_NO_MEM`) | 317,577 µm² = **398 kGE** | −2.73 ns | +0.96 ns | +2.30 ns | same `fround.d` compose, 6.69 ns | 3.7 min yosys + 13 min STA |
+
+Biggest blocks in that row: `karu_csr` 70 kGE, `karu_fregfile` 31, `karu_ffma_d`
+31, `karu_regfile` 26, `karu_sv39` 21 (kGE, NAND2_X1 = 0.798 µm²).
+
+Pre-map logic depth (`KARU_LTP=1`, un-mapped 2-input gate stages, deepest
+leaves; the same run): `karu_i2f_d` 271, `karu_i2f` 269, `karu_ffma` 258,
+`karu_fmul_d` 239, `karu_bitmanip` 226, `karu_ffma_d` 222, `karu_fadd_d` 202,
+`karu_fdiv_d` 196, `karu_fsqrt_d` 175, `karu_fmul` 147, `karu_fadd` 110,
+`karu_fdiv` 102. `karu_bitmanip` is deep because `f_cpop`/`f_clz`/`f_ctz` are
+written as 64-iteration sequential loops (a 64-deep ripple of 8-bit adds and
+64-deep priority chains); abc restructures most of it, and it is not on the
+STA critical path, but a tree-shaped popcount/clz would make it cheaper.
 
 ## Constraints
 
@@ -278,6 +332,7 @@ loose write-strobe), edit `sdc/karu64.sdc.in` and add explicit
 ```
 flow/syn/
 ├── AREA_MATRIX.md          # cloud handoff for feature/area matrix runs
+├── HANDOVER.md             # 2026-09-11 flow check-up: fixes, results, what to run on the big box
 ├── Makefile                # synth / ibex / matrix / sweep / clean wrappers
 ├── README.md               # this file
 ├── syn_setup.sh            # tracked shared env-var defaults

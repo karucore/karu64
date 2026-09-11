@@ -1994,8 +1994,12 @@ module karu_varith (
     wire        vf_cmp_bit   = vf_is_ne ? ~vf_fpu_res[0] : vf_fpu_res[0];
     wire [63:0] vf_merge_val = (vm_q || v0_q[vf_geg[7:0]]) ? vf_sval : vf_e_vs2;
     wire [31:0] vf_sl_src    = vf_is_fsl1up ? (vf_geg==32'd0 ? 32'd0 : vf_geg-32'd1) : (vf_geg+32'd1);
-    wire [4:0]  vf_sl_reg    = vs2_q + (vf_sl_src / epr);
-    wire [31:0] vf_sl_el     = vf_sl_src % epr;
+    //  epr is a power of two (VLEN >> (3+vsew)), so the element -> (register,
+    //  element-in-register) split is a shift and a mask. NOT `/` and `%`: with a
+    //  runtime divisor those synthesize a real 32-bit divider (caught by the
+    //  yosys area/depth flow).
+    wire [4:0]  vf_sl_reg    = vs2_q + (vf_sl_src >> epr_lg);
+    wire [31:0] vf_sl_el     = vf_sl_src & (epr - 32'd1);
     assign vf_sl_sh     = vf_sl_el << vf_e_lg;     //  slide-source bit offset
     wire [63:0] vf_sl_raw    = vs2_g >> vf_sl_sh[6:0];  //  granule vf_sl_sh[7]
     wire [63:0] vf_slide_e   = vf_is_d ? vf_sl_raw : {32'hFFFF_FFFF, vf_sl_raw[31:0]};

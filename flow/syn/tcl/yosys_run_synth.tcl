@@ -19,7 +19,27 @@ set clk_ps   $::env(KARU_CLK_PS)
 set uprate   $::env(KARU_ABC_UPRATE_PS)
 set abc_sdc  "$out_dir/generated/karu64.abc.sdc"
 set flatten  [expr {[info exists ::env(KARU_FLATTEN)] && $::env(KARU_FLATTEN) ne "0" && $::env(KARU_FLATTEN) ne ""}]
-set abc_fast [expr {![info exists ::env(KARU_ABC_FULL)] || $::env(KARU_ABC_FULL) eq "0" || $::env(KARU_ABC_FULL) eq ""}]
+#	ABC script selection. The "fast" custom script (strash; dretime; retime;
+#	map) skips ABC's buffer/upsize/dnsize passes -- `map` followed by `buffer`
+#	aborts with "node N has no fanout" on the DFFE-heavy LSU -- so its netlist
+#	has unbuffered high-fanout nets and OpenSTA reports thousands of ns on a
+#	single inverter (the L1 data-array enable, or the regfile read mux).
+#	Yosys' default liberty script (&nf mapper + buffer/upsize/dnsize) does not
+#	trip that abort and, on Yosys 0.65, is not slower here (scalar core:
+#	~4.5 min vs ~6 min). So:
+#	  - timing runs (STA enabled)         -> full script, unless KARU_ABC_FAST=1
+#	  - area-only runs (KARU_NO_STA=1,     -> fast script, unless KARU_ABC_FULL=1
+#	    i.e. area-matrix / sweep rows)        (keeps the published kGE comparable)
+proc env_true {name} {
+	return [expr {[info exists ::env($name)] && $::env($name) ne "0" && $::env($name) ne ""}]
+}
+if {[env_true KARU_ABC_FAST]} {
+	set abc_fast 1
+} elseif {[env_true KARU_ABC_FULL]} {
+	set abc_fast 0
+} else {
+	set abc_fast [env_true KARU_NO_STA]
+}
 set noshare  [expr {[info exists ::env(KARU_NOSHARE)] && $::env(KARU_NOSHARE) ne "0" && $::env(KARU_NOSHARE) ne ""}]
 
 set pre_map_v   "$out_dir/generated/${top}.pre_map.v"
@@ -97,6 +117,41 @@ if {$flatten} {
 }
 yosys "opt -purge"
 
+#	Per-module combinational logic depth (opt-in: set KARU_LTP=1).
+#	`ltp -noff` reports, for every module, the longest purely combinational
+#	(reg->reg / in->out, flops excluded) path in generic gate stages -- a
+#	library-independent companion to OpenSTA's delay-weighted WNS. It is run
+#	HERE, on the post-`synth` generic-gate netlist and BEFORE dfflibmap, on
+#	purpose: once flops are liberty DFF_X1 cells ltp no longer recognises them,
+#	reads every Q->D feedback as a combinational loop, and (with Yosys 0.65)
+#	emits a multi-GB report of `Detected loop` lines with meaningless lengths
+#	for every module. On the generic netlist flops are $_DFF_* cells that
+#	-noff excludes, so each module reports one clean line:
+#	    Longest topological path in <module> (length=N):
+#	N counts un-mapped 2-input gate stages (abc will shorten them), so treat it
+#	as a relative/upper-bound depth, like flow/syn/syn_depth.sh. Container
+#	modules (karu64, karu_fpu) report their instance-graph path, not gate depth
+#	-- the deepest *leaf* dominates the max.
+#	Even on the generic netlist, ltp's topological sort trips on bit-level
+#	reconvergence through submodule instances in the karu64 top and in the
+#	karu_mem cache wrapper (`Detected loop at \lsu_araddr ...` / `\hit_line`,
+#	tens of millions of lines). Those two are containers, not the compute
+#	leaves we want, so they are excluded via a `%n` (inverted) selection.
+#	Override the skip list with KARU_LTP_SKIP="mod1 mod2 ...".
+if {[info exists ::env(KARU_LTP)] && $::env(KARU_LTP) ne "0" && $::env(KARU_LTP) ne ""} {
+	set ltp_skip "karu64 karu_mem"
+	if {[info exists ::env(KARU_LTP_SKIP)]} { set ltp_skip $::env(KARU_LTP_SKIP) }
+	#	Selection stack: push every skipped module, union them (N-1 x %u --
+	#	a bare "a b %n" only inverts b and unions a back in), then invert.
+	#	A name that does not exist in this configuration (karu_mem under
+	#	KARU_NO_MEM) just warns.
+	set ltp_sel $ltp_skip
+	for {set i 1} {$i < [llength $ltp_skip]} {incr i} { append ltp_sel " %u" }
+	append ltp_sel " %n"
+	puts "KARU_LTP=1 -- ltp -noff on the pre-map netlist, skipping: $ltp_skip"
+	yosys "tee -o $depth_rpt ltp -noff $ltp_sel"
+}
+
 yosys "write_verilog $pre_map_v"
 
 #	Map flops to the library, then run abc with the abc-only SDC and
@@ -110,10 +165,10 @@ yosys "opt"
 #	netlists. The map step alone gives a meaningful area + timing
 #	picture; size adjustment can be added later if needed.
 if {$abc_fast} {
-	puts "abc with abc_fast.script (default; set KARU_ABC_FULL=1 for full quality script)"
+	puts "abc with abc_fast.script (area-only; no buffering/sizing -- STA slack is NOT meaningful)"
 	yosys "abc -liberty $lib -constr $abc_sdc -D $abc_clk_ps -script tcl/abc_fast.script"
 } else {
-	puts "abc full script (slow; better optimisation)"
+	puts "abc default liberty script (&nf map + buffer/upsize/dnsize; STA-grade netlist)"
 	yosys "abc -liberty $lib -constr $abc_sdc -D $abc_clk_ps"
 }
 
@@ -138,23 +193,3 @@ yosys "write_verilog -noattr -noexpr -nohex -nodec $sta_v"
 
 yosys "check"
 yosys "tee -o $area_rpt stat -liberty $lib"
-
-#	Per-module combinational logic depth (opt-in: set KARU_LTP=1).
-#	`ltp -noff` reports, for every module, the longest purely combinational
-#	(reg->reg / in->out, flops excluded) path in mapped standard-cell stages
-#	-- a library-independent companion to OpenSTA's delay-weighted WNS. Run on
-#	the MAPPED but **un-flattened** netlist on purpose: flattening karu64 is
-#	both memory-heavy *and* introduces false combinational loops (bit-level
-#	reconvergence in the regfile/LSU muxes and the FMA datapath) that defeat
-#	ltp's topological sort and produce a meaningless multi-thousand-stage
-#	"path". Un-flattened, ltp emits one clean line per module:
-#	    Longest topological path in <module> (length=N):
-#	The deepest *leaf* module's N is the per-pipeline-stage gate depth a given
-#	extension adds (karu_fdiv/karu_fsqrt for F, karu_*_d for D, karu_varith
-#	for V). Container modules (karu64, karu_fpu) report their instance-graph
-#	path, not gate depth -- ignore them; the deepest leaf dominates the max.
-#	A few wide modules (karu_ffma) emit loop warnings but still report a
-#	usable length. Cheap and memory-light, so it can stay on for the sweep.
-if {[info exists ::env(KARU_LTP)] && $::env(KARU_LTP) ne "0" && $::env(KARU_LTP) ne ""} {
-	yosys "tee -o $depth_rpt ltp -noff"
-}
