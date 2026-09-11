@@ -38,8 +38,6 @@ second describes the state of `main` it builds on.
   and 11 reserved-encoding trap cases with a no-side-effect check
   (`test/fw/keccak_subj.c`). The decode bench covers the new encoding and the
   trapping of the old word.
-- `flow/syn/HANDOVER.md`: Yosys/OpenSTA flow check-up, measured results, and
-  the vector-row run plan for a large-memory host.
 - `CHANGELOG.md` (this file).
 
 ### Fixed

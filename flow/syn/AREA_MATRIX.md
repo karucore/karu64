@@ -45,11 +45,12 @@ CONFIGS="rv64gcv_default rv64gcv_vmul1 rv64gcv_vmul4 rv64gcv_vmul64 rv64gcv_zvkb
 ./syn_area_matrix.sh
 ```
 
-`JOBS` runs multiple configs concurrently. On the 86 GB cloud box, use `JOBS=2`
-for the vector/Zvk/Keccak batch. A `JOBS=4` trial reached ~78 GiB used during
-techmap, with no swap, so it is too close to the OOM edge. Rows are appended to
-`summary.csv` as jobs finish, so parallel output is completion-ordered rather
-than matrix-ordered.
+`JOBS` runs multiple configs concurrently. On the 115 GiB server, `JOBS=2`
+peaked at 60.4 GiB for the vector/Zvk/Keccak batch. A previous `JOBS=4` trial
+on an 86 GB host reached ~78 GiB used during techmap, with no swap, so four-way
+parallelism is too close to the OOM edge. Rows are appended to `summary.csv` as
+jobs finish, so parallel output is completion-ordered rather than
+matrix-ordered.
 `KARU_NOSHARE=1` changes the coarse Yosys flow by adding `synth -noshare`; use
 it for first-pass vector deltas, then rerun selected rows without it if an exact
 same-flow number is needed.
@@ -247,68 +248,82 @@ Result:
 The later local matrix attempt was intentionally stopped before any row
 completed; use the cloud run for real matrix data.
 
-Current 86 GB cloud vector/Zvk/Keccak checkpoint, using
-`KARU_NOSHARE=1 JOBS=2 PER_TIMEOUT=7200` in
-`_build/syn_out/zvk_full_matrix_j2_20260617_202232/`. `_build/syn_out/` is not committed, so
-the completed CSV rows are archived here.
+Current 115 GiB server vector/Zvk/Keccak checkpoint (2026-09-11), using Yosys
+0.66+179, `KARU_NOSHARE=1`, and `PER_TIMEOUT=7200`. The ten feature rows ran
+with `JOBS=2` in a cgroup with `MemoryHigh=80G` and `MemoryMax=90G`; observed
+aggregate peak usage was 60.4 GiB, with no swap or throttling. The baseline
+and three umbrella rows ran serially. Raw outputs are in:
 
-The run completed all selected rows. A `JOBS=4` trial was too close to the
-no-swap memory limit; the completed run briefly paused one of the two active
-Yosys processes around overlapping large ABC peaks, then resumed it.
+```text
+_build/syn_out/area_matrix_server_first_20260911_091002/
+_build/syn_out/area_matrix_server_feature_rows_20260911_114800/
+_build/syn_out/area_matrix_server_remaining_20260911_095254/
+```
+
+The ordered 14-row CSV is
+`_build/syn_out/area_matrix_server_complete_20260911.csv`. `_build/syn_out/`
+is not committed, so the completed rows are archived below.
 
 Top-level and structural buckets:
 
 | row | defines | status | area um2 | kGE | delta kGE | no `karu_mem` | no `karu_mem`/Sv39 | `karu_mem` | `karu_sv39` | `karu_csr` | wall |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `rv64gcv_default` | empty | ok | 3272983.168 | 4101.48 | +0.00 | 3724.29 | 3655.98 | 377.19 | 68.32 | 85.96 | 2524s |
-| `rv64gcv_vmul1` | `KARU_V_MUL_CYCLES=1` | ok | 5122336.730 | 6418.97 | +2317.49 | 6041.78 | 5973.46 | 377.19 | 68.32 | 85.96 | 3086s |
-| `rv64gcv_vmul4` | `KARU_V_MUL_CYCLES=4` | ok | 3277947.526 | 4107.70 | +6.22 | 3730.51 | 3662.19 | 377.19 | 68.32 | 85.96 | 2494s |
-| `rv64gcv_vmul64` | `KARU_V_MUL_CYCLES=64` | ok | 3271814.364 | 4100.02 | -1.46 | 3722.82 | 3654.51 | 377.19 | 68.32 | 85.96 | 2485s |
-| `rv64gcv_zvkb` | `KARU_ZVKB` | ok | 3308090.114 | 4145.48 | +44.00 | 3768.28 | 3699.96 | 377.19 | 68.32 | 85.96 | 2547s |
-| `rv64gcv_zvkned` | `KARU_ZVKNED` | ok | 3303714.680 | 4139.99 | +38.51 | 3762.79 | 3694.50 | 377.19 | 68.30 | 85.96 | 2518s |
-| `rv64gcv_zvknha` | `KARU_ZVKNHA` | ok | 3325920.892 | 4167.82 | +66.34 | 3790.63 | 3722.31 | 377.19 | 68.32 | 85.96 | 2507s |
-| `rv64gcv_zvknhb` | `KARU_ZVKNHB` | ok | 3325700.644 | 4167.54 | +66.06 | 3790.35 | 3722.03 | 377.19 | 68.32 | 85.96 | 2527s |
-| `rv64gcv_zvksed` | `KARU_ZVKSED` | ok | 3288450.802 | 4120.87 | +19.39 | 3743.67 | 3675.38 | 377.19 | 68.30 | 85.96 | 2508s |
-| `rv64gcv_zvksh` | `KARU_ZVKSH` | ok | 3300824.856 | 4136.37 | +34.89 | 3759.17 | 3690.86 | 377.19 | 68.32 | 85.96 | 2506s |
-| `rv64gcv_zvkg` | `KARU_ZVKG` | ok | 3293559.066 | 4127.27 | +25.79 | 3750.08 | 3681.75 | 377.19 | 68.32 | 85.96 | 2506s |
-| `rv64gcv_zvk` | `KARU_ZVK` | ok | 3418932.580 | 4284.38 | +182.90 | 3907.18 | 3838.88 | 377.19 | 68.30 | 85.96 | 2667s |
-| `rv64gcv_keccak` | `KARU_KECCAK` | ok | 3341758.532 | 4187.67 | +86.19 | 3810.48 | 3742.16 | 377.19 | 68.32 | 85.96 | 2533s |
-| `rv64gcv_zvk_keccak` | `KARU_ZVK KARU_KECCAK` | ok | 3487771.252 | 4370.64 | +269.16 | 3993.45 | 3925.15 | 377.19 | 68.30 | 85.96 | 2791s |
+| `rv64gcv_default` | empty | ok | 2860101.160 | 3584.09 | +0.00 | 3196.87 | 3112.28 | 387.22 | 84.59 | 85.96 | 2130s |
+| `rv64gcv_vmul1` | `KARU_V_MUL_CYCLES=1` | ok | 4710860.532 | 5903.33 | +2319.24 | 5516.12 | 5431.53 | 387.22 | 84.59 | 85.96 | 2878s |
+| `rv64gcv_vmul4` | `KARU_V_MUL_CYCLES=4` | ok | 2865067.380 | 3590.31 | +6.22 | 3203.10 | 3118.51 | 387.22 | 84.59 | 85.96 | 2304s |
+| `rv64gcv_vmul64` | `KARU_V_MUL_CYCLES=64` | ok | 2858932.622 | 3582.62 | -1.47 | 3195.40 | 3110.81 | 387.22 | 84.59 | 85.96 | 2172s |
+| `rv64gcv_zvkb` | `KARU_ZVKB` | ok | 2895209.968 | 3628.08 | +43.99 | 3240.86 | 3156.28 | 387.22 | 84.59 | 85.96 | 2220s |
+| `rv64gcv_zvkned` | `KARU_ZVKNED` | ok | 2892067.444 | 3624.14 | +40.05 | 3236.93 | 3152.34 | 387.22 | 84.59 | 85.96 | 2345s |
+| `rv64gcv_zvknha` | `KARU_ZVKNHA` | ok | 2913249.556 | 3650.69 | +66.60 | 3263.47 | 3178.88 | 387.22 | 84.59 | 85.96 | 2165s |
+| `rv64gcv_zvknhb` | `KARU_ZVKNHB` | ok | 2913263.920 | 3650.71 | +66.62 | 3263.48 | 3178.90 | 387.22 | 84.59 | 85.96 | 2180s |
+| `rv64gcv_zvksed` | `KARU_ZVKSED` | ok | 2873908.688 | 3601.39 | +17.30 | 3214.17 | 3129.59 | 387.22 | 84.59 | 85.96 | 2264s |
+| `rv64gcv_zvksh` | `KARU_ZVKSH` | ok | 2888463.942 | 3619.63 | +35.54 | 3232.41 | 3147.82 | 387.22 | 84.59 | 85.96 | 2292s |
+| `rv64gcv_zvkg` | `KARU_ZVKG` | ok | 2881124.204 | 3610.43 | +26.34 | 3223.21 | 3138.62 | 387.22 | 84.59 | 85.96 | 2222s |
+| `rv64gcv_zvk` | `KARU_ZVK` | ok | 3007791.010 | 3769.16 | +185.07 | 3381.94 | 3297.36 | 387.22 | 84.59 | 85.96 | 2310s |
+| `rv64gcv_keccak` | `KARU_KECCAK` | ok | 2931337.822 | 3673.36 | +89.27 | 3286.14 | 3201.55 | 387.22 | 84.59 | 85.96 | 2227s |
+| `rv64gcv_zvk_keccak` | `KARU_ZVK KARU_KECCAK` | ok | 3076811.892 | 3855.65 | +271.56 | 3468.43 | 3383.85 | 387.22 | 84.59 | 85.96 | 2316s |
 
 Compute and extension buckets:
 
 | row | `varith` | delta `varith` | `vcrypto` | `keccak` | `bitmanip` | `fpu` | `fregfile` | `karu_m` |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `rv64gcv_default` | 2706.77 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul1` | 5025.06 | +2318.29 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul4` | 2719.30 | +12.53 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul64` | 2706.77 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkb` | 2756.89 | +50.12 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkned` | 2744.36 | +37.59 | 3.42 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvknha` | 2769.42 | +62.65 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvknhb` | 2769.42 | +62.65 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvksed` | 2731.83 | +25.06 | 3.47 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvksh` | 2744.36 | +37.59 | 9.54 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkg` | 2731.83 | +25.06 | 4.60 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvk` | 2894.74 | +187.97 | 10.44 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_keccak` | 2794.49 | +87.72 | 0.00 | 31.13 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvk_keccak` | 2982.46 | +275.69 | 10.44 | 31.13 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_default` | 2155.39 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_vmul1` | 4473.68 | +2318.29 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_vmul4` | 2167.92 | +12.53 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_vmul64` | 2155.39 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvkb` | 2205.51 | +50.12 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvkned` | 2192.98 | +37.59 | 3.42 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvknha` | 2218.05 | +62.66 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvknhb` | 2218.05 | +62.66 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvksed` | 2167.92 | +12.53 | 3.47 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvksh` | 2192.98 | +37.59 | 9.54 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvkg` | 2180.45 | +25.06 | 4.60 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvk` | 2343.36 | +187.97 | 10.44 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_keccak` | 2243.11 | +87.72 | 0.00 | 31.20 | 17.67 | 491.23 | 30.45 | 20.55 |
+| `rv64gcv_zvk_keccak` | 2431.08 | +275.69 | 10.44 | 31.20 | 17.67 | 491.23 | 30.45 | 20.55 |
 
 Immediate deltas from this checkpoint:
 
-- `rv64gcv_vmul1` adds 2317.49 kGE at top level versus default; almost all of
+- `rv64gcv_vmul1` adds 2319.24 kGE at top level versus default; almost all of
   it is in `karu_varith`. `rv64gcv_vmul4`, default `rv64gcv_default`
   (`vmul16`), and `rv64gcv_vmul64` are effectively the same size in this flow.
-- Zvk leaf top-level deltas versus default are: `zvkb` +44.00 kGE, `zvkned`
-  +38.51 kGE, `zvknha` +66.34 kGE, `zvknhb` +66.06 kGE, `zvksed` +19.39 kGE,
-  `zvksh` +34.89 kGE, and `zvkg` +25.79 kGE.
-- `rv64gcv_zvk` adds 182.90 kGE at top level. The leaf deltas are not
+- Zvk leaf top-level deltas versus default are: `zvkb` +43.99 kGE, `zvkned`
+  +40.05 kGE, `zvknha` +66.60 kGE, `zvknhb` +66.62 kGE, `zvksed` +17.30 kGE,
+  `zvksh` +35.54 kGE, and `zvkg` +26.34 kGE.
+- `rv64gcv_zvk` adds 185.07 kGE at top level. The leaf deltas are not
   additive because the umbrella row shares decode, sequencing, and
   `karu_vcrypto` plumbing.
-- `rv64gcv_keccak` adds 86.19 kGE at top level. The explicit `keccak` bucket is
-  31.13 kGE; `karu_varith` also grows by 87.72 kGE.
-- `rv64gcv_zvk_keccak` adds 269.16 kGE at top level, matching the expected
+- `rv64gcv_keccak` adds 89.27 kGE at top level. The explicit `keccak` bucket is
+  31.20 kGE; `karu_varith` also grows by 87.72 kGE.
+- `rv64gcv_zvk_keccak` adds 271.56 kGE at top level, matching the expected
   `zvk` plus Keccak combination within rounding.
+
+Compared with the 2026-06-17 checkpoint, the default top is 517.39 kGE
+smaller and the `karu_varith` bucket is 551.38 kGE smaller. This is consistent
+with replacing the accidental runtime `/ epr` and `% epr` operators in
+`vfslide1up/down` with a shift and mask. The current run also uses a newer
+Yosys build, so the absolute change is not a controlled one-variable A/B;
+extension deltas remain close to the previous checkpoint.
 
 The earlier Zvk hang was isolated to the lane-side ZVKB byte/bit reversal
 frontend shape. `rtl/karu_vlane.v` now uses fixed-slice helper functions for

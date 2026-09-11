@@ -48,8 +48,9 @@ host**: Yosys' `opt` on `karu_varith` aborted with an allocation failure under
 a 22 GB `ulimit -v` (18 GB resident at that point), and a retry under a 27 GB
 cap was still growing past 21 GB resident when it took the whole machine
 down. `ulimit -v` is not a physical-memory bound. Run vector rows on the
-86 GB box as `AREA_MATRIX.md` says, and if a local guard is ever needed use
-a cgroup limit (`systemd-run --user --scope -p MemoryMax=20G ...`).
+115 GiB server as `AREA_MATRIX.md` says, and use a cgroup limit
+(`systemd-run --user --scope -p MemoryHigh=80G -p MemoryMax=90G ...`). The
+2026-09-11 two-job vector batch peaked at 60.4 GiB aggregate usage.
 
 ## First-time setup
 
@@ -217,9 +218,9 @@ profile directly. Local no-L1 scalar rows measured:
 | `imac_core_m4d64` | 104.53 |
 | `imacb_core_m4d64` | 121.13 |
 
-> **Scope note (2026-06-17):** the historical numbers below are the scalar-core
+> **Scope note (updated 2026-09-11):** the historical numbers below are the scalar-core
 > area sweep. The current area-matrix flow now also completes full RV64GCV
-> area-only rows on the 86 GB cloud box with `KARU_NOSHARE=1 JOBS=2`; see
+> area-only rows on the 115 GiB server with `KARU_NOSHARE=1 JOBS=2`; see
 > `AREA_MATRIX.md` for the completed vector/Zvk/Keccak checkpoint. Standard Zvk
 > leaf, umbrella, and Zvk+Keccak rows now complete after the lane-side ZVKB
 > byte/bit reversal rewrite in `rtl/karu_vlane.v`.
@@ -332,7 +333,6 @@ loose write-strobe), edit `sdc/karu64.sdc.in` and add explicit
 ```
 flow/syn/
 ├── AREA_MATRIX.md          # cloud handoff for feature/area matrix runs
-├── HANDOVER.md             # 2026-09-11 flow check-up: fixes, results, what to run on the big box
 ├── Makefile                # synth / ibex / matrix / sweep / clean wrappers
 ├── README.md               # this file
 ├── syn_setup.sh            # tracked shared env-var defaults
