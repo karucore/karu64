@@ -60,8 +60,8 @@ rv64gcv_zvksed|RV64GCV default plus Zvksed SM4 only|KARU_ZVKSED
 rv64gcv_zvksh|RV64GCV default plus Zvksh SM3 only|KARU_ZVKSH
 rv64gcv_zvkg|RV64GCV default plus Zvkg GHASH/GCM only|KARU_ZVKG
 rv64gcv_zvk|RV64GCV default plus all implemented standard Zvk leaves|KARU_ZVK
-rv64gcv_keccak|RV64GCV default plus custom vkeccak|KARU_KECCAK
-rv64gcv_zvk_keccak|RV64GCV default plus Zvk and custom vkeccak|KARU_ZVK KARU_KECCAK
+rv64gcv_keccak|RV64GCV default plus Zvknhk vkeccak.vi|KARU_KECCAK
+rv64gcv_zvk_keccak|RV64GCV default plus Zvk and Zvknhk vkeccak.vi|KARU_ZVK KARU_KECCAK
 EOF
 }
 

@@ -2,7 +2,8 @@
 
 `karu64` (`rtl/karu64.v`) is a small **RV64GC** soft-core — RV64IMAFDC +
 Zicsr/Zifencei, the full RVV 1.0 **V** vector set, optional **Zvk**
-vector-crypto, and a custom `vkeccak` — with **M/S/U privilege, Sv39 paging,
+vector-crypto, and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`,
+riscv-pqc) — with **M/S/U privilege, Sv39 paging,
 and trap delegation**. It is **single-issue, in-order**, with a registered
 **ID/EX stage** and a **64-bit PC**, and it boots Linux to userspace on FPGA.
 
@@ -214,10 +215,15 @@ FP16↔FP32 conversions; every other e16/e8 vector-FP encoding traps cause-2.
   bit-manip glue). Decode maps the official OP-VE major opcode `0x77` (not OP-V
   `0x57`) to `UNIT_VCRYPTO`; SEW legality is enforced per the vector-crypto SEW
   table.
-- **`vkeccak`** — an opt-in (`KARU_KECCAK`) custom Keccak-f1600 permutation
-  instruction (opcode `0x77`, exact-matched so Zvk encodings don't alias), folded
-  into `karu_varith` using one isolated `keccak`/`keccak_round` instance that is
-  never lane-replicated.
+- **`vkeccak.vi`** — an opt-in (`KARU_KECCAK`) implementation of the draft
+  **Zvknhk** Vector Keccak extension (riscv-pqc `zvknhk.adoc`): one
+  Keccak-p[1600,24] or Keccak-p[1600,12] permutation (selected by `imm5`) on a
+  fixed 2048-bit element group at `vd`, independent of `vl`/LMUL, with the state
+  tail (elements 25..31) preserved. OP-VE `0x77`, VAES.vs selector `10010`,
+  exact-matched so Zvk encodings don't alias; reserved encodings (`SEW≠64`,
+  `imm5>1`, `vm=0`, unaligned `vd`, `vstart≠0`) trap. Folded into `karu_varith`
+  using one isolated `keccak`/`keccak_round` instance that is never
+  lane-replicated. Encoding and semantics: rtl/zvk/README.md.
 
 ### Register files
 

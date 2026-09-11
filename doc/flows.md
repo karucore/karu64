@@ -163,6 +163,8 @@ current and golden for these crosses.
     make zvk-decode-test zvk-decode-leaf-test   # OP-VE decode (umbrella + per-leaf)
     make zvk-kat                                 # standalone + aggregate leaf KATs
     make zvk-test                                # full-core AES/SHA2/SM4/SM3/GHASH smoke
+    make keccak-kat                              # Zvknhk vkeccak.vi datapath KAT (riscv-pqc KECCAK-P / KECCAK-P12)
+    make keccak-test keccak-test-zvk             # full-core vkeccak.vi: spec KATs, fixed-group rules, reserved-encoding traps
     make zvkb-test                               # Zvkb leaf vs C model (+ zvkb-test-spike)
 
 **Force a clean rebuild before trusting a vector/FP PASS.** An incremental build

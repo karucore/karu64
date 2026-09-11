@@ -874,7 +874,7 @@ module karu64 #(
         .fflags_set(varith_ff_set), .fflags(varith_fflags),
         .writes_f(varith_writes_f), .f_res(varith_f_res),
         .fp_lane_active(varith_fp_lane_active),
-        //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
+        //  -- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600], riscv-pqc) --
         .is_keccak(issue_vkeccak_mode),
         //  -- standard vector crypto (Zvk*) -- registered ex_sub, NOT dec_sub,
         //  so the cop selector is stable for the whole multi-cycle op --
@@ -910,7 +910,7 @@ module karu64 #(
     assign varith_g_wb_vsew = 3'b0;     assign varith_g_wb_epr = 16'b0;
 `endif
 
-    //  -- experimental single-instruction Keccak-f1600 (vkeccak) --
+    //  -- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600], riscv-pqc) --
     //  No separate FU: karu_varith handles vkeccak as a keccak mode
     //  (is_keccak), using its VRF read/write ports. One isolated 1600-bit permutation,
     //  instantiated inside karu_varith under KARU_EN_KECCAK.
@@ -1574,6 +1574,20 @@ module karu64 #(
 `else
     wire vcrypto_sew_illegal = 1'b0;
 `endif
+`ifdef KARU_EN_KECCAK
+    //  Zvknhk vkeccak.vi reserved encodings (riscv-pqc zvknhk.adoc): SEW != 64,
+    //  or vd not aligned to the fixed group's NREG = ceil(2048/VLEN) registers
+    //  (an aligned group can never extend past v31). vm=0 and imm5 > 1 never
+    //  decode (SYS_TRAP); vstart != 0 is v_vstart_ill. Raised as a cause-2
+    //  illegal-instruction trap through issue_vcrypto_trap, and the op is NOT
+    //  issued (no VS dirtying, no VRF write).
+    localparam integer VKECCAK_NREG = (2048 + `KARU_VLEN - 1) / `KARU_VLEN;
+    wire [4:0] vkeccak_amask = VKECCAK_NREG - 1;
+    wire vkeccak_resv_illegal = (ex_unit == `UNIT_VKECCAK) &&
+        ((v_vtype[5:3] != 3'd3) || ((ex_rd & vkeccak_amask) != 5'd0));
+`else
+    wire vkeccak_resv_illegal = 1'b0;
+`endif
     //  v_vstart_ill is declared up by the VRF wires (iverilog elaboration
     //  order); the trap vectors as a normal cause-2 exception (like
     //  csr_ill_trap) so an OS can handle it. vstart is left unchanged by the
@@ -1583,13 +1597,15 @@ module karu64 #(
     wire v_vstart_trap = issuing && v_vstart_ill && !vs_off_ill;    //  VS gate first
     wire v_resv_trap   = issuing && v_resv_ill && !vs_off_ill;
     wire v_fpsew_trap  = issuing && v_fpsew_ill && !vs_off_ill;
-    wire issue_vcrypto_trap = issuing && vcrypto_sew_illegal && !v_vstart_ill && !v_resv_ill && !vs_off_ill;
-    assign issue_vkeccak_mode = issuing && ex_unit == `UNIT_VKECCAK && !v_vstart_ill && !vs_off_ill;
+    wire issue_vcrypto_trap = issuing && (vcrypto_sew_illegal || vkeccak_resv_illegal) &&
+                              !v_vstart_ill && !v_resv_ill && !vs_off_ill;
+    assign issue_vkeccak_mode = issuing && ex_unit == `UNIT_VKECCAK &&
+                                !vkeccak_resv_illegal && !v_vstart_ill && !vs_off_ill;
     assign issue_vcrypto_mode = issuing && ex_unit == `UNIT_VCRYPTO &&
                               !vcrypto_sew_illegal && !v_vstart_ill && !vs_off_ill;
     wire issue_varith = issuing && !v_vstart_ill && !v_resv_ill && !vs_off_ill && !v_fpsew_ill &&
                                    (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU
-                                   || ex_unit == `UNIT_VKECCAK ||
+                                   || (ex_unit == `UNIT_VKECCAK && !vkeccak_resv_illegal) ||
                                    (ex_unit == `UNIT_VCRYPTO && !vcrypto_sew_illegal));
     wire issue_vlsu   = issuing && ex_unit == `UNIT_VLSU && !v_resv_ill && !vs_off_ill;
     //  conservative Dirty: any LEGALLY ISSUED FP/vector op or FP/vector CSR

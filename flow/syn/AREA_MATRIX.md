@@ -124,7 +124,7 @@ for attribution:
 - `karu_fdiv_kGE`, `karu_fdiv_d_kGE`: F/D dividers.
 - `karu_varith_kGE`: vector arithmetic container, including vector mul/div.
 - `karu_vcrypto_kGE`: standard Zvk crypto subunit.
-- `keccak_kGE`: custom `vkeccak` permutation FSM and round datapath.
+- `keccak_kGE`: Zvknhk `vkeccak.vi` permutation FSM and round datapath.
 
 Hierarchy bucket areas may be rounded by Yosys in the design hierarchy table.
 Use them for deltas and order-of-magnitude attribution; use `kGE` and the raw
@@ -167,7 +167,7 @@ Vector and crypto rows:
 - `rv64gcv_zvksh`: default vector core plus Zvksh SM3.
 - `rv64gcv_zvkg`: default vector core plus Zvkg GHASH/GCM.
 - `rv64gcv_zvk`: default vector core plus all implemented standard Zvk leaves.
-- `rv64gcv_keccak`: default vector core plus custom `vkeccak`.
+- `rv64gcv_keccak`: default vector core plus Zvknhk `vkeccak.vi`.
 - `rv64gcv_zvk_keccak`: default vector core plus both Zvk and `vkeccak`.
 
 ## Delta recipes
@@ -220,7 +220,7 @@ Zvk leaves. The individual Zvk leaf knobs are `KARU_ZVKB`, `KARU_ZVKNED`,
 `KARU_ZVKNHA`, `KARU_ZVKNHB`, `KARU_ZVKSED`, `KARU_ZVKSH`, and `KARU_ZVKG`.
 `KARU_ZVKNHB` implies `KARU_ZVKNHA`. `KARU_ZVKB` is lane bit-manip glue and
 does not imply the shared `KARU_EN_ZVK`/`karu_vcrypto` plumbing. `KARU_KECCAK`
-enables the custom Keccak op. These are only effective when V is present.
+enables the Zvknhk `vkeccak.vi` op. These are only effective when V is present.
 
 `syn_setup.sh` now preserves an intentionally empty `KARU_DEFINES`, so a matrix
 row with an empty define field passes no `-D` flags to Yosys and lets the RTL

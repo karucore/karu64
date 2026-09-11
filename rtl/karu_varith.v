@@ -72,10 +72,11 @@ module karu_varith (
     //  active vector op (the lane FPUs are otherwise invisible to the checker).
     output wire         fp_lane_active,
 
-    //  ---- experimental single-instruction Keccak-f1600 (vkeccak) ----
+    //  ---- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600]) ----
     //  is_keccak is the issue-cycle decode (dec_unit==UNIT_VKECCAK, only ever
-    //  asserted under KARU_EN_KECCAK). The op runs IN PLACE on the vd e64/m8
-    //  group via this unit's normal VRF read (r_vold) and granule write
+    //  asserted under KARU_EN_KECCAK). The op runs IN PLACE on the fixed
+    //  2048-bit element group at vd (NREG=ceil(2048/VLEN) regs, independent of
+    //  vl/LMUL) via this unit's normal VRF read (r_vold) and granule write
     //  (g_*) port -- one ISOLATED 1600-bit Keccak permutation, never
     //  lane-replicated. Folded in here so karu64 has ONE vector-execute FU.
     input  wire         is_keccak,
@@ -1993,8 +1994,12 @@ module karu_varith (
     wire        vf_cmp_bit   = vf_is_ne ? ~vf_fpu_res[0] : vf_fpu_res[0];
     wire [63:0] vf_merge_val = (vm_q || v0_q[vf_geg[7:0]]) ? vf_sval : vf_e_vs2;
     wire [31:0] vf_sl_src    = vf_is_fsl1up ? (vf_geg==32'd0 ? 32'd0 : vf_geg-32'd1) : (vf_geg+32'd1);
-    wire [4:0]  vf_sl_reg    = vs2_q + (vf_sl_src / epr);
-    wire [31:0] vf_sl_el     = vf_sl_src % epr;
+    //  epr is a power of two (VLEN >> (3+vsew)), so the element -> (register,
+    //  element-in-register) split is a shift and a mask. NOT `/` and `%`: with a
+    //  runtime divisor those synthesize a real 32-bit divider (caught by the
+    //  yosys area/depth flow).
+    wire [4:0]  vf_sl_reg    = vs2_q + (vf_sl_src >> epr_lg);
+    wire [31:0] vf_sl_el     = vf_sl_src & (epr - 32'd1);
     assign vf_sl_sh     = vf_sl_el << vf_e_lg;     //  slide-source bit offset
     wire [63:0] vf_sl_raw    = vs2_g >> vf_sl_sh[6:0];  //  granule vf_sl_sh[7]
     wire [63:0] vf_slide_e   = vf_is_d ? vf_sl_raw : {32'hFFFF_FFFF, vf_sl_raw[31:0]};
@@ -2091,20 +2096,27 @@ module karu_varith (
 `endif
 
 `ifdef KARU_EN_KECCAK
-    //  ---- vkeccak datapath: ONE isolated Keccak-f1600 permutation ----
-    //  The vd e64/m8 group (8 regs) is loaded one reg/cycle into sbuf via this
-    //  unit's normal r_vold/d_vold read path; sbuf[1599:0] = the 1600-bit state
-    //  (lanes 0..24). The single 24-round FSM runs in place; the group is then
-    //  written back through the granule g_* port (sbuf bits >=1600 = lanes 25..31 are
-    //  undisturbed). vs1/vs2/vl are ignored. Requires VLEN>=200 (8*VLEN>=1600).
-    localparam integer KVGRP = 8;
+    //  ---- vkeccak.vi datapath: ONE isolated Keccak-p[1600] permutation ----
+    //  Zvknhk (riscv-pqc zvknhk.adoc): the operand is ONE fixed element group
+    //  (EGW=2048 = EGS=32 x SEW=64) of KVGRP = NREG = ceil(2048/VLEN) registers
+    //  from vd (8 at VLEN=256), independent of vl and LMUL. It is loaded one
+    //  reg/cycle into ksbuf via this unit's normal r_vold/d_vold read path;
+    //  ksbuf[1599:0] = the 1600-bit state (elements 0..24, A[x,y] = element
+    //  x+5y). The round FSM runs in place; the whole group is then written
+    //  back through the granule g_* port, so ksbuf bits >= 1600 (the state
+    //  tail, elements 25..31) return undisturbed. imm_q[0] is the imm5
+    //  round-count selector (0 -> 24 rounds, 1 -> 12; decode never forwards
+    //  the reserved values). vs1/vs2/vl are ignored. Requires VLEN >= 128
+    //  (Zvl128b); the granule walk below assumes the usual VGRAN=2 layout.
+    localparam integer KVGRP = (2048 + VLEN - 1) / VLEN;
     reg  [KVGRP*VLEN-1:0]   ksbuf;
     //  kg hoisted above (granule sub-step within a register, S_KLOAD)
     reg                     kreq;
     wire                    kbusy, kdone;
     wire [1599:0]           kstate_o;
+    wire [4:0]              krounds = imm_q[0] ? 5'd12 : 5'd24;
     keccak i_keccak (
-        .clk(clk), .rst(rst), .req(kreq), .rounds_i(5'd24),
+        .clk(clk), .rst(rst), .req(kreq), .rounds_i(krounds),
         .state_i(ksbuf[1599:0]), .busy(kbusy), .done(kdone), .state_o(kstate_o)
     );
     wire _kunused = &{1'b0, kbusy};
@@ -2887,8 +2899,8 @@ module karu_varith (
 `endif
 `ifdef KARU_EN_KECCAK
                 //  ====================================================
-                //  vkeccak: load vd e64/m8 group -> run f1600 -> store
-                //  (one isolated 1600-bit permutation; r = group counter)
+                //  vkeccak.vi: load the fixed vd group -> run Keccak-p[1600,nr]
+                //  -> store (one isolated 1600-bit permutation; r = reg counter)
                 //  ====================================================
                 S_KLOAD: begin
                     //  one granule per cycle from vold_g (index kg)

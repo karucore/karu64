@@ -31,14 +31,23 @@ group_path -name reg2out -from $flops_out -to $out_ports
 group_path -name in2reg  -from $non_clk_inputs -to $flops_in
 group_path -name in2out  -from $non_clk_inputs -to $out_ports
 
+#	OpenSTA renamed the per-group path-count flag from -group_count (<= 2.4)
+#	to -group_path_count (2.5+). Probe once and use whichever this binary
+#	accepts, so the flow runs on both.
+set gpc "-group_path_count"
+if {[catch {report_checks -group_path_count 1 > /dev/null} err]} {
+	set gpc "-group_count"
+	puts "OpenSTA: -group_path_count unsupported, using -group_count"
+}
+
 proc dump {grp} {
-	global rpt_dir
+	global rpt_dir gpc
 	set rpt "${rpt_dir}/${grp}.rpt"
 	set csv "${rpt_dir}/${grp}.csv.rpt"
 	puts "Reporting $grp -> $rpt"
-	report_checks -group_path_count 100 -path_group $grp > $rpt
+	report_checks {*}$gpc 100 -path_group $grp > $rpt
 	set f [open $csv w]
-	foreach p [find_timing_paths -group_path_count 100 -path_group $grp] {
+	foreach p [find_timing_paths {*}$gpc 100 -path_group $grp] {
 		set sp [get_property [get_property $p startpoint] full_name]
 		set ep [get_property [get_property $p endpoint]   full_name]
 		set sl [get_property $p slack]
@@ -50,7 +59,7 @@ proc dump {grp} {
 #	Overall (no -path_group) -- the design-level WNS.
 set overall "${rpt_dir}/overall.rpt"
 puts "Reporting overall -> $overall"
-report_checks -group_path_count 100 > $overall
+report_checks {*}$gpc 100 > $overall
 
 foreach g {reg2reg reg2out in2reg in2out} { dump $g }
 

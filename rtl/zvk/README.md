@@ -6,10 +6,11 @@ can also be enabled independently: `-DKARU_ZVKB` (vandn/vbrev8/vrev8/vrol/vror
 lane bit-manip glue), `-DKARU_ZVKNED` (AES), `-DKARU_ZVKNHA` (SHA-256),
 `-DKARU_ZVKNHB` (SHA-256/SHA-512, implies Zvknha), `-DKARU_ZVKSED` (SM4),
 `-DKARU_ZVKSH` (SM3), and `-DKARU_ZVKG` (GHASH/GCM).
-Distinct from the experimental `KARU_KECCAK` single-instruction Keccak-f1600
-(`vkeccak`, custom opcode) — see doc/architecture.md.
+Distinct from the opt-in `KARU_KECCAK` single-instruction Keccak-p[1600]
+(`vkeccak.vi`, the draft Zvknhk extension from riscv-pqc) — see
+doc/architecture.md and the Zvknhk section below.
 
-Release-layout note: the custom Keccak RTL now lives in this directory as
+Release-layout note: the Keccak RTL now lives in this directory as
 `keccak.v` and `keccak_round.v`; the old root-level `rtl/keccak*.v` paths are
 gone. The SystemVerilog KAT/decode benches live under `test/zvk/`, not under
 `rtl/zvk/`. The old generated `rtl/zvk/doc/zvk_encodings.txt` was removed; the
@@ -52,7 +53,7 @@ iterative wrappers for the paths that would otherwise dominate timing.
 | `karu_sm3_iter.v` | `karu_sm3_iter` | integrated `vsm3c` | 256 |
 | `karu_ghash.v` | `karu_ghash` | integrated `vgmul/vghsh` | 128 |
 | `karu_vcrypto.v` | `karu_vcrypto` | aggregate Zvk unit | 128/256 |
-| `keccak.v`, `keccak_round.v` | `keccak`, `keccak_round` | custom `vkeccak` | 1600-bit state |
+| `keccak.v`, `keccak_round.v` | `keccak`, `keccak_round` | Zvknhk `vkeccak.vi` | 2048-bit fixed group (1600-bit state) |
 
 Each `sm4_encdec` / `sm4_key_expansion` performs **all four** SM4 rounds of its
 op in one combinational call (NOT one round) — instantiate **one**, not a chain.
@@ -118,12 +119,53 @@ load operand groups → pulse `req` → wait `done` → store the `vd` group.
 zvksed_zvksh_zvkg`. All are OP-VE (major opcode **`0x77`**, `inst[6:0]=1110111`) —
 **not** OP-V (`0x57`), a long-standing misconception; vector *crypto* (vaes/vsha2/
 vsm4/vsm3/vghsh) is `0x77`, only vector *bitmanip* (Zvbb/Zvbc) stays in OP-V `0x57`.
-The custom `vkeccak` shares this same `0x77` major opcode (disambiguated by funct
-fields). All **fn3 = 010 (OPMVV)** — even
+`vkeccak.vi` (Zvknhk, see below) shares this same `0x77` major opcode and the
+VAES.vs selector space. All **fn3 = 010 (OPMVV)** — even
 the `.vi` forms (`vaeskf*`/`vsm4k`/`vsm3c`), which carry `uimm` in the `vs1` field.
 `vaes*`/`vsm4r`/`vgmul` share funct6 `101000`(.vv)/`101001`(.vs) and select the
 specific op via the **`vs1` field**. **Re-read this section before touching decode —
 do not hand-derive funct6 from memory.**
+
+### Zvknhk `vkeccak.vi` (riscv-pqc)
+
+`-DKARU_KECCAK` adds the draft **Zvknhk** Vector Keccak extension of the RISC-V
+PQC TG: [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc), `src/zvknhk.adoc` (implemented against
+commit `260e14b`, "Add the Zvknhk Vector Keccak extension"); reference models
+under `zvknhk/{spike,qemu}` and known-answer tests under `zvknhk/test` in that
+repository. One instruction, `vkeccak.vi vd, imm5`:
+
+    .insn r 0x77, 0x2, 0x53, vd, x18, imm5     # MATCH 0xa6092077 / MASK 0xfe0ff07f
+
+OP-VE, OPMVV, funct6 `101001` (the VAES.vs row), `vm=1`, **vs1 field = `10010`
+(opcode bits, not a register)**, `imm5` in the vs2 field. `imm5=0` runs
+Keccak-p[1600,24] = Keccak-f[1600] (SHA-3/SHAKE); `imm5=1` runs
+Keccak-p[1600,12] with round constants RC[12..23] (TurboSHAKE/KangarooTwelve).
+
+Semantics: the operand is **one fixed element group** of EGW=2048 bits = 32 ×
+SEW=64 elements, NREG = ceil(2048/VLEN) registers from `vd` (8 at VLEN=256, so
+`vd ∈ {v0, v8, v16, v24}`), **independent of `vl` (even `vl=0`) and LMUL**.
+Elements 0..24 hold `A[x,y]` at element `x+5y`; elements 25..31 (the *state
+tail*) and every register outside the group are left untouched. Reserved
+encodings raise illegal-instruction (cause 2) at issue with no side effects:
+`SEW≠64`, `imm5>1`, `vm=0`, `vd` not NREG-aligned, and `vstart≠0`.
+
+Implementation: `karu_dec.v` matches the full template (after the standard Zvk
+table, which leaves selector `10010` reserved) and forwards `imm5` in `imm`;
+`karu64.v` adds `vkeccak_resv_illegal` (SEW/alignment) beside
+`vcrypto_sew_illegal`; `karu_varith.v` loads the KVGRP-register group into
+`ksbuf`, pulses `keccak` with `rounds = imm5 ? 12 : 24`, and writes the whole
+group back. `keccak.v` starts its iota LFSR from the state that yields
+`RC[24-nr]`, so `nr=12` uses RC[12..23] exactly as FIPS 202 defines Keccak-p.
+
+The pre-Zvknhk keccak-xrv form (`.insn r 0x77,0x2,0x53,vd,x17,x24`, fixed 24
+rounds) is **no longer decoded** (it traps); software must use the `x18`/`imm5`
+encoding above.
+
+Tests: `make keccak-kat` (datapath, the spec's `KECCAK-P`/`KECCAK-P12`
+vectors), `make keccak-test` (full core, `-DKARU_KECCAK`) and
+`make keccak-test-zvk` (full core, the shipping `-DKARU_ZVK -DKARU_KECCAK`
+configuration); decode coverage is in
+`make zvk-decode-test ZVK_FLAGS="-DKARU_ZVK -DKARU_KECCAK"`.
 
 ## Tests (all PASS, verilator)
 
@@ -142,6 +184,8 @@ Self-checking KATs against the standard / Marian's validated vectors:
 | `make zvk-decode-test` | all standard OP-VE encodings under `-DKARU_ZVK` |
 | `make zvk-decode-leaf-test` | each official leaf knob decodes its ops and traps the other leaves |
 | `make zvk-test` | full-core `-DKARU_ZVK` instruction smoke across AES/SHA-2/SM4/SM3/GHASH |
+| `tb_keccak_kat.sv` / `make keccak-kat` | `keccak.v` Keccak-p[1600,24] and [1600,12] against the riscv-pqc `KECCAK-P` / `KECCAK-P12` vectors |
+| `make keccak-test`, `make keccak-test-zvk` | full-core `vkeccak.vi`: spec KATs, fixed-group/tail/`vl`/LMUL rules, reserved-encoding traps |
 
 Build pattern (one example):
 

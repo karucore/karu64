@@ -672,13 +672,12 @@ module karu_dec (
                 end
             end
 
-            //  ---- OP-VE (0x77): standard Zvk and experimental vkeccak ----
+            //  ---- OP-VE (0x77): standard Zvk and Zvknhk vkeccak.vi ----
             //  Standard vector crypto (Zvk*, spec Ch. 30.4) also lives under
-            //  OP-VE. Keccak is separate from that table (spec Ch. 31); this core
-            //  implements the keccak-xrv full-permutation custom op, so match its
-            //  full `.insn r 0x77,0x2,0x53` template rather than every
-            //  funct6=101001 encoding. Otherwise standard VAES.vs forms alias as
-            //  Keccak.
+            //  OP-VE. Zvknhk (riscv-pqc zvknhk.adoc) places vkeccak.vi in the
+            //  VAES.vs vs1-selector space: funct6=101001, vm=1, vs1 field=10010,
+            //  imm5 in the vs2 field. It is matched on that full template after
+            //  the Zvk table below, which leaves selector 10010 reserved.
             5'b11101: begin
                 unit = `UNIT_SYS;
                 sub  = `SYS_TRAP;
@@ -772,11 +771,19 @@ module karu_dec (
                 end
 `endif
 `ifdef KARU_EN_KECCAK
+                //  vkeccak.vi vd, imm5 (Zvknhk, riscv-pqc):
+                //      .insn r 0x77, 0x2, 0x53, vd, x18, imm5
+                //      MATCH 0xa6092077 / MASK 0xfe0ff07f
+                //  imm5 (vs2 field) selects the round count: 0 -> Keccak-p[1600,24],
+                //  1 -> Keccak-p[1600,12]; 2..31 are reserved and stay SYS_TRAP.
+                //  vs1/vs2 are opcode/immediate fields, not register operands, so
+                //  rs1/rs2 stay 0 (no VRF source hazard is raised on them).
                 if (fn3 == 3'b010 && fn7 == 7'b1010011 &&
-                    rs1_w == 5'd17 && rs2_w == 5'd24) begin
+                    rs1_w == 5'd18 && rs2_w[4:1] == 4'b0) begin
                     unit = `UNIT_VKECCAK;
-                    rd   = rd_w;                //  vd group base (m8, e64)
+                    rd   = rd_w;                //  vd: base of the fixed 2048-bit group
                     sub  = 5'd0;
+                    imm  = {59'b0, rs2_w};      //  imm5 round-count selector
                 end
 `endif
             end

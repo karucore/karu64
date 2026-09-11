@@ -20,7 +20,7 @@
 `define UNIT_VLSU   4'd9    //  vector loads / stores
 `define UNIT_VARITH 4'd10   //  vector arithmetic (incl. vmv.v.*)
 `define UNIT_VFPU   4'd11   //  vector floating-point (OPFVV / OPFVF)
-`define UNIT_VKECCAK 4'd12  //  experimental Zvknhk vkeccak (custom opcode 0x77)
+`define UNIT_VKECCAK 4'd12  //  Zvknhk vkeccak.vi (OP-VE 0x77, riscv-pqc)
 `define UNIT_VCRYPTO 4'd13  //  standard Zvk (opt-in KARU_ZVK); see rtl/zvk/
 `define UNIT_BITMANIP 4'd14 //  scalar Zba/Zbb/Zbs (RVA23-mandatory)
 

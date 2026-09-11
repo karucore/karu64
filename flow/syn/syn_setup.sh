@@ -5,7 +5,16 @@
 #	timing.
 
 #	NanGate45 typical-corner liberty file. Adjust if it moves.
-export KARU_LIB="${KARU_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../../src/flow && pwd)/NangateOpenCellLibrary_typical.lib}"
+#	Searched relative to this directory: ../../../src/flow (sibling of the karu64
+#	checkout, the usual layout) first, then ../../src/flow (inside the checkout).
+if [ -z "${KARU_LIB:-}" ]; then
+	for _d in ../../../src/flow ../../src/flow; do
+		_p="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd "$_d" 2>/dev/null && pwd)/NangateOpenCellLibrary_typical.lib"
+		if [ -f "$_p" ]; then KARU_LIB="$_p"; break; fi
+	done
+	unset _d _p
+fi
+export KARU_LIB="${KARU_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../src/flow/NangateOpenCellLibrary_typical.lib}"
 
 #	Target clock period in picoseconds. 4000 ps = 250 MHz, same nominal
 #	as the ibex flow. karu64 is bigger so it likely won't meet this at
@@ -17,10 +26,13 @@ export KARU_CLK_PS="${KARU_CLK_PS:-4000}"
 #	Effective ABC period = KARU_CLK_PS - KARU_ABC_UPRATE_PS.
 export KARU_ABC_UPRATE_PS="${KARU_ABC_UPRATE_PS:-2000}"
 
-#	By default abc runs in -fast mode (skips fraig/scorr/dch/nf
-#	pre-passes), which on this design is ~5 min vs >>1 hr for the full
-#	quality script. Set KARU_ABC_FULL=1 to use the full script.
+#	ABC script: timing runs (STA on) use Yosys' full liberty script (with
+#	buffer/upsize/dnsize -- needed for meaningful slack); area-only runs
+#	(KARU_NO_STA=1: area-matrix / sweep) use the fast custom script. Force
+#	either way with KARU_ABC_FULL=1 / KARU_ABC_FAST=1. On Yosys 0.65 the full
+#	script is not slower on the scalar core (~4.5 min vs ~6 min).
 #export KARU_ABC_FULL=1
+#export KARU_ABC_FAST=1
 
 #	Flat synthesis: synth -flatten before abc. Marginally better
 #	critical path; very slow on this design (full FPU). Off by default.

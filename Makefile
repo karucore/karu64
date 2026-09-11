@@ -924,7 +924,7 @@ vint-test:	$(VERI_FP_BIN) $(BUILD)/vint_subj.hex
 vint-test-spike:	$(BUILD)/vint_subj.elf
 	spike --isa=rv64gcv_zvl256b_zicntr $(BUILD)/vint_subj.elf
 
-#	---- experimental Zvknhk single-instruction Keccak-f1600 (vkeccak) ----
+#	---- Zvknhk vkeccak.vi single-instruction Keccak-p[1600] (riscv-pqc) ----
 #	Gated by -DKARU_KECCAK (opt-in), so it gets its own verilator TB; the
 #	default fp-test binary is unaffected.
 VERI_KEC_DIR	=	$(BUILD)/Vhtif_kec
@@ -932,17 +932,51 @@ VERI_KEC_BIN	=	$(VERI_KEC_DIR)/Vhtif_tb
 $(VERI_KEC_BIN): $(VERI_KEC_DIR)/Vhtif_tb.mk
 	$(MAKE) -C $(VERI_KEC_DIR) -f Vhtif_tb.mk
 $(VERI_KEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
+	@mkdir -p $(VERI_KEC_DIR)
 	verilator $(VFLAGS) -Mdir $(VERI_KEC_DIR) --cc --exe \
 		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_KECCAK \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY \
 		$(HTIF_SRC) flow/sim_tb.cpp
 
-#	The old keccak-xrv bare-metal KAT harness is no longer carried in this repo.
-.PHONY: keccak-test
-keccak-test:
-	@echo "ERROR: keccak-test KAT sources moved out of this repo; no in-tree harness remains." >&2
-	@exit 1
+#	---- Zvknhk vkeccak.vi directed tests (riscv-pqc zvknhk.adoc) ----
+#	keccak-kat:      standalone rtl/zvk/keccak.v datapath KAT (the spec's
+#	                 KECCAK-P / KECCAK-P12 vectors: 24 and 12 rounds).
+#	keccak-test:     full-core -DKARU_KECCAK build: the same known answers via
+#	                 decode -> issue -> VRF group -> keccak -> VRF writeback, the
+#	                 fixed-group / state-tail / vl / LMUL rules, and the reserved-
+#	                 encoding traps (SEW != 64, imm5 > 1, vm=0, unaligned vd, vstart).
+#	keccak-test-zvk: the same firmware on the shipping FPGA configuration
+#	                 (-DKARU_ZVK -DKARU_KECCAK), where vkeccak.vi shares the OP-VE
+#	                 VAES.vs selector space with the standard Zvk decode.
+KEC_SRCS		=	test/fw/htif_start.S test/fw/htif.c test/fw/keccak_subj.c
+$(BUILD)/keccak_subj.elf: $(KEC_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(VPERM_CFLAGS) -T flow/fp_subj.ld -o $@ $(KEC_SRCS)
+$(BUILD)/keccak_subj.hex: $(BUILD)/keccak_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/keccak_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/keccak_subj.bin > $@
+.PHONY: keccak-kat keccak-test keccak-test-zvk
+keccak-kat:
+	@mkdir -p $(BUILD)/Vkeccak_kat
+	verilator $(ZVK_TB_FLAGS) -Mdir $(BUILD)/Vkeccak_kat \
+		rtl/zvk/keccak.v rtl/zvk/keccak_round.v test/zvk/tb_keccak_kat.sv \
+		--top-module tb_keccak_kat
+	$(BUILD)/Vkeccak_kat/Vtb_keccak_kat
+keccak-test:	$(VERI_KEC_BIN) $(BUILD)/keccak_subj.hex
+	$(VERI_KEC_BIN) +hex=$(BUILD)/keccak_subj.hex +tohost=8000 +max_cycles=4000000
+VERI_ZVKKEC_DIR	=	$(BUILD)/Vhtif_zvk_kec
+VERI_ZVKKEC_BIN	=	$(VERI_ZVKKEC_DIR)/Vhtif_tb
+$(VERI_ZVKKEC_BIN): $(VERI_ZVKKEC_DIR)/Vhtif_tb.mk
+	$(MAKE) -C $(VERI_ZVKKEC_DIR) -f Vhtif_tb.mk
+$(VERI_ZVKKEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp Makefile
+	@mkdir -p $(VERI_ZVKKEC_DIR)
+	verilator $(VFLAGS) -Mdir $(VERI_ZVKKEC_DIR) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 $(ZVK_FLAGS) -DKARU_KECCAK \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-VARHIDDEN \
+		$(HTIF_SRC) $(ZVK_RTL) flow/sim_tb.cpp
+keccak-test-zvk:	$(VERI_ZVKKEC_BIN) $(BUILD)/keccak_subj.hex
+	$(VERI_ZVKKEC_BIN) +hex=$(BUILD)/keccak_subj.hex +tohost=8000 +max_cycles=4000000
 
 #	---- directed vector-FP test (vfadd/vfmul/.../FMA/cmp, e32 + e64) ----
 VFP_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/vfp_subj.c
