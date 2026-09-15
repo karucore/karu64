@@ -476,6 +476,45 @@ int main(void)
           for(i=0;i<32;i++) mref[i]=0;
           for(i=0;i<150;i++) mref[i>>3]|=1u<<(i&7);
           checkm("vmsbf.m vl=200 (cross-granule)", 200); }
+
+        // Mask summary trees: every vl, every possible first-bit position,
+        // full count 256 (needs nine bits), empty/masked-empty, and patterned
+        // masks. Load all 256 bits before shortening vl so tail exclusion is
+        // tested against nonzero source bits, not just zero-filled memory.
+        {
+            int bad_first=0, bad_count=0;
+            for (int pat=0; pat<5; pat++) for (int n=0; n<=256; n++) {
+                int first=-1, count=0;
+                for (int j=0; j<32; j++) {
+                    pa[j] = pat==0 || pat==2 ? 0 : pat==3 ?
+                        (uint8_t)(0x35u + j*0x49u + n*0x1du) : 0xff;
+                    pb[j] = pat==4 ? 0 : (uint8_t)(0xa5u ^ (j*0x13u));
+                }
+                if (pat==2 && n) pa[(n-1)>>3] = 1u << ((n-1)&7);
+                for (int j=0; j<n; j++) {
+                    int active = pat<3 || ((pb[j>>3]>>(j&7))&1);
+                    if (active && ((pa[j>>3]>>(j&7))&1)) {
+                        if (first<0) first=j;
+                        count++;
+                    }
+                }
+#define MSUM_CHECK(SUFFIX) \
+                asm volatile("vsetvli t0,%[full],e8,m8,tu,mu\n" \
+                    "vlm.v v8,(%[a])\n vlm.v v0,(%[m])\n" \
+                    "vsetvli t0,%[n],e8,m8,tu,mu\n" \
+                    "vfirst.m %[x],v8" SUFFIX "\n vcpop.m %[c],v8" SUFFIX "\n" \
+                    : [x]"=&r"(xr), [c]"=&r"(xc) \
+                    : [full]"r"(256L), [n]"r"((long)n), [a]"r"(pa), [m]"r"(pb) \
+                    : "t0", "memory")
+                if (pat<3) { MSUM_CHECK(""); }
+                else       { MSUM_CHECK(",v0.t"); }
+#undef MSUM_CHECK
+                bad_first += xr != first;
+                bad_count += xc != count;
+            }
+            report("vfirst.m all vl=0..256, five mask patterns", bad_first);
+            report("vcpop.m all vl=0..256, five mask patterns", bad_count);
+        }
 #undef MLG
 #undef MSCAN
     }

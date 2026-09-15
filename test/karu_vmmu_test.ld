@@ -11,6 +11,7 @@ SECTIONS
 {
 	. = 0x80000000;
 	.text   : { *(.text.boot) *(.text*) }
+	ASSERT(. <= 0x80001000, "vector MMU code overlaps HTIF page")
 
 	. = 0x80002000;	.root : { *(.root) }
 	. = 0x80003000;	.l1   : { *(.l1) }
@@ -19,6 +20,8 @@ SECTIONS
 	. = 0x80007000;	.f1   : { *(.f1) }
 	. = 0x80008000;	.f2   : { *(.f2) }
 	. = 0x80009000;	.ucode : { *(.ucode) }
+	. = 0x8000a000;	.pbmtfault : { *(.pbmtfault) }
+	ASSERT(. <= 0x8000b000, "vector PBMT fault code exceeds reserved page")
 
 	/DISCARD/ : { *(.comment) *(.riscv.attributes) }
 }

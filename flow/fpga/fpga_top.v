@@ -21,9 +21,10 @@ module fpga_top #(
 	input  wire			uart_cts,
 	output wire			trap
 );
-	//	Interrupt sources, driven by the on-chip CLINT (machine timer) and PLIC
+	//	Interrupt sources, driven by the on-chip CLINT (timer/software) and PLIC
 	//	(external) inside karu_axi_mem and routed to the core below.
 	wire	irq_timer;
+	wire	irq_software;
 	wire	irq_ext_m;
 	wire	irq_ext_s;
 
@@ -83,6 +84,7 @@ module fpga_top #(
 		.rst		(rst),
 		.trap		(trap),
 		.irq		(irq_timer),			//	CLINT machine timer (driven below)
+		.irq_software	(irq_software),	//	CLINT machine software
 		.irq_external_m	(irq_ext_m),		//	PLIC -> M-mode external
 		.irq_external_s	(irq_ext_s),		//	PLIC -> S-mode external
 		.time_in	(64'b0),				//	EXT_TIME=0: rdtime uses the cycle counter
@@ -153,6 +155,7 @@ module fpga_top #(
 		.uart_rts	(uart_rts),
 		.uart_cts	(uart_cts),
 		.irq_timer	(irq_timer),
+		.irq_software	(irq_software),
 		.irq_ext_m	(irq_ext_m),
 		.irq_ext_s	(irq_ext_s)
 	);

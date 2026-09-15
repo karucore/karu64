@@ -11,8 +11,8 @@
 #	it does not catch mistakes in the `ifdef KARU_ETH_PHY top ports / instance. That
 #	top-level integration (and timing) is covered by the real synth build,
 #	`make vcu118_ddr.bit KARU_DEFINES="... KARU_ETH_PHY"`. The LiteEth MAC datapath
-#	(karu_eth + liteeth_core) is elaborated by `make elab-ddr`. The SGMII PCS/PMA
-#	datapath is a later slice (not yet instantiated).
+#	(karu_eth + liteeth_core) is elaborated by `make elab-ddr`; the generated SGMII
+#	PCS/PMA and its top-level integration are checked by the full DDR/SGMII build.
 
 source [file join [file dirname [file normalize [info script]]] vivado_paths.tcl]
 

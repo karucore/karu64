@@ -4,14 +4,15 @@
 //  karu_cfg.vh header. See that file for the full flag/override
 //  priority; the effective per-unit flags read here are:
 //
-//    KARU_M_MUL_CYCLES = 1   (default, combinational 64x64 mul, big)
+//    KARU_M_MUL_CYCLES = 1   (combinational 64x64 mul, big)
 //                      = 4   (radix-2^16, 16 bits/cycle, medium area)
 //                      = 16  (radix-2^4,  4  bits/cycle, small area)
 //                      = 64  (radix-2,    1  bit/cycle,  smallest)
-//    KARU_M_DIV_CYCLES = 1   (default, combinational, big)
+//    KARU_M_DIV_CYCLES = 1   (combinational, big)
 //                      = 64  (restoring bit-serial, smallest)
 //
 //  Both can be defaulted by the master KARU_MUL_CYCLES / KARU_DIV_CYCLES.
+//  karu_cfg.vh selects the defaults for synthesis versus simulation.
 //
 //  Multiplier algorithm (radix-2^K shift-and-add, K = 64/MUL_CYCLES):
 //    acc starts at {64'b0, mag_b}; each cycle consumes K bits of
@@ -99,9 +100,24 @@ module karu_m (
     //  Combinational results
     //  Used directly when the requested op is configured as 1-cycle.
     //  ==================================================================
-    wire [127:0] mul_full_comb = mag_a_in * mag_b_in;
-    wire [63:0]  quot_mag_comb = div_by_zero_in ? 64'b0 : (mag_a_in / mag_b_in);
-    wire [63:0]  rem_mag_comb  = div_by_zero_in ? 64'b0 : (mag_a_in % mag_b_in);
+    wire [127:0] mul_full_comb;
+    wire [63:0] quot_mag_comb, rem_mag_comb;
+    // Elaboration-time gating: serial configurations never create these
+    // large arithmetic operators, even before dead-code optimization.
+    generate
+        if (MUL_C == 1) begin : g_comb_product
+            assign mul_full_comb = mag_a_in * mag_b_in;
+        end else begin : g_no_comb_product
+            assign mul_full_comb = 128'b0;
+        end
+        if (DIV_C == 1) begin : g_comb_division
+            assign quot_mag_comb = div_by_zero_in ? 64'b0 : (mag_a_in / mag_b_in);
+            assign rem_mag_comb = div_by_zero_in ? 64'b0 : (mag_a_in % mag_b_in);
+        end else begin : g_no_comb_division
+            assign quot_mag_comb = 64'b0;
+            assign rem_mag_comb = 64'b0;
+        end
+    endgenerate
 
     wire [127:0] mul_neg128_comb  = ~mul_full_comb + 128'b1;
     wire [127:0] mul_signed_comb  = neg_in ? mul_neg128_comb : mul_full_comb;

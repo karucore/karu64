@@ -156,6 +156,12 @@ module karu_vrf_bram_tb;
 		chk_eq("t5.v0g1", v0[VBUS_W +: VBUS_W], P0);
 		rd_a(3,0,rdv); chk_eq("t5.reg3", rdv, PX);	//	BRAM retained across reset
 
+		// Zero-byte-enable writes preserve both storage and the v0 shadow.
+		wr_b(0,0,PX,{NBYTES{1'b0}});
+		rd_a(0,0,rdv); chk_eq("t6.v0.zero", rdv, P1);
+		wr_b(31,1,P0,{NBYTES{1'b1}});
+		wr_b(31,1,PX,{NBYTES{1'b0}});
+		rd_a(31,1,rdv); chk_eq("t6.v31.zero", rdv, P0);
 		step; step;
 		if (errors == 0) $display("VRF-BRAM TB PASS");
 		else             $display("VRF-BRAM TB FAIL (%0d mismatch[es])", errors);

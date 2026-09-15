@@ -1,0 +1,82 @@
+/dts-v1/;
+// SPDX-License-Identifier: Apache-2.0
+// Simulation-only H development profile; not a release/board ISA declaration.
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    compatible = "karu,karu64-sim";
+    model = "Karu H vector KVM integration test";
+    chosen {
+        stdout-path = "/soc/serial@10000000";
+        bootargs = "console=ttyS0,115200 earlycon rdinit=/init panic=-1 nokaslr";
+        linux,initrd-start = <0 0x81200000>;
+        linux,initrd-end = <0 0x81200000>; // Filled with the built initramfs size.
+    };
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <25000000>;
+        cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            status = "okay";
+            compatible = "riscv";
+            riscv,isa = "rv64imafdcbvh_zicbom_zicbop_zicboz_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_zawrs_zfa_zfhmin_zca_zcb_zcmop_zba_zbb_zbs_zkt_zvbb_zvfhmin_zvkb_zvkg_zvkned_zvknha_zvknhb_zvksed_zvksh_zvkt_zvl256b_smcntrpmf_smnpm_smstateen_sscofpmf_ssnpm_ssstateen_sstc_svade_svinval_svnapot_svpbmt";
+            riscv,isa-base = "rv64i";
+            riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "b", "v", "h",
+                "zicbom", "zicbop", "zicboz", "zicntr", "zicond", "zicsr", "zifencei",
+                "zihintntl", "zihintpause", "zihpm", "zimop", "zawrs", "zfa", "zfhmin",
+                "zca", "zcb", "zcmop", "zba", "zbb", "zbs", "zkt", "zvbb",
+                "zve32f", "zve32x", "zve64d", "zve64f", "zve64x", "zvfhmin",
+                "zvkb", "zvkg", "zvkned", "zvknha", "zvknhb", "zvksed", "zvksh", "zvkt", "zvl256b",
+                "smcntrpmf", "smnpm", "smstateen", "sscofpmf", "ssnpm", "ssstateen",
+                "sstc", "svade", "svinval", "svnapot", "svpbmt";
+            karu,vkeccak;
+            riscv,cbom-block-size = <64>;
+            riscv,cbop-block-size = <64>;
+            riscv,cboz-block-size = <64>;
+            mmu-type = "riscv,sv39";
+            clock-frequency = <75000000>;
+            cpu_intc: interrupt-controller {
+                #address-cells = <0>;
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0 0x80000000 0 0x02000000>;
+    };
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        compatible = "simple-bus";
+        ranges;
+        clint@2000000 {
+            compatible = "riscv,clint0";
+            interrupts-extended = <&cpu_intc 3 &cpu_intc 7>;
+            reg = <0 0x02000000 0 0x10000>;
+        };
+        plic: interrupt-controller@c000000 {
+            compatible = "riscv,plic0";
+            #address-cells = <0>;
+            #interrupt-cells = <1>;
+            interrupt-controller;
+            interrupts-extended = <&cpu_intc 11 &cpu_intc 9>;
+            reg = <0 0x0c000000 0 0x1000000>;
+            riscv,ndev = <31>;
+            riscv,max-priority = <15>;
+        };
+        serial@10000000 {
+            compatible = "ns16550a";
+            reg = <0 0x10000000 0 0x100>;
+            reg-shift = <0>;
+            reg-io-width = <1>;
+            clock-frequency = <10000000>;
+            interrupt-parent = <&plic>;
+            interrupts = <1>;
+        };
+    };
+};

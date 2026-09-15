@@ -2,8 +2,14 @@
 #	flow/run_all_tests.sh -- run every rv64ui-p / rv64uc-p test through
 #	karu64 and summarise pass/fail.
 
-set -u
+set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Missing/unpopulated upstream sources must never look like a zero-test PASS.
+for suite in rv64ui rv64uc rv64um rv64uf rv64ud rv64ua; do
+	frag=test/riscv-tests/isa/$suite/Makefrag
+	[[ -r $frag ]] || { echo "missing $frag; provision the riscv-tests submodule before running this suite" >&2; exit 2; }
+done
 
 #	Make sure at least one sim is built. Default to verilator if neither.
 SIM=${SIM:-}
@@ -42,6 +48,7 @@ tests=$(
 	get_tests test/riscv-tests/isa/rv64ud/Makefrag rv64ud-p
 	get_tests test/riscv-tests/isa/rv64ua/Makefrag rv64ua-p
 )
+[[ -n $tests ]] || { echo "no riscv-tests selected; refusing an empty PASS" >&2; exit 2; }
 
 #	Build them all up front (much faster than one-by-one).
 echo "building $(echo "$tests" | wc -w) tests..."

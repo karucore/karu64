@@ -2,7 +2,7 @@
 #	with_vivado.sh -- run a command inside the Vivado environment.
 #
 #	Vivado's settings prepend its own bin/ (incl. a bundled verilator) to PATH,
-#	which would shadow the sim toolchain (~/.local/bin/verilator, iverilog,
+#	which would shadow the simulation tools (verilator, iverilog,
 #	spike). Sourcing it here in an isolated subshell keeps that contamination
 #	contained to the wrapped command -- the parent shell stays clean, so the
 #	Makefile's verilator/iverilog/spike targets keep working in the same session.

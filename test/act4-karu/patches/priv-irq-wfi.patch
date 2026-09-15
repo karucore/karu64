@@ -1,0 +1,62 @@
+--- a/generators/testgen/src/testgen/priv/extensions/InterruptsSm.py
++++ b/generators/testgen/src/testgen/priv/extensions/InterruptsSm.py
+@@ -446,6 +446,7 @@
+                     test_data.add_testcase(binname, coverpoint, covergroup),
+                     "wfi",
+                     "nop",
++                    *([f"RVTEST_IDLE_FOR_TIMER_INTERRUPT(x{r_scratch})"] if mie_val else []),
+                     *clr_mtimer_int(r_t0, r_mtimecmp),
+                     "",
+                 ]
+--- a/generators/testgen/src/testgen/priv/extensions/InterruptsSSm.py
++++ b/generators/testgen/src/testgen/priv/extensions/InterruptsSSm.py
+@@ -650,6 +650,7 @@
+                         "    wfi # Wait for timer interrupt",
+                         "    nop",
+                         "    nop",
++                        *([f"RVTEST_IDLE_FOR_TIMER_INTERRUPT(x{r_temp4})"] if mie_val else []),
+                     ]
+                 )
+ 
+--- a/generators/testgen/src/testgen/priv/extensions/InterruptsU.py
++++ b/generators/testgen/src/testgen/priv/extensions/InterruptsU.py
+@@ -193,7 +193,9 @@
+     lines = [
+         comment_banner(
+             "cp_wfi",
+-            "WFI in U-mode waits for interrupt\nCross: mstatus.MIE={0/1}\nmie.MTIE=1, timer fires soon",
++            "WFI in U-mode\nCross: mstatus.MIE={0/1}\n"
++            "With S, WFI is illegal and timer-origin interrupts are checked by cp_user_mti.\n"
++            "Without S, an enabled timer interrupt follows WFI or its idle loop.",
+         ),
+         "",
+     ]
+@@ -222,6 +224,11 @@
+             [
+                 f"LI(x{r_scratch}, 0x80)",
+                 f"csrw mie, x{r_scratch}",
++                "#ifdef S_SUPPORTED",
++                "# Keep the mandatory illegal-WFI signature independent of asynchronous MTIP.",
++                "csrw mie, zero",
++                *clr_mtimer_int(r_temp, r_mtimecmp),
++                "#endif",
+                 "RVTEST_TSBI_GOTO_UMODE",
+             ]
+         )
+@@ -229,12 +236,16 @@
+         # WFI - label right before
+         lines.extend(
+             [
++                "#ifndef S_SUPPORTED",
+                 "# Set timer to fire soon",
+                 *set_mtimer_int_soon(r_mtime, r_mtimecmp, r_temp, r_t1, r_t2, r_scratch),
++                "#endif",
+                 test_data.add_testcase(binname, coverpoint, covergroup),
+                 "    wfi",
+                 "    nop",
++                "#ifndef S_SUPPORTED",
+                 f"    RVTEST_IDLE_FOR_TIMER_INTERRUPT(x{r_scratch})",
++                "#endif",
+                 "    RVTEST_TSBI_GOTO_MMODE",
+                 *clr_mtimer_int(r_temp, r_mtimecmp),
+             ]

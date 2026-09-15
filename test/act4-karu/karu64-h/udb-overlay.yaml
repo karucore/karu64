@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Verification target for opt-in KARU_H, not a release/profile advertisement.
+name: karu64-h
+description: |
+  karu64 H development target, inheriting the supervisor verification inputs.
+  VS Bare/Sv39, G Bare/Sv39x4, GEILEN=0 and fixed RV64 little-endian guests.
+  Sha feature selection expresses verification requirements, not certification.
+extension_versions:
+  H: "= 1.0.0"
+  Smstateen: "= 1.0.0"
+  Ssstateen: "= 1.0.0"
+  Sha: "= 1.0.0"
+  Shcounterenw: "= 1.0.0"
+  Shgatpa: "= 1.0.0"
+  Shvsatpa: "= 1.0.0"
+  Shvstvala: "= 1.0.0"
+  Shvstvecd: "= 1.0.0"
+  Shtvala: "= 1.0.0"
+params:
+  MUTABLE_MISA_H: false
+  VSSTATUS_VS_EXISTS: true
+  VSXLEN: [64]
+  VUXLEN: [64]
+  VU_MODE_ENDIANNESS: little
+  VS_MODE_ENDIANNESS: little
+  TRAP_ON_ECALL_FROM_VS: true
+  IGNORE_INVALID_VSATP_MODE_WRITES_WHEN_V_EQ_ZERO: true
+  NUM_EXTERNAL_GUEST_INTERRUPTS: 0
+  VMID_WIDTH: 14
+  GSTAGE_MODE_BARE: true
+  VSSTAGE_MODE_BARE: true
+  SV39X4_TRANSLATION: true
+  SV48X4_TRANSLATION: false
+  SV57X4_TRANSLATION: false
+  SV39_VSMODE_TRANSLATION: true
+  SV48_VSMODE_TRANSLATION: false
+  SV57_VSMODE_TRANSLATION: false
+  VSTVEC_MODES: [0, 1]
+  REPORT_GPA_IN_HTVAL_ON_GUEST_PAGE_FAULT: true
+  REPORT_GPA_IN_TVAL_ON_INSTRUCTION_GUEST_PAGE_FAULT: true
+  REPORT_GPA_IN_TVAL_ON_INTERMEDIATE_GUEST_PAGE_FAULT: true
+  REPORT_GPA_IN_TVAL_ON_LOAD_GUEST_PAGE_FAULT: true
+  REPORT_GPA_IN_TVAL_ON_STORE_AMO_GUEST_PAGE_FAULT: true
+  TINST_VALUE_ON_BREAKPOINT: always zero
+  TINST_VALUE_ON_FINAL_INSTRUCTION_GUEST_PAGE_FAULT: always zero
+  TINST_VALUE_ON_FINAL_LOAD_GUEST_PAGE_FAULT: always zero
+  TINST_VALUE_ON_FINAL_STORE_AMO_GUEST_PAGE_FAULT: always zero
+  TINST_VALUE_ON_INSTRUCTION_ADDRESS_MISALIGNED: always zero
+  TINST_VALUE_ON_LOAD_ACCESS_FAULT: always zero
+  TINST_VALUE_ON_LOAD_ADDRESS_MISALIGNED: always zero
+  TINST_VALUE_ON_LOAD_PAGE_FAULT: always zero
+  TINST_VALUE_ON_MCALL: always zero
+  TINST_VALUE_ON_SCALL: always zero
+  TINST_VALUE_ON_STORE_AMO_ACCESS_FAULT: always zero
+  TINST_VALUE_ON_STORE_AMO_ADDRESS_MISALIGNED: always zero
+  TINST_VALUE_ON_STORE_AMO_PAGE_FAULT: always zero
+  TINST_VALUE_ON_UCALL: always zero
+  TINST_VALUE_ON_VIRTUAL_INSTRUCTION: always zero
+  TINST_VALUE_ON_VSCALL: always zero
+  REPORT_VA_IN_VSTVAL_ON_BREAKPOINT: true
+  REPORT_VA_IN_VSTVAL_ON_LOAD_MISALIGNED: true
+  REPORT_VA_IN_VSTVAL_ON_STORE_AMO_MISALIGNED: true
+  REPORT_VA_IN_VSTVAL_ON_INSTRUCTION_MISALIGNED: true
+  REPORT_VA_IN_VSTVAL_ON_LOAD_ACCESS_FAULT: true
+  REPORT_VA_IN_VSTVAL_ON_STORE_AMO_ACCESS_FAULT: true
+  REPORT_VA_IN_VSTVAL_ON_INSTRUCTION_ACCESS_FAULT: true
+  REPORT_VA_IN_VSTVAL_ON_LOAD_PAGE_FAULT: true
+  REPORT_VA_IN_VSTVAL_ON_STORE_AMO_PAGE_FAULT: true
+  REPORT_VA_IN_VSTVAL_ON_INSTRUCTION_PAGE_FAULT: true
+  REPORT_ENCODING_IN_VSTVAL_ON_ILLEGAL_INSTRUCTION: true
+  REPORT_ENCODING_IN_VSTVAL_ON_VIRTUAL_INSTRUCTION: true
+  MSTATEEN_ENVCFG_TYPE: rw
+  HSTATEEN_ENVCFG_TYPE: rw
+  HCOUNTENABLE_EN: [true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true]

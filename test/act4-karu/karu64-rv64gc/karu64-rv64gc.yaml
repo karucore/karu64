@@ -5,23 +5,24 @@ kind: architecture configuration
 type: fully configured
 name: karu64-rv64gc
 description: |
-  karu64 soft-core, RV64GC (RV64IMAFDC) + Zicsr/Zicntr/Zifencei, M-mode only.
-  Derived from the vetted sail-RVI20U64 config (identical RV64GC M-mode
-  extension set + HTIF). Vector (V/Zve*/Zvl*) is added as the RVV work lands.
+  karu64 RV64GCV + Zfa/Zvbb/Zvkb/Zfhmin/Zvfhmin, tested in M-mode on the
+  RAM-only HTIF simulator with the standard ACT4 synchronous trap handler.
 implemented_extensions:
   - { name: I, version: "= 2.1" }
   - { name: M, version: "= 2.0" }
+  - { name: Zmmul, version: "= 1.0.0" }   # udb >= 0.1.16: M requires Zmmul declared
   - { name: A, version: "= 2.1.0" }
   - { name: F, version: "= 2.2.0" }
   - { name: D, version: "= 2.2.0" }
-  # Zfhmin: claimed only so the ACT4 selector picks the Vf32/Vf64 vector-FP
-  # slices (their REQUIRED_EXTENSIONS gate on it). karu64 does NOT implement
-  # half-precision; the SEW32/SEW64 test bodies emit no fp16 instructions, so
-  # any test that actually executes an fp16 op will (correctly) trap on karu64.
+  - { name: Zfa, version: "= 1.0.0" }
+  # Scalar FP16 conversions/moves/loads/stores are implemented; arithmetic is
+  # intentionally outside Zfhmin.
   - { name: Zfhmin, version: "= 1.0.0" }
   - { name: C, version: "= 2.0" }
   - { name: Zicntr, version: "= 2.0" }
-  # - { name: Zihpm, version: "= 2.0" } # TODO: Disabled because hpmcounter CSRs are not accessible without U mode. See https://github.com/riscv/sail-riscv/pull/1649.
+  # Re-enabled: sail-riscv 0.13.1 includes PR 1649 (hpmcounter3..31 no longer
+  # depend on U-mode). karu64 implements mhpmcounter/mhpmevent/hpmcounter3..31.
+  - { name: Zihpm, version: "= 2.0.0" }
   - { name: Zicsr, version: "= 2.0" }
   - { name: Zifencei, version: "= 2.0.0" }
   - { name: Zaamo, version: "= 1.0.0" }
@@ -34,6 +35,12 @@ implemented_extensions:
   - { name: Zve32f, version: "= 1.0.0" }
   - { name: Zve64f, version: "= 1.0.0" }
   - { name: Zve64d, version: "= 1.0.0" }
+  # Full V (not only the Zve* leaves): karu64 implements EEW=64 vmulh*/vsmul
+  # and the vfmv/vfslide1 forms that the generator gates on "V".
+  - { name: V, version: "= 1.0.0" }
+  - { name: Zvbb, version: "= 1.0.0" }
+  - { name: Zvkb, version: "= 1.0.0" }
+  - { name: Zvfhmin, version: "= 1.0.0" }
   - { name: Zvl32b, version: "= 1.0.0" }
   - { name: Zvl64b, version: "= 1.0.0" }
   - { name: Zvl128b, version: "= 1.0.0" }
@@ -60,6 +67,7 @@ params:
   MUTABLE_MISA_D: false
   # C params
   MUTABLE_MISA_C: false
+  MUTABLE_MISA_V: false
   # V (vector integer) params
   VLEN: 256
   ELEN: 64
@@ -90,12 +98,11 @@ params:
   VFREDUSUM_INACTIVE_NODE_ELEMENT_BEHAVIOR: "additive_identity"
   VFREDUSUM_FINAL_NODE_ELEMENT_BEHAVIOR: "additive_identity"
   # Zicntr params
-  # karu64 maps the `time` CSR (0xC01) to its cycle counter as a proxy, not a
-  # real CLINT mtime, so it can't match the reference's mtime — disable the
-  # time-CSR tests. cycle/instret are real and stay enabled.
-  TIME_CSR_IMPLEMENTED: false
-  # (COUNTINHIBIT_EN is now definedBy extension Sm directly in udb-0.1.9;
-  # the old MCOUNTINHIBIT_IMPLEMENTED param was removed from the schema.)
+  # rdtime is implemented directly: EXT_TIME=0 uses the core cycle counter;
+  # SoCs with EXT_TIME=1 provide their CLINT counter. No trap emulation.
+  TIME_CSR_IMPLEMENTED: true
+  # karu64 implements mcountinhibit (0x320); udb 0.1.16 requires the flag again.
+  MCOUNTINHIBIT_IMPLEMENTED: true
   # Sm params
   MXLEN: 64
   PRECISE_SYNCHRONOUS_EXCEPTIONS: true

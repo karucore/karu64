@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Verification requirements for KARU_RVA23S64, not a certification verdict.
+name: karu64-rva23s64
+description: |
+  Opt-in karu64 RVA23S64 feature-composition verification target, inheriting
+  S/VS/G memory and trap-harness settings. Sscofpmf is required; Smcntrpmf and
+  vector crypto remain optional and are absent from this minimal reference.
+  PMA/progress/DIEL and complete profile assurance require separate validation.
+extension_versions:
+  Sscofpmf: "= 1.0.0"
+  Zic64b: "= 1.0.0"
+  Ziccamoa: "= 1.0.0"
+  Ziccif: "= 1.0.0"
+  Zicclsm: "= 1.0.0"
+  Ziccrse: "= 1.0.0"
+  Za128rs: "= 1.0.0"
+  Za64rs: "= 1.0.0"
+  Zawrs: "= 1.0.0"
+  Zcb: "= 1.0.0"
+  Zcmop: "= 1.0.0"
+  Zimop: "= 1.0.0"
+  Zicond: "= 1.0.0"
+  Zihintntl: "= 1.0.0"
+  Zihintpause: "= 2.0.0"
+  Zkt: "= 1.0.0"
+  Zvkt: "= 1.0.0"
+  Supm: "= 1.0.0"
+params:
+  # The scalar/vector interfaces have the validated 256/64 geometry. Cache
+  # block size, PMA behavior and reservation strategy come from shared inputs.
+  VLEN: 256
+  ELEN: 64
+  ZAWRS_NTO_IS_NOP: true
+  HPM_EVENTS: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]

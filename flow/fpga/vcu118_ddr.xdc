@@ -6,9 +6,9 @@
 set_false_path -from [get_ports { btn_rst_i } ]
 set_false_path -from [get_ports { btn_i[4] } ]
 set_false_path -to [get_pins -quiet {u_rst/sync0_reg/D u_ui_axi_rst/sync0_reg/D}]
-#	rst_ui_sync/trap_ui_sync are the VIO status-CDC flops -- only present under
-#	KARU_DDR_HOST_DBG. -quiet makes this a harmless no-op in default builds.
-set_false_path -to [get_pins -quiet {rst_ui_sync_reg[0]/D trap_ui_sync_reg[0]/D}]
+#	rst_ui_sync/trap_ui_sync are VIO status-CDC flops present only under
+#	KARU_DDR_HOST_DBG. Quiet both collection and constraint when they are absent.
+set_false_path -quiet -to [get_pins -quiet {rst_ui_sync_reg[0]/D trap_ui_sync_reg[0]/D}]
 
 ## CPU reset pushbutton (active-High)
 set_property -dict { PACKAGE_PIN L19 IOSTANDARD LVCMOS12 } [get_ports { btn_rst_i } ]

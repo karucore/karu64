@@ -40,4 +40,11 @@ SECTIONS
 	. = ALIGN(16);
 	. += 0x4000;
 	_stack_top = .;
+
+	/* Optional test-only page tables. Empty for ordinary subject firmware;
+	   NOLOAD storage is initialized explicitly by its owning test. */
+	.pbmt_tables ALIGN(4096) (NOLOAD) : { *(.pbmt_tables) }
+	ASSERT(SIZEOF(.pbmt_tables) == 0 ||
+	       ADDR(.pbmt_tables) + SIZEOF(.pbmt_tables) <= 0x80200000,
+	       "PBMT tables exceed the test's first-2-MiB identity mapping")
 }

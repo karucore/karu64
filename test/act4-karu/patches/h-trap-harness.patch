@@ -1,0 +1,215 @@
+diff --git a/tests/env/rvtest_failure_code.h b/tests/env/rvtest_failure_code.h
+index cc3efe86..c733cf75 100644
+--- a/tests/env/rvtest_failure_code.h
++++ b/tests/env/rvtest_failure_code.h
+@@ -2354,6 +2354,12 @@
+         .string "\"Mismatch in mtval2 value! Trap was being handled in M-Mode.\"";
+     sv_Mtinst_str:
+         .string "\"Mismatch in mtinst value! Trap was being handled in M-Mode.\"";
++#ifdef H_SUPPORTED
++    sv_Htval2_str:
++        .string "\"Mismatch in htval value! Trap was being handled in HS-Mode.\"";
++    sv_Htinst_str:
++        .string "\"Mismatch in htinst value! Trap was being handled in HS-Mode.\"";
++#endif
+     sv_Mip_str:
+         .string "\"Mismatch in mip value! Trap was being handled in M-Mode.\"";
+     sv_Sip_str:
+diff --git a/tests/env/rvtest_setup.h b/tests/env/rvtest_setup.h
+index 54161520..dc258cf8 100644
+--- a/tests/env/rvtest_setup.h
++++ b/tests/env/rvtest_setup.h
+@@ -805,7 +805,7 @@
+   // Mtrampoline (and sibling labels) which are only defined when RVTEST_TRAP_HANDLER
+   // is instantiated.
+   #ifdef STANDARD_SM_SUPPORTED
+-  INSTANTIATE_MODE_MACRO RVTEST_TRAP_SAVEAREA
++  INSTANTIATE_TRAP_SAVEAREAS
+   #endif
+ 
+   // Data for use in test
+diff --git a/tests/env/rvtest_trap_handler.h b/tests/env/rvtest_trap_handler.h
+index d8876d8f..db6bb2e7 100644
+--- a/tests/env/rvtest_trap_handler.h
++++ b/tests/env/rvtest_trap_handler.h
+@@ -419,7 +419,7 @@
+ //   RVTEST_TRAP_HANDLER H       — if S_SUPPORTED && H_SUPPORTED
+ //   RVTEST_TRAP_HANDLER V       — if S_SUPPORTED && H_SUPPORTED
+ //
+-// Used for PROLOG, HANDLER, EPILOG, and SAVEAREA instantiation.
++// Handler order is independent of save-area layout (M,H,S,V with H).
+ //==============================================================================
+ 
+ .macro INSTANTIATE_MODE_MACRO MACRO_NAME
+@@ -433,6 +433,22 @@
+   #endif
+ .endm
+ 
++// The offset calculations in the handler, mode switches and epilog use
++// M,H,S,V. Keep this separate from the prolog's S-before-H installation:
++// S and HS share stvec/sscratch, so the HS handler must be installed last.
++.macro INSTANTIATE_TRAP_SAVEAREAS
++  RVTEST_TRAP_SAVEAREA M
++  #ifdef S_SUPPORTED
++    #ifdef H_SUPPORTED
++      RVTEST_TRAP_SAVEAREA H
++    #endif
++    RVTEST_TRAP_SAVEAREA S
++    #ifdef H_SUPPORTED
++      RVTEST_TRAP_SAVEAREA V
++    #endif
++  #endif
++.endm
++
+ //==============================================================================
+ // SECTION 9: CSR RENAME MACROS
+ //
+@@ -462,8 +478,8 @@
+ //                           applies there, so the VS CSRs must be named
+ //                           explicitly or the S-mode CSRs get clobbered instead.
+ //
+-// Every other mode names its own CSRs the same way from either context, so
+-// XCSR_RENAME_FROM_M just defers to XCSR_RENAME for M, S and H.
++// The HS handler uses ordinary S trap state. Its M-mode prolog additionally
++// configures the separate H delegation and guest-translation registers.
+ //==============================================================================
+ 
+ .macro _XCSR_RENAME_V
+@@ -509,6 +525,15 @@
+ .endm
+ 
+ .macro _XCSR_RENAME_H
++  _XCSR_RENAME_H_FROM_M
++  .set CSR_XSTATUS, CSR_SSTATUS                 // ordinary HS trap status
++  .set CSR_XIE,     CSR_SIE                     // HS interrupt enables, including STIE
++  .set CSR_XIP,     CSR_SIP                     // HS interrupt pending state
++  .set CSR_XSATP,   CSR_SATP                    // host address translation
++  .set CSR_XTVAL,   CSR_STVAL                   // ordinary fault value; HTVAL is auxiliary
++.endm
++
++.macro _XCSR_RENAME_H_FROM_M
+   .set CSR_XSTATUS, CSR_HSTATUS                 // hstatus — HS-mode hypervisor status
+   .set CSR_XIE,     CSR_HIE                     // hie — HS-mode interrupt enable (hypervisor)
+   .set CSR_XIP,     CSR_HIP                     // hip — HS-mode interrupt pending (hypervisor)
+@@ -567,15 +592,19 @@
+ 
+ //==============================================================================
+ // XCSR_RENAME_FROM_M — same, but for M-mode code that manipulates another
+-// mode's CSRs (the prolog and epilog). Only V differs: no S->VS aliasing
+-// happens from M-mode, so the VS CSRs must be named explicitly.
++// mode's CSRs (the prolog and epilog). V names VS CSRs explicitly; H sets
++// up the hypervisor-specific delegation and guest-translation registers.
+ //==============================================================================
+ 
+ .macro XCSR_RENAME_FROM_M __MODE__
+   .ifc   \__MODE__ , V                          // if mode == V (VS-mode)
+        _XCSR_RENAME_V_FROM_M                    //   set CSR_X* to explicit VS-mode CSR names
+   .else
+-       XCSR_RENAME \__MODE__                    //   M/S/H: identical from either context
++    .ifc \__MODE__ , H
++       _XCSR_RENAME_H_FROM_M
++    .else
++       XCSR_RENAME \__MODE__                    //   M/S: identical from either context
++    .endif
+   .endif
+ .endm
+ 
+@@ -1327,6 +1356,13 @@ rvtest_\__MODE__\()prolog_done:
+   /**********************************************************************/
+ 
+   XCSR_RENAME \__MODE__                          // set CSR_X* aliases for this mode's CSRs
++  .set host_s_tsbi, 0
++  .ifc \__MODE__ , S
++    .set host_s_tsbi, 1
++  .endif
++  .ifc \__MODE__ , H
++    .set host_s_tsbi, 1
++  .endif
+ 
+ .global \__MODE__\()trampoline                   // make trampoline globally visible (used by prolog)
+ .global common_\__MODE__\()entry                 // make common entry globally visible
+@@ -1681,9 +1717,15 @@ tsbi_\__MODE__\()goto_vu:
+ //   directly and results are returned by writing a0.
+ //==============================================================================
+ 
+-.ifc \__MODE__ ,  S                              // ----- BEGIN S-MODE ONLY SECTION -----
++.if host_s_tsbi                                 // ----- BEGIN S/HS HOST T-SBI SECTION -----
+ 
+ \__MODE__\()goto_schk:                           // S-mode ecall check entry
++  .ifc \__MODE__ , H
++        // A guest ECALL belongs to the guest/HS test, not the host-U T-SBI.
++        csrr    T4, CSR_HSTATUS
++        andi    T4, T4, HSTATUS_SPV
++        bnez    T4, \__MODE__\()trapsig_ptr_upd
++  .endif
+         LI(T4,(1<<(UDB_MXLEN-1))+((1<<12)-1))        // T4 = int_bit + cause[11:0] mask
+         and     T4, T4, T5                        // T4 = masked xcause
+         addi    T3, T4, -CAUSE_USER_ECALL          // T3 = masked_cause - 8 (U-mode ecall = cause 8)
+@@ -2223,17 +2265,22 @@ common_\__MODE__\()excpt_handler:
+ .endif
+ 
+  .ifc \__MODE__ ,  H
+-        csrr    T2, CSR_HGATP                         // check guest address translation
+-        srli    T2, T2, MODE_LSB
+-        bnez    T2, sv_\__MODE__\()epc          // its a VA, skip adj
+- // extract and test hstatus.SPV; if 0, no lower mode, so bare mode, force reloc
++        // Host-origin traps use SATP. Guest-origin traps use VSATP and HGATP.
+         csrr    T2, CSR_HSTATUS
+-        slli    T2, T2, UDB_MXLEN-MPV_LSB-1
+-        bgez    T2, vmem_adj_\__MODE__\()epc
++        andi    T2, T2, HSTATUS_SPV
++        bnez    T2, guest_\__MODE__\()epc
++        csrr    T2, CSR_SATP
++        srli    T2, T2, MODE_LSB
++        bnez    T2, sv_\__MODE__\()epc
++        j       vmem_adj_\__MODE__\()epc
++guest_\__MODE__\()epc:
++        csrr    T2, CSR_HGATP
++        srli    T2, T2, MODE_LSB
++        bnez    T2, sv_\__MODE__\()epc
+  // extract and test vsatp.MODE!=bare; if so, VA, skip reloc
+         csrr    T2, CSR_VSATP
+         srli    T2, T2, MODE_LSB
+-        LI(     T4, 1*sv_area_sz)
++        LI(     T4, 2*sv_area_sz)                    // HS frame -> VS frame
+         add     T4, T4, sp
+         bnez    T2, sv_\__MODE__\()epc               // VS VA -> skip
+ .endif
+@@ -2364,7 +2411,7 @@ sv_\__MODE__\()tval:
+ 
+ skp_\__MODE__\()tval:
+ 
+-// --- Hypervisor-specific fields: mtval2 and mtinst (words 4-5) ---
++// --- Hypervisor-specific auxiliary fields (words 4-5) ---
+   .ifc \__MODE__ , M
+         csrr    T3, CSR_MISA            // skip mtval2, mtinst save if hypervisor is enabled (misa[7] (H)-1)
+         slli    T3, T3, UDB_MXLEN-7-1
+@@ -2381,6 +2428,14 @@ skp_\__MODE__\()tval:
+   .endif
+ 
+ 1:
++  .ifc \__MODE__ , H
++        sv_\__MODE__\()Htval:
++        csrr    T3, CSR_HTVAL
++        TRAP_SIGUPD(T4, T3, 4, sv_\__MODE__\()Htval, sv_Htval2_str)
++        sv_\__MODE__\()Htinst:
++        csrr    T3, CSR_HTINST
++        TRAP_SIGUPD(T4, T3, 5, sv_\__MODE__\()Htinst, sv_Htinst_str)
++  .endif
+ // --- Dispatch special exception handlers ---
+ dispatch_\__MODE__\()spcl_excpt_handler:
+         li      T2, int_hndlr_tblsz                // T2 = offset to exception dispatch table
+@@ -2727,10 +2782,10 @@ rtn_fm_mmode:
+ .endif  // end of M-mode rtn2mmode
+ 
+ //==============================================================================
+-// GOTO_SMODE RETURN HANDLER (S-mode only, legacy a0==0 path)
++// GOTO_SMODE RETURN HANDLER (S/HS host-U legacy a0==0 path)
+ //==============================================================================
+ 
+-.ifc \__MODE__ , S
++.if host_s_tsbi
+ 
+ \__MODE__\()rtn2smode:                               // U-mode ecall with a0==0 -> return in S-mode
+         csrr    T3, CSR_XEPC                          // T3 = sepc (U-mode ecall address)
+

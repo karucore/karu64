@@ -16,10 +16,12 @@ module karu_regfile (
 );
     reg [63:0] rx [0:31];
 
+`ifndef KARU_ASIC
     integer i;
     initial begin
         for (i = 0; i < 32; i = i + 1) rx[i] = 64'b0;
     end
+`endif
 
     always @(posedge clk) begin
         if (we && rd != 5'd0)

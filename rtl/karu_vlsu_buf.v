@@ -24,6 +24,7 @@ module karu_vlsu_buf #(
     input  wire         vm_q,
     input  wire [`KARU_VLEN-1:0] v0_q,
     output reg  [127:0] asm_gran,
+    output reg  [15:0] asm_be,
     output reg  [127:0] st_wdata,
     output reg  [15:0]  st_strb,
 
@@ -79,18 +80,16 @@ module karu_vlsu_buf #(
     reg [127:0] msel;
     reg act;
     always @(*) begin
-        asm_gran = regbuf[rg[RGW-1:0]];
+        asm_gran = 128'b0;
+        asm_be = 16'b0;
         for (k = 0; k < 16; k = k + 1) begin
             bi  = ({26'b0, rg} << 4) + k[31:0];
             ej  = bi >> eew_q;
             act = vm_q || v0_q[ej[7:0]];
             sa  = {28'b0, boff} + bi;
             msel = membuf[sa[31:4]];
-            asm_gran[k*8 +: 8] =
-                (bi >= nbytes) ? regbuf[rg[RGW-1:0]][k*8 +: 8] :
-                (bi <  vst_b)  ? regbuf[rg[RGW-1:0]][k*8 +: 8] :
-                act            ? msel[{sa[3:0], 3'b000} +: 8]
-                               : regbuf[rg[RGW-1:0]][k*8 +: 8];
+            asm_be[k] = (bi < nbytes) && (bi >= vst_b) && act;
+            asm_gran[k*8 +: 8] = msel[{sa[3:0], 3'b000} +: 8];
         end
     end
 

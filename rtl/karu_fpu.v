@@ -5,8 +5,9 @@
 //  (double, fmt=1) precision -- waits for its done, and presents a
 //  single req/busy/done/res/flags handshake to the core.
 //
-//  Combinational ops (sgnj, class, cmp, fmv, min/max, cvt) latch on
-//  the req cycle and done pulses the same cycle.
+//  Immediate ops (sgnj, class, cmp, fmv, min/max) latch on the req cycle.
+//  Conversions register their operand first; fround additionally registers
+//  the intermediate integer so two converters never form one timing path.
 //
 //  Multi-cycle ops (mul, div, sqrt, add) drive the sub-unit's req for
 //  one cycle and propagate its done.
@@ -228,12 +229,15 @@ module karu_fpu (
     //  fround.s / froundnx.s: compose f2i (rtz/rm) -> i2f, reusing the
     //  TestFloat-validated converters; special-case NaN/zero/already-integer.
     //  (int32 always fits because the compose path is only taken for E<23.)
+    //  Shared S/D pipeline boundary. Operand, format and rounding mode remain
+    //  latched through ST_ROUND; all values, including specials, take this step.
+    reg [63:0] fround_int_q;
     wire [63:0] frs_f2i_res; wire [4:0] frs_f2i_fl;
     karu_f2i u_fr_f2i_s (.rm(cvt_rm_q), .is_long(1'b0), .is_unsigned(1'b0),
                          .a(cf_op1q), .res(frs_f2i_res), .flags(frs_f2i_fl));
     wire [31:0] frs_i2f_res;
     karu_i2f u_fr_i2f_s (.rm(cvt_rm_q), .is_long(1'b0), .is_unsigned(1'b0),
-                         .x(frs_f2i_res), .res(frs_i2f_res), .flags());
+                         .x(fround_int_q), .res(frs_i2f_res), .flags());
     wire        frs_sign = cf_op1q[31];
     wire [7:0]  frs_e    = cf_op1q[30:23];
     wire        frs_nan  = (frs_e == 8'hFF) && (cf_op1q[22:0] != 23'h0);
@@ -241,7 +245,7 @@ module karu_fpu (
     wire        frs_zero = (frs_e == 8'h00) && (cf_op1q[22:0] == 23'h0);
     wire signed [9:0] frs_E = $signed({2'b0, frs_e}) - 10'sd127;
     wire        frs_intq = (frs_E >= 10'sd23);              //  already integer (incl inf)
-    wire        frs_compose0 = (frs_f2i_res[31:0] == 32'h0);    //  rounds to zero
+    wire        frs_compose0 = (fround_int_q[31:0] == 32'h0);    //  rounds to zero
     wire [31:0] fround_s_res =
         frs_nan  ? `FP_S_QNAN :
         frs_zero ? cf_op1q :
@@ -301,7 +305,7 @@ module karu_fpu (
                            .a(cvt_op1_q), .res(frd_f2i_res), .flags(frd_f2i_fl));
     wire [63:0] frd_i2f_res;
     karu_i2f_d u_fr_i2f_d (.rm(cvt_rm_q), .is_long(1'b1), .is_unsigned(1'b0),
-                           .x(frd_f2i_res), .res(frd_i2f_res), .flags());
+                           .x(fround_int_q), .res(frd_i2f_res), .flags());
     wire        frd_sign = cvt_op1_q[63];
     wire [10:0] frd_e    = cvt_op1_q[62:52];
     wire        frd_nan  = (frd_e == 11'h7FF) && (cvt_op1_q[51:0] != 52'h0);
@@ -309,7 +313,7 @@ module karu_fpu (
     wire        frd_zero = (frd_e == 11'h0)   && (cvt_op1_q[51:0] == 52'h0);
     wire signed [12:0] frd_E = $signed({2'b0, frd_e}) - 13'sd1023;
     wire        frd_intq = (frd_E >= 13'sd52);
-    wire        frd_compose0 = (frd_f2i_res == 64'h0);
+    wire        frd_compose0 = (fround_int_q == 64'h0);
     wire [63:0] fround_d_res =
         frd_nan  ? `FP_D_QNAN :
         frd_zero ? cvt_op1_q :
@@ -338,6 +342,7 @@ module karu_fpu (
     wire [63:0] hd_res = 64'b0;
     wire [15:0] dh_res = 16'b0;     wire [4:0] dh_flags = 5'b0;
     //  D disabled: fround.d / fcvtmod.w.d (D ops) are trapped in decode.
+    wire [63:0] frd_f2i_res = 64'b0;
     wire [63:0] fround_d_res = 64'b0;   wire fround_d_nx = 1'b0; wire frd_snan_w = 1'b0;
     wire [63:0] fcvtmod_res = 64'b0;    wire [4:0] fcvtmod_flags = 5'b0;
 `endif
@@ -452,6 +457,7 @@ module karu_fpu (
     localparam ST_IDLE  = 3'd0;
     localparam ST_WAIT  = 3'd1;
     localparam ST_CVT   = 3'd2;     //  2nd cycle of the registered-operand conversion
+    localparam ST_ROUND = 3'd3;     //  fround only: registered integer -> FP result
 
     reg [2:0]   state;
     reg         is_d_q;             //  latched is_d for the in-flight op
@@ -498,7 +504,7 @@ module karu_fpu (
         //  2-cycle ST_CVT path (registered operand) for timing.
     end
 
-    //  conversion result mux (ST_CVT), selected from the REGISTERED op type.
+    //  Conversion result mux (ST_CVT / ST_ROUND), selected from registered type.
     //  FROM_H: dest S (is_d=0) NaN-boxed single, or D (is_d=1) raw 64.
     //  TO_H:   dest H always -> NaN-boxed half (upper 48 = 1s).
     //  Zfa cvt-path ops (registered in cvt_zfa_q): fround/froundnx/fcvtmod.
@@ -608,6 +614,18 @@ module karu_fpu (
                     end
                 end
                 ST_CVT: begin
+                    if (cvt_fround_q) begin
+                        fround_int_q <= cvt_isd_q ? frd_f2i_res : frs_f2i_res;
+                        state        <= ST_ROUND;
+                    end else begin
+                        res         <= cvt_res;
+                        fflags      <= cvt_flags;
+                        result_is_x <= cvt_is_x;
+                        done        <= 1'b1;
+                        state       <= ST_IDLE;
+                    end
+                end
+                ST_ROUND: begin
                     res         <= cvt_res;
                     fflags      <= cvt_flags;
                     result_is_x <= cvt_is_x;

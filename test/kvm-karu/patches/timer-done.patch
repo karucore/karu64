@@ -1,0 +1,28 @@
+From: Karu KVM integration fixture
+Subject: [PATCH] selftests: KVM: require RISC-V timer guest completion
+
+Pinned base: Linux 7.1.2 archive SHA-256
+37198c93727be247c9fb5309bb86cd5e496c61e5322cd8c4eca9476bb0b5883f
+
+The RISC-V timer guest emits UCALL_DONE only after all checked iterations.
+Unlike the shared host's original policy, do not accept UCALL_SYNC as a pass.
+Also verify the guest's interrupt count after copying its shared state back.
+The guest body, timer parameters and non-RISC-V host policy are unchanged.
+
+--- a/tools/testing/selftests/kvm/arch_timer.c
++++ b/tools/testing/selftests/kvm/arch_timer.c
+@@ -60,8 +60,14 @@ static void *test_vcpu_run(void *arg)
+ 	pthread_mutex_unlock(&vcpu_done_map_lock);
+ 
+ 	switch (get_ucall(vcpu, &uc)) {
++#ifndef __riscv
+ 	case UCALL_SYNC:
++#endif
+ 	case UCALL_DONE:
++#ifdef __riscv
++		sync_global_from_guest(vm, *shared_data);
++		TEST_ASSERT_EQ(shared_data->nr_iter, test_args.nr_iter);
++#endif
+ 		break;
+ 	case UCALL_ABORT:
+ 		sync_global_from_guest(vm, *shared_data);

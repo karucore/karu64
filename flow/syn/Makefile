@@ -2,7 +2,7 @@
 #	Convenience entry points for the karu64 open-source synth flow.
 #	Real work is in syn_yosys.sh and the tcl/ scripts.
 
-.PHONY: synth ibex area-matrix sweep depth clean help
+.PHONY: synth ibex area-matrix depth clean help
 
 help:
 	@echo "make synth           run yosys + opensta, leave a timestamped tree in syn_out/"
@@ -13,8 +13,6 @@ help:
 	@echo "make area-matrix CONFIGS=\"imac_m4d64 rv64gc_m4d64\"   run selected rows"
 	@echo "make area-matrix JOBS=4 CONFIGS=\"imac_m4d64 rv64gc_m4d64\"   run selected scalar rows in parallel"
 	@echo "make area-matrix KARU_NOSHARE=1 JOBS=2 CONFIGS=\"rv64gcv_default rv64gcv_zvkned rv64gcv_zvkg\"   skip SAT sharing for vector/Zvk rows"
-	@echo "make sweep           synth IMAC / IMAFC / IMAFDC / IMAFDCV; tabulate kGE (+ shallow depth)"
-	@echo "make sweep CONFIGS=\"imac imafc\"   sweep a subset"
 	@echo "make depth           FAST per-module logic depth (no abc/liberty); all modules + per-config max"
 	@echo "make depth MODULES=\"karu_fdiv karu_varith\"   probe a subset"
 	@echo "make clean           remove syn_out/"
@@ -47,11 +45,6 @@ area-matrix: export NAND2_UM2 := $(NAND2_UM2)
 area-matrix:
 	@test -f syn_setup.sh || (echo "syn_setup.sh missing"; exit 1)
 	./syn_area_matrix.sh
-
-#	make sweep [CONFIGS="imac imafc imafdc imafdcv"] [BASE_DEFINES="..."]
-sweep:
-	@test -f syn_setup.sh || (echo "syn_setup.sh missing"; exit 1)
-	./syn_sweep.sh
 
 #	make depth [MODULES="..."] [DEFINES="..."] [DEPTH_AIG=1] -- no liberty needed
 depth:

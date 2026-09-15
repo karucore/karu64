@@ -57,6 +57,9 @@ module karu_axi4_ram #(
 );
 	localparam	RAM_WORDS  = (1 << RAM_XADR) / 8;
 	localparam	RAM_IDX_HI = RAM_XADR - 1;
+	function automatic is_ram(input [31:0] a);
+		is_ram = a >= MEM_BASE && {1'b0,a} < ({1'b0,MEM_BASE} + (33'd1 << RAM_XADR));
+	endfunction
 
 	(* ram_style = "block" *)
 	reg [63:0]	ram [0:RAM_WORDS-1];
@@ -65,10 +68,10 @@ module karu_axi4_ram #(
 	initial begin
 		if (!$value$plusargs("hex=%s", hexarg))
 			hexarg = HEXFILE;
-		$readmemh(hexarg, ram);
+		if (hexarg != 0) $readmemh(hexarg, ram);
 	end
 `else
-	initial $readmemh(HEXFILE, ram);
+	initial if (HEXFILE != "") $readmemh(HEXFILE, ram);
 `endif
 
 	function [RAM_IDX_HI-3:0] widx(input [`AXI_ADDR_W-1:0] a);
@@ -83,6 +86,8 @@ module karu_axi4_ram #(
 	reg [`AXI_LEN_W-1:0] r_cnt;
 	reg [31:0]			r_wait;
 	reg [63:0]			r_q;
+	reg [31:0] r_addr, w_addr;
+	reg w_error;
 
 	always @(posedge clk) r_q <= ram[r_idx];
 
@@ -91,7 +96,7 @@ module karu_axi4_ram #(
 		s_rvalid  = (r_st == R_VLD);
 		s_rdata	  = r_q;
 		s_rid	  = r_id;
-		s_rresp	  = `AXI_RESP_OKAY;
+		s_rresp	  = is_ram(r_addr) ? `AXI_RESP_OKAY : `AXI_RESP_DECERR;
 		s_rlast	  = (r_st == R_VLD) && (r_cnt == 0);
 	end
 
@@ -101,6 +106,7 @@ module karu_axi4_ram #(
 		end else case (r_st)
 			R_IDLE: if (s_arvalid) begin
 				r_idx  <= widx(s_araddr);
+				r_addr <= s_araddr;
 				r_id   <= s_arid;
 				r_cnt  <= s_arlen;
 				r_wait <= RLAT;
@@ -113,6 +119,7 @@ module karu_axi4_ram #(
 					r_st <= R_IDLE;
 				end else begin
 					r_idx  <= r_idx + 1'b1;
+					r_addr <= r_addr + 8;
 					r_cnt  <= r_cnt - 1'b1;
 					r_wait <= RLAT;
 					r_st   <= R_RD;
@@ -134,7 +141,7 @@ module karu_axi4_ram #(
 		s_wready  = (w_st == W_DAT);
 		s_bvalid  = (w_st == W_RESP);
 		s_bid	  = w_id;
-		s_bresp	  = `AXI_RESP_OKAY;
+		s_bresp	  = w_error ? `AXI_RESP_DECERR : `AXI_RESP_OKAY;
 	end
 
 	always @(posedge clk) begin
@@ -142,13 +149,16 @@ module karu_axi4_ram #(
 			w_st <= W_AW;
 		end else case (w_st)
 			W_AW: if (s_awvalid) begin
+				w_addr <= s_awaddr; w_error <= 0;
 				w_idx <= widx(s_awaddr);
 				w_id  <= s_awid;
 				w_st  <= W_DAT;
 			end
 			W_DAT: if (s_wvalid) begin
+				if (!is_ram(w_addr)) w_error <= 1;
+				w_addr <= w_addr + 8;
 				for (b = 0; b < 8; b = b + 1)
-					if (s_wstrb[b])
+					if (s_wstrb[b] && is_ram(w_addr))
 						ram[w_idx][b*8 +: 8] <= s_wdata[b*8 +: 8];
 				w_idx <= w_idx + 1'b1;
 				if (s_wlast) w_st <= W_RESP;

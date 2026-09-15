@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Optional fixed-counter filtering; not part of the minimal RVA23S64 contract.
+name: karu64-rva23s64-smcntrpmf
+description: |
+  RVA23S64 feature-composition verification with optional Smcntrpmf enabled.
+  The mandatory leaf set, platform and harness are inherited unchanged.
+  This is a distinct CSR reference configuration, not a certification verdict.
+extension_versions:
+  Smcntrpmf: "= 1.0.0"

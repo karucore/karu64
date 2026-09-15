@@ -1,0 +1,13 @@
+--- a/model/core/interrupt_regs.sail
++++ b/model/core/interrupt_regs.sail
+@@ -140,7 +140,9 @@
+     VSSI = if currentlyEnabled(Ext_H) then 0b1 else 0b0,
+     // "if any guest external interrupts are implemented (GEILEN is nonzero),
+     //  bit 12 of mideleg ... is also read-only one."
+-    SGEI = if currentlyEnabled(Ext_H) & geilen > 0 then 0b1 else 0b0,
++    // Keep the model's writable HIE/MIE.SGEIE at GEILEN=0. A zero
++    // MIDELEG bit would instead require the corresponding HIE bit RO-zero.
++    SGEI = if currentlyEnabled(Ext_H) then 0b1 else 0b0,
+   ]
+ }
+ 

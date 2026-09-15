@@ -1,0 +1,60 @@
+--- a/config/config.json.in
++++ b/config/config.json.in
+@@ -695,7 +695,13 @@
+       "supported": true
+     },
+     "Zihpm": {
+-      "supported": true
++      "supported": true,
++      // Platform-defined WARL event-selector bits; Sscofpmf control bits
++      // have their own extension-dependent legalization.
++      "event_selector_mask": {
++        "len": 32,
++        "value": "0xffffffff"
++      }
+     },
+     "Zilx": {
+       "supported": true
+--- a/model/extensions/Zihpm/zihpm.sail
++++ b/model/extensions/Zihpm/zihpm.sail
+@@ -190,6 +190,9 @@ function hpmidx_from_bits(b : bits(5)) -> hpmidx = {
+   index
+ }
+ 
++// Implementations choose their supported platform-defined event encodings.
++let hpm_event_selector_mask : bits(32) = config extensions.Zihpm.event_selector_mask
++
+ function legalize_hpmevent(v : HpmEvent) -> HpmEvent = {
+   [ Mk_HpmEvent(zeros()) with
+     OF = if currentlyEnabled(Ext_Sscofpmf) then v[OF] else 0b0,
+@@ -200,7 +203,7 @@ function legalize_hpmevent(v : HpmEvent) -> HpmEvent = {
+     UINH  = if currentlyEnabled(Ext_Sscofpmf) & currentlyEnabled(Ext_U) then v[UINH] else 0b0,
+     VSINH = if currentlyEnabled(Ext_Sscofpmf) & currentlyEnabled(Ext_H) then v[VSINH] else 0b0,
+     VUINH = if currentlyEnabled(Ext_Sscofpmf) & currentlyEnabled(Ext_H) then v[VUINH] else 0b0,
+-    event = v[event],
++    event = v[event] & hpm_event_selector_mask,
+   ]
+ }
+ 
+--- a/c_emulator/riscv_sim.cpp
++++ b/c_emulator/riscv_sim.cpp
+@@ -603,6 +603,19 @@
+   const std::string base_source_desc =
+     opts.config_file.empty() ? "default configuration" : "configuration file " + opts.config_file;
+   jsoncons::json config_json = parse_json_or_exit(config_json_string, base_source_desc);
++  // Preserve existing configurations when this optional WARL parameter is
++  // omitted. Insert only this field, before overrides and schema validation;
++  // explicitly supplied (including malformed) values remain untouched.
++  if (config_json.is_object() && config_json.contains("extensions") &&
++      config_json["extensions"].is_object() && config_json["extensions"].contains("Zihpm") &&
++      config_json["extensions"]["Zihpm"].is_object()) {
++    auto &hpm = config_json["extensions"]["Zihpm"];
++    if (!hpm.contains("event_selector_mask")) {
++      hpm["event_selector_mask"] =
++        jsoncons::json::parse(R"({"len":32,"value":"0xffffffff"})");
++    }
++  }
++
+   for (const auto &override_path : opts.config_overrides) {
+     std::string override_json_string = read_file_to_string(override_path);
+     jsoncons::json override_item = parse_json_or_exit(override_json_string, "override file " + override_path);

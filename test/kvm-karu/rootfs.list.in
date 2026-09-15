@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+dir /proc 0555 0 0
+dir /sys 0555 0 0
+dir /tmp 1777 0 0
+dir /tests 0755 0 0
+file /init @OUT@/init 0755 0 0
+file /tests/ebreak_test @OUT@/selftests/riscv/ebreak_test 0755 0 0
+file /tests/arch_timer @OUT@/selftests/arch_timer 0755 0 0

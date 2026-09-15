@@ -1,10 +1,9 @@
 //  vresv_subj.c
-//  Directed test for the targeted reserved-encoding checks:
-//    (a) executing a vtype-dependent vector op with vtype.vill set -> illegal
-//    (b) indexed-load dest/index register-group overlap outside the RVV 5.2
-//        allowances -> illegal; the two LEGAL overlap shapes must execute.
-//  One ELF on karu64 and spike (spike enforces both rules) -- behavior must
-//  match: same cases trap, same cases execute with identical results.
+//  Directed reserved-encoding and legal-overlap regression: vill, indexed
+//  loads, widening/narrowing, extension/permute geometry and mask destinations.
+//  One ELF on Karu and Spike checks their common trapping policy and the
+//  allowed overlap shapes. ACT4/Sail covers strict mixed-EEW source rejection,
+//  for which Spike permits some reserved encodings to execute.
 
 #include <stdint.h>
 #include "sio_generic.h"
@@ -39,10 +38,222 @@ asm(".align 2\n"
     "  csrw  mepc, t0\n"
     "  mret\n");
 
+static void width_legality(void)
+{
+#define RESERVED(TYPE, INSN) do { \
+    uint32_t before = g_traps; \
+    asm volatile("vsetvli t0,zero," TYPE ",tu,mu\n" INSN \
+                 ::: "t0", "t1", "memory"); \
+    verdict(INSN " @ " TYPE, g_traps != before+1 || g_mcause != 2); \
+} while (0)
+    RESERVED("e64,m1", "vwaddu.vv v16,v8,v4");
+    RESERVED("e8,m8", "vwaddu.vv v16,v8,v0");
+    RESERVED("e16,m2", "vwaddu.vv v18,v8,v4");
+    RESERVED("e16,m2", "vwaddu.vv v16,v9,v4");
+    RESERVED("e16,m2", "vwaddu.vv v16,v8,v5");
+    RESERVED("e16,m1", "vwaddu.vv v16,v16,v4");
+    RESERVED("e16,m1", "vwaddu.vv v16,v8,v16");
+    RESERVED("e8,mf2", "vwaddu.vx v16,v16,zero");
+    RESERVED("e16,m1", "vwaddu.vv v0,v8,v4,v0.t");
+    RESERVED("e16,m1", "vwaddu.wv v16,v9,v4");
+    RESERVED("e16,m2", "vwaddu.wv v16,v8,v5");
+    RESERVED("e16,m1", "vwaddu.wv v16,v8,v16");
+    RESERVED("e64,m1", "vwaddu.wx v16,v8,zero");
+    RESERVED("e64,m1", "vwmulu.vv v16,v8,v4");
+    RESERVED("e8,m8", "vwmul.vx v16,v8,zero");
+    RESERVED("e16,m2", "vwmacc.vv v18,v8,v4");
+    RESERVED("e8,mf2", "vwmaccu.vv v16,v16,v4");
+    RESERVED("e64,m1", "vnsrl.wi v16,v8,1");
+    RESERVED("e8,m8", "vnsra.wx v16,v8,zero");
+    RESERVED("e16,m2", "vnsrl.wv v17,v8,v4");
+    RESERVED("e16,m1", "vnsrl.wi v16,v9,1");
+    RESERVED("e16,m2", "vnsrl.wv v16,v8,v5");
+    RESERVED("e16,m1", "vnsrl.wi v17,v16,1");
+    RESERVED("e16,m1", "vnclipu.wi v0,v8,1,v0.t");
+    RESERVED("e64,m1", "vnclip.wi v16,v8,1");
+    RESERVED("e8,m1", "vadd.vv v0,v8,v4,v0.t");
+    RESERVED("e8,m1", "vmerge.vvm v0,v8,v4,v0");
+    RESERVED("e32,m1", "vfadd.vv v0,v8,v4,v0.t");
+    RESERVED("e8,m1", "vle8.v v0,(zero),v0.t");
+    RESERVED("e8,m1", "vmsbf.m v0,v8,v0.t");
+    RESERVED("e8,m1", "vmsif.m v0,v8,v0.t");
+    RESERVED("e8,m1", "vmsof.m v0,v8,v0.t");
+    RESERVED("e64,m1", "vmsbf.m v0,v8,v0.t");
+    RESERVED("e64,m1", "vmsif.m v0,v8,v0.t");
+    RESERVED("e64,m1", "vmsof.m v0,v8,v0.t");
+    RESERVED("e8,m1", "vslideup.vi v8,v8,0");
+    RESERVED("e8,m2", "vslideup.vx v8,v8,zero");
+    RESERVED("e8,m1", "vslide1up.vx v8,v8,zero");
+    RESERVED("e32,m1", "vfslide1up.vf v8,v8,f0");
+    RESERVED("e8,m1", "vrgather.vv v8,v8,v4");
+    RESERVED("e8,m2", "vrgather.vv v8,v4,v8");
+    RESERVED("e32,m1", "vfwadd.vv v8,v8,v4");
+    RESERVED("e64,m1", "vfwredusum.vs v16,v8,v4");
+    RESERVED("e64,m1", "vwredsum.vs v16,v8,v4");
+    RESERVED("e16,m2", "vzext.vf2 v8,v8");
+    RESERVED("e32,m4", "vsext.vf4 v8,v9");
+    RESERVED("e64,m8", "vzext.vf8 v8,v9");
+    RESERVED("e8,m1", "vcompress.vm v8,v8,v0");
+    RESERVED("e8,m1", "vcompress.vm v0,v8,v0");
+#undef RESERVED
+    uint32_t before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e32,m2,tu,mu\n vmv.v.i v16,7\n"
+        "vsetvli t0,zero,e16,m1,tu,mu\n vmv.v.i v8,3\n"
+        "vwaddu.wv v16,v16,v8\n"
+        "vsetvli t0,zero,e32,m2,tu,mu\n vse32.v v16,(%0)\n"
+        :: "r"(dst) : "t0", "t1", "memory");
+    int bad = g_traps != before;
+    for (int i=0; i<16; ++i) if (((uint32_t *)dst)[i] != 10) ++bad;
+    verdict("widen .w legal same-wide-source overlap", bad);
+    before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e16,m1,tu,mu\n"
+        "vnsrl.wi v16,v16,1\n vse16.v v16,(%0)\n"
+        :: "r"(dst) : "t0", "t1", "memory");
+    bad = g_traps != before;
+    for (int i=0; i<16; ++i) if (((uint16_t *)dst)[i] != 5) ++bad;
+    verdict("narrow legal low overlap", bad);
+    before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e16,m1,tu,mu\n"
+        "vmv.v.i v0,-1\n vmv.v.i v2,1\n"
+        "vwaddu.vv v4,v0,v2\n"
+        "vsetvli t0,zero,e32,m2,tu,mu\n vse32.v v4,(%0)\n"
+        :: "r"(dst) : "t0", "t1", "memory");
+    bad = g_traps != before;
+    for (int i=0; i<16; ++i) if (((uint32_t *)dst)[i] != 65536) ++bad;
+    verdict("widen legal unmasked source v0", bad);
+    before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e16,m1,tu,mu\n"
+        "vmv.v.i v0,-1\n vmv.v.i v2,1\n"
+        "vmseq.vv v0,v2,v2,v0.t\n"
+        "vmv.v.i v0,-1\n vredsum.vs v0,v2,v2,v0.t\n"
+        "vse16.v v0,(%0)\n"
+        :: "r"(dst) : "t0", "t1", "memory");
+    verdict("masked v0 mask/scalar-reduction exceptions", g_traps != before || ((uint16_t *)dst)[0] != 17);
+    before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e32,m1,tu,mu\n vmv.v.i v0,-1\n"
+        "vmv.v.i v2,0\n vmfeq.vv v0,v2,v2,v0.t\n"
+        "vmv.v.i v0,-1\n vfredosum.vs v0,v2,v2,v0.t\n"
+        "vse32.v v0,(%0)\n"
+        :: "r"(dst) : "t0", "t1", "memory");
+    verdict("masked v0 FP mask/reduction exceptions", g_traps != before || ((uint32_t *)dst)[0] != 0);
+}
+
+static void mask_exceptions(void)
+{
+    // Both min/max reductions may write v0 while reading its original mask.
+    // Nonzero inputs ensure that merely not trapping is insufficient to pass.
+#define FP_REDUCE(SEW, OP, ONE, TWO, EXPECT, CTYPE) do { \
+    uint32_t before = g_traps; \
+    asm volatile( \
+        "vsetvli t0,zero," SEW ",m1,tu,mu\n vmv.v.i v0,-1\n" \
+        "vmv.v.x v8,%1\n vmv.v.x v9,%2\n" \
+        OP " v0,v8,v9,v0.t\n vse" #CTYPE ".v v0,(%0)\n" \
+        :: "r"(dst), "r"(TWO), "r"(ONE) \
+        : "t0", "t1", "memory", "v0", "v8", "v9", "vl", "vtype"); \
+    verdict(OP " masked vd=v0 @ " SEW, \
+            g_traps != before || ((uint##CTYPE##_t *)dst)[0] != (EXPECT)); \
+} while (0)
+    FP_REDUCE("e32", "vfredmin.vs", 0x3f800000UL, 0x40000000UL, 0x3f800000U, 32);
+    FP_REDUCE("e32", "vfredmax.vs", 0x3f800000UL, 0x40000000UL, 0x40000000U, 32);
+    FP_REDUCE("e64", "vfredmin.vs", 0x3ff0000000000000UL, 0x4000000000000000UL, 0x3ff0000000000000UL, 64);
+    FP_REDUCE("e64", "vfredmax.vs", 0x3ff0000000000000UL, 0x4000000000000000UL, 0x4000000000000000UL, 64);
+#undef FP_REDUCE
+    // Prefix masks may still write v0 when unmasked, or another destination
+    // when masked. Check all three selectors, not just the rejected forms.
+#define PREFIX(OP, VD, MASK, EXPECT) do { \
+    uint32_t before = g_traps; \
+    asm volatile( \
+        "vsetivli t0,8,e8,m1,tu,mu\n vmv.v.i v8,0\n" \
+        "li t0,16\n vmv.s.x v8,t0\n vmv.v.i v0,-1\n" \
+        OP " " VD ",v8" MASK "\n vsm.v " VD ",(%0)\n" \
+        :: "r"(dst) : "t0", "t1", "memory", "v0", "v4", "v8", "vl", "vtype"); \
+    verdict(OP " " VD MASK " legal", g_traps != before || dst[0] != (EXPECT)); \
+} while (0)
+    PREFIX("vmsbf.m", "v0", "", 0x0f);
+    PREFIX("vmsif.m", "v0", "", 0x1f);
+    PREFIX("vmsof.m", "v0", "", 0x10);
+    PREFIX("vmsbf.m", "v4", ",v0.t", 0x0f);
+    PREFIX("vmsif.m", "v4", ",v0.t", 0x1f);
+    PREFIX("vmsof.m", "v4", ",v0.t", 0x10);
+#undef PREFIX
+}
+
+static void vtype_legality(void)
+{
+    const uint64_t vill = UINT64_C(1) << 63;
+    uint64_t vt, vl, rd, start;
+    uint32_t before;
+
+    // All XLEN bits matter, even when the low fields describe legal e16,m2.
+    // Seed nonzero vl/vstart so an invalid request must actively clear them.
+    for (unsigned bit = 8; bit < 64; bit++) {
+        uint64_t request = (UINT64_C(1) << bit) | 9;
+        before = g_traps;
+        asm volatile(
+            "vsetvli t0,zero,e16,m2,tu,mu\n"
+            "csrwi vstart,3\n"
+            "vsetvl %[rd],zero,%[request]\n"
+            "csrr %[vt],vtype\n"
+            "csrr %[vl],vl\n"
+            "csrr %[start],vstart\n"
+            : [rd]"=&r"(rd), [vt]"=&r"(vt), [vl]"=&r"(vl),
+              [start]"=&r"(start)
+            : [request]"r"(request) : "t0", "t1", "memory");
+        sio_puts("vtype bit "); put_dec(bit); sio_puts(": ");
+        verdict("vsetvl rejects unsupported bit",
+                g_traps != before || vt != vill || vl != 0 || rd != 0 || start != 0);
+    }
+
+    // Linux __riscv_v_vstate_discard requests only vill, with rs1=x0.
+    before = g_traps;
+    asm volatile(
+        "vsetvli t0,zero,e8,m1,tu,mu\n"
+        "vsetvl %[rd],zero,%[request]\n"
+        "csrr %[vt],vtype\n"
+        "csrr %[vl],vl\n"
+        : [rd]"=&r"(rd), [vt]"=&r"(vt), [vl]"=&r"(vl)
+        : [request]"r"(vill) : "t0", "t1", "memory");
+    verdict("vill-only request clears vl and sets canonical vtype",
+            g_traps != before || vt != vill || vl != 0 || rd != 0);
+    before = g_traps;
+    asm volatile("vadd.vv v1,v2,v3" ::: "t0", "t1", "memory");
+    verdict("vill-only request makes vadd trap", g_traps != before+1 || g_mcause != 2);
+
+    // Legal register and immediate forms recover from vill. Exercise the
+    // normal AVL path as well as the rs1=x0 VLMAX path above.
+    before = g_traps;
+    asm volatile(
+        "vsetvl %[rd],%[avl],%[request]\n"
+        "csrr %[vt],vtype\n"
+        "csrr %[vl],vl\n"
+        : [rd]"=&r"(rd), [vt]"=&r"(vt), [vl]"=&r"(vl)
+        : [avl]"r"(5UL), [request]"r"(9UL) : "t0", "t1", "memory");
+    verdict("legal vsetvl recovers from vill",
+            g_traps != before || vt != 9 || vl != 5 || rd != 5);
+    before = g_traps;
+    asm volatile(
+        "vsetvl t0,zero,%[request]\n"
+        "vsetivli %[rd],5,e8,m1,ta,ma\n"
+        "csrr %[vt],vtype\n"
+        "csrr %[vl],vl\n"
+        "vadd.vv v1,v2,v3\n"
+        : [rd]"=&r"(rd), [vt]"=&r"(vt), [vl]"=&r"(vl)
+        : [request]"r"(vill) : "t0", "t1", "memory");
+    verdict("vsetivli recovers from vill and vadd executes",
+            g_traps != before || vt != 0xc0 || vl != 5 || rd != 5);
+}
+
 int main(void){
     int i; uint32_t t0n; uint64_t vtype_rd;
     for(i=0;i<256;i++) mem[i]=(uint8_t)(0x40+i);
     asm volatile("la t0, vresv_tvec\ncsrw mtvec, t0":::"t0");
+
+    vtype_legality();
 
     //  ==== R1: vill set -> vadd traps illegal; vtype.vill readable ====
     t0n=g_traps;
@@ -138,6 +349,8 @@ int main(void){
     asm volatile(".word 0xFFFFFFFF\n");
     verdict("32b illegal vectors cause 2", !(g_traps==t0n+1 && g_mcause==2));
 
+    width_legality();
+    mask_exceptions();
     if(fails){ sio_puts("[VRESV] FAILURES: "); put_dec(fails); sio_putc('\n'); }
     else       sio_puts("[VRESV] ALL PASS\n");
     sio_putc(4);

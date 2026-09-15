@@ -12,7 +12,9 @@
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
-module linux_tb (
+module linux_tb #(
+	parameter integer RAM_BYTES = 32 * 1024 * 1024
+) (
 	input  wire			clk,
 	//	Pass/fail exit channel: firmware writes a 32-bit code to SIM_EXIT_ADDR
 	//	(0 = pass, non-zero = fail); the bench latches it + $finishes, and
@@ -20,13 +22,36 @@ module linux_tb (
 	//	real pass/fail rather than always-0).
 	output reg  [31:0]	sim_exit_code,
 	output reg			sim_exit_valid
+`ifdef TEST_LINUX_AXI
+	// The shared AXI transport bench drives this exact responder while the
+	// real CPU is held in reset. Production Linux builds have no test ports.
+	,input wire test_rst
+	,input wire [`AXI_ID_W-1:0] imem_arid, dmem_arid, dmem_awid
+	,input wire [31:0] imem_araddr, dmem_araddr, dmem_awaddr
+	,input wire [7:0] imem_arlen, dmem_arlen, dmem_awlen
+	,input wire [2:0] imem_arsize, dmem_arsize, dmem_awsize
+	,input wire [1:0] imem_arburst, dmem_arburst, dmem_awburst
+	,input wire [2:0] imem_arprot, dmem_arprot, dmem_awprot
+	,input wire imem_arvalid, imem_rready, dmem_arvalid, dmem_rready
+	,input wire dmem_awvalid, dmem_wvalid, dmem_wlast, dmem_bready
+	,input wire [63:0] dmem_wdata
+	,input wire [7:0] dmem_wstrb
+	,output reg imem_arready, imem_rvalid, imem_rlast
+	,output reg dmem_arready, dmem_rvalid, dmem_rlast
+	,output reg dmem_awready, dmem_wready, dmem_bvalid
+	,output reg [`AXI_ID_W-1:0] imem_rid, dmem_rid, dmem_bid
+	,output reg [63:0] imem_rdata, dmem_rdata
+	,output reg [1:0] imem_rresp, dmem_rresp, dmem_bresp
+	,output wire irq_timer, irq_software, irq_ext_m, irq_ext_s
+`endif
 );
 `ifdef VERILATOR
+`ifndef TEST_LINUX_AXI
 	import "DPI-C" function int linux_uart_getchar();
+`endif
 `endif
 	localparam [63:0] RESET_PC	= 64'h0000_0000_0000_1000;
 	localparam [63:0] RAM_BASE	= 64'h0000_0000_8000_0000;
-	localparam integer RAM_BYTES	= 32 * 1024 * 1024;
 	localparam integer SRAM_BYTES = 64 * 1024;
 	localparam [31:0] SRAM_BASE	= 32'h0001_0000;
 	localparam [31:0] UART_BASE	= 32'h1000_0000;
@@ -50,7 +75,7 @@ module linux_tb (
 			ram[i] = 8'b0;
 		for (i = 0; i < SRAM_BYTES; i = i + 1)
 			sram[i] = 8'b0;
-
+`ifndef TEST_LINUX_AXI
 		if (!$value$plusargs("img=%s", img_file))
 			img_file = "../karudeb/build/karu64-rv64imac-image/flat.img";
 		if (!$value$plusargs("dtb=%s", dtb_file))
@@ -75,17 +100,32 @@ module linux_tb (
 		nread = $fread(ram, fd, fdt_addr - RAM_BASE[31:0]);
 		$fclose(fd);
 		$display("[LINUX-TB] loaded %0d-byte DTB at 0x%08h from %0s",
-			nread, fdt_addr, dtb_file);
+				nread, fdt_addr, dtb_file);
+`endif
 	end
 
 	reg [63:0] cyc = 0;
+`ifdef TEST_LINUX_AXI
+	wire rst = test_rst;
+	wire core_rst = 1'b1;
+`else
 	wire rst = cyc < 8;
+	wire core_rst = rst;
+`endif
 	wire trap;
 	wire timer_irq;
+	wire software_irq;
 	wire external_irq_m;
 	wire external_irq_s;
+`ifdef TEST_LINUX_AXI
+	assign irq_timer = timer_irq;
+	assign irq_software = software_irq;
+	assign irq_ext_m = external_irq_m;
+	assign irq_ext_s = external_irq_s;
+`endif
 
 	//	== imem AXI4 slave ==
+`ifndef TEST_LINUX_AXI
 	wire [`AXI_ID_W-1:0]		imem_arid;
 	wire [`AXI_ADDR_W-1:0]	imem_araddr;
 	wire [`AXI_LEN_W-1:0]	imem_arlen;
@@ -133,10 +173,19 @@ module linux_tb (
 	reg [`AXI_RESP_W-1:0]	dmem_bresp;
 	reg						dmem_bvalid;
 	wire					dmem_bready;
+`endif
 	reg						dmem_r_pending;
 	reg [`AXI_ID_W-1:0]		dmem_r_id;
 	reg [31:0]				dmem_r_addr;
 	reg [`AXI_LEN_W-1:0]	dmem_r_cnt;
+	reg [1:0] dmem_r_resp;
+	reg dmem_w_active;
+	reg [31:0] dmem_w_addr;
+	reg [7:0] dmem_w_left;
+	reg [1:0] dmem_w_resp, dmem_b_resp;
+	wire [31:0] wr_addr = dmem_w_active ? dmem_w_addr : dmem_awaddr;
+	wire [7:0] wr_left = dmem_w_active ? dmem_w_left : dmem_awlen;
+	wire wr_commit;
 
 	function automatic is_ram(input [31:0] a);
 		is_ram = (a >= RAM_BASE[31:0]) && (a < RAM_BASE[31:0] + RAM_BYTES);
@@ -163,6 +212,28 @@ module linux_tb (
 	function automatic is_eth(input [31:0] a);
 		is_eth = (a[31:20] == 12'h110);
 	endfunction
+	function automatic data_mapped(input [31:0] a);
+		data_mapped = is_ram(a) || is_sram(a) || is_uart(a) ||
+			is_clint(a) || is_plic(a) || is_eth(a) || a == SIM_EXIT_ADDR;
+	endfunction
+	function automatic [1:0] write_frame_resp(input [31:0] a,
+		input [7:0] len, input [2:0] size, input [1:0] burst);
+		write_frame_resp = !data_mapped(a) ||
+			(len != 0 && !(is_ram(a) || is_sram(a))) ? `AXI_RESP_DECERR :
+			size > 3 || (len != 0 && (size != 3 || burst != `AXI_BURST_INCR))
+			? `AXI_RESP_SLVERR : `AXI_RESP_OKAY;
+	endfunction
+	wire [1:0] wr_saved_resp = dmem_w_active ? dmem_w_resp :
+		write_frame_resp(dmem_awaddr, dmem_awlen, dmem_awsize, dmem_awburst);
+	wire [1:0] wr_resp = wr_saved_resp != 0 ? wr_saved_resp :
+		!data_mapped(wr_addr) ? `AXI_RESP_DECERR :
+		dmem_wlast != (wr_left == 0) ? `AXI_RESP_SLVERR : `AXI_RESP_OKAY;
+	assign wr_commit = !rst && dmem_wvalid && dmem_wready && wr_resp == 0 && |dmem_wstrb;
+	wire rd_addr_mapped = data_mapped(dmem_araddr) ||
+		(dmem_araddr >= 32'h1000 && dmem_araddr < 32'h2000);
+	wire rd_req_ok = rd_addr_mapped && dmem_arsize <= 3 &&
+		(dmem_arlen == 0 || ((is_ram(dmem_araddr) || is_sram(dmem_araddr)) &&
+		 dmem_arsize == 3 && dmem_arburst == `AXI_BURST_INCR));
 
 	//	Sim pass/fail exit register: a write here ends the sim with that code.
 	localparam [31:0] SIM_EXIT_ADDR = 32'h0000_2000;	//	between boot ROM + SRAM
@@ -203,20 +274,16 @@ module linux_tb (
 		end
 	endfunction
 
-	reg [63:0] mtimecmp = 64'hffff_ffff_ffff_ffff;
-	wire [63:0] mtime = cyc;
-	assign timer_irq = (mtime >= mtimecmp);
-
-	function automatic [63:0] clint_word(input [31:0] a);
-		begin
-			if (a[15:3] == 13'h800)
-				clint_word = mtimecmp;
-			else if (a[15:3] == 13'h17ff)
-				clint_word = mtime;
-			else
-				clint_word = 64'b0;
-		end
-	endfunction
+	// One timer tick per simulated core cycle preserves the fixture DT's
+	// 25 MHz timebase convention. Reuse the real CLINT register implementation
+	// and feed its counter to rdtime/Sstc; writes to mtime change both views.
+	wire [63:0] mtime, clint_rdata;
+	karu_clint #(.CPU_CLK_HZ(1000000)) u_clint (
+		.clk(clk), .rst(rst), .raddr(dmem_araddr), .rdata(clint_rdata),
+		.we(wr_commit && is_clint(wr_addr)), .waddr(wr_addr),
+		.wstrb(dmem_wstrb), .wdata(dmem_wdata),
+		.mtip(timer_irq), .msip(software_irq), .mtime_o(mtime)
+	);
 
 	reg uart_dlab = 1'b0;
 	reg [7:0] uart_lcr = 8'b0;
@@ -235,16 +302,18 @@ module linux_tb (
 						  (uart_irq_rx ? 8'h04 :
 						   uart_irq_tx ? 8'h02 : 8'h01);
 
-	wire		plic_we = dmem_awvalid && dmem_awready &&
-						  dmem_wvalid && dmem_wready && is_plic(dmem_awaddr);
+	wire		plic_we = wr_commit && is_plic(wr_addr);
 	wire [63:0]	plic_rdata;
+	reg [63:0]	plic_rdata_q;
+	reg [63:0] uart_rdata_q, clint_rdata_q;
 	karu_plic u_plic (
 		.clk	(clk),
 		.rst	(rst),
-		.raddr	(dmem_r_addr),
+		.re     (dmem_arvalid && dmem_arready && rd_req_ok && is_plic(dmem_araddr)),
+		.raddr	(dmem_araddr),
 		.rdata	(plic_rdata),
 		.we		(plic_we),
-		.waddr	(dmem_awaddr[31:0]),
+		.waddr	(wr_addr),
 		.wstrb	(dmem_wstrb),
 		.wdata	(dmem_wdata),
 		.uart_irq	(uart_irq),
@@ -260,18 +329,17 @@ module linux_tb (
 	//	the B response on the bridge's *_done pulses.
 	wire			eth_irq, eth_busy, eth_rd_done, eth_wr_done;
 	wire [63:0]		eth_rd_data;
-	//	one-cycle req pulses, asserted exactly at AR/AW accept for an eth address
-	wire			eth_rd_req = dmem_arvalid && dmem_arready && is_eth(dmem_araddr);
-	wire			eth_wr_req = dmem_awvalid && dmem_awready &&
-							     dmem_wvalid  && dmem_wready  && is_eth(dmem_awaddr);
+	// One-cycle requests at accepted AR or the accepted, address-qualified W.
+	wire			eth_rd_req = dmem_arvalid && dmem_arready && rd_req_ok && is_eth(dmem_araddr);
+	wire			eth_wr_req = wr_commit && is_eth(wr_addr);
 	reg				eth_rd_ready;		//	bridge read data available, awaiting CPU
 	reg				eth_wr_inflight;	//	bridge write running, B deferred
 
 	karu_eth u_eth (
 		.clk	(clk),			.rst	(rst),
-		.rd_req	(eth_rd_req),	.rd_addr(dmem_araddr),
+		.rd_req	(eth_rd_req),	.rd_addr(dmem_araddr), .rd_size(dmem_arsize),
 		.rd_done(eth_rd_done),	.rd_data(eth_rd_data),
-		.wr_req	(eth_wr_req),	.wr_addr(dmem_awaddr[31:0]),
+		.wr_req	(eth_wr_req),	.wr_addr(wr_addr),
 		.wr_strb(dmem_wstrb),	.wr_data(dmem_wdata),
 		.wr_done(eth_wr_done),	.busy	(eth_busy),
 		.eth_irq(eth_irq)
@@ -313,6 +381,10 @@ module linux_tb (
 		.irq_m(u_plic.irq_m), .irq_s(u_plic.irq_s),
 		.claim_m(u_plic.claim_m), .claim_s(u_plic.claim_s),
 		.pending_1(u_plic.pending_1), .pending_2(u_plic.pending_2),
+		.in_service_1(u_plic.in_service_1), .in_service_2(u_plic.in_service_2),
+		.uart_irq(u_plic.uart_irq), .eth_irq(u_plic.eth_irq),
+		.re(u_plic.re), .raddr(u_plic.raddr), .we(u_plic.we),
+		.waddr(u_plic.waddr), .wstrb(u_plic.wstrb), .wdata(u_plic.wdata),
 		.enable_m(u_plic.enable_m), .enable_s(u_plic.enable_s),
 		.prio_1(u_plic.priority_1), .prio_2(u_plic.priority_2),
 		.thr_m(u_plic.threshold_m), .thr_s(u_plic.threshold_s)
@@ -340,11 +412,11 @@ module linux_tb (
 			else if (is_ram(a))
 				read_word = ram_word(a);
 			else if (is_uart(a))
-				read_word = uart_word(a);
+				read_word = uart_rdata_q;
 			else if (is_clint(a))
-				read_word = clint_word(a);
+				read_word = clint_rdata_q;
 			else if (is_plic(a))
-				read_word = plic_rdata;
+				read_word = plic_rdata_q;
 			else
 				read_word = 64'b0;
 		end
@@ -377,8 +449,6 @@ module linux_tb (
 					end
 					default: ;
 				endcase
-			end else if (is_clint(a) && a[15:3] == 13'h800) begin
-				mtimecmp[(a[2:0] * 8) +: 8] = v;
 			end
 		end
 	endtask
@@ -418,9 +488,11 @@ module linux_tb (
 		end
 	end
 
-	wire uart_rx_pop = dmem_rvalid && dmem_rready &&
-					   is_uart(dmem_r_addr) &&
-					   (dmem_r_addr[2:0] == 3'd0) && !uart_dlab;
+	// Pop only the byte sampled for this accepted read. A later RX arrival
+	// while its AXI response is stalled must remain available to the next read.
+	wire uart_rx_pop = dmem_arvalid && dmem_arready &&
+					   rd_req_ok && is_uart(dmem_araddr) && uart_rx_valid &&
+					   (dmem_araddr[2:0] == 3'd0) && !uart_dlab;
 	always @(posedge clk) begin
 		if (rst) begin
 			uart_rx_valid <= 1'b0;
@@ -428,6 +500,7 @@ module linux_tb (
 			uart_rx_valid <= 1'b0;
 		end else begin
 `ifdef VERILATOR
+`ifndef TEST_LINUX_AXI
 			if (!uart_rx_valid) begin
 				uart_ch = linux_uart_getchar();
 				if (uart_ch >= 0) begin
@@ -436,29 +509,38 @@ module linux_tb (
 				end
 			end
 `endif
+`endif
 		end
 	end
 
-	wire dmem_r_is_eth = is_eth(dmem_r_addr);
+	wire dmem_r_is_eth = is_eth(dmem_r_addr) && dmem_r_resp == 0;
 	always @(*) begin
 		//	The karu_eth bridge services one transaction at a time and ignores a
 		//	*_req asserted while busy, so don't accept an eth AR while it is busy
 		//	(covers a read arriving while an eth write is in flight; a second eth
 		//	read is already blocked by dmem_r_pending).
-		dmem_arready = !dmem_r_pending && (!is_eth(dmem_araddr) || !eth_busy);
+		dmem_arready = !dmem_r_pending && (!is_eth(dmem_araddr) ||
+			(!eth_busy && !eth_wr_inflight && !eth_wr_req));
 		//	eth reads are multi-cycle: only present data once the bridge is ready.
 		dmem_rvalid	 = dmem_r_pending && (!dmem_r_is_eth || eth_rd_ready);
 		dmem_rdata	 = dmem_r_is_eth ? eth_rd_data : read_word(dmem_r_addr);
 		dmem_rid	 = dmem_r_id;
-		dmem_rresp	 = `AXI_RESP_OKAY;
+		dmem_rresp	 = dmem_r_resp != 0 ? dmem_r_resp :
+			(data_mapped(dmem_r_addr) || (dmem_r_addr >= 32'h1000 && dmem_r_addr < 32'h2000))
+			? `AXI_RESP_OKAY : `AXI_RESP_DECERR;
 		dmem_rlast	 = dmem_rvalid && (dmem_r_cnt == 0);
 	end
 
 	always @(posedge clk) begin
 		if (rst) begin
 			dmem_r_pending <= 1'b0;
+			dmem_r_resp <= `AXI_RESP_OKAY;
 		end else if (!dmem_r_pending) begin
 			if (dmem_arvalid && dmem_arready) begin
+				if (rd_req_ok && is_uart(dmem_araddr)) uart_rdata_q <= uart_word(dmem_araddr);
+				if (rd_req_ok && is_clint(dmem_araddr)) clint_rdata_q <= clint_rdata;
+				if (rd_req_ok && is_plic(dmem_araddr)) plic_rdata_q <= plic_rdata;
+				dmem_r_resp <= rd_req_ok ? `AXI_RESP_OKAY : `AXI_RESP_DECERR;
 				dmem_r_addr <= dmem_araddr;
 				dmem_r_id <= dmem_arid;
 				dmem_r_cnt <= dmem_arlen;
@@ -576,8 +658,7 @@ module linux_tb (
 
 	wire					hpm_imem_ram_req = imem_arvalid && imem_arready && is_ram(imem_araddr);
 	wire					hpm_dmem_ram_read_req = dmem_arvalid && dmem_arready && is_ram(dmem_araddr);
-	wire					hpm_dmem_ram_write_req = dmem_awvalid && dmem_awready &&
-													 dmem_wvalid && dmem_wready && is_ram(dmem_awaddr);
+	wire					hpm_dmem_ram_write_req = wr_commit && is_ram(wr_addr);
 	wire [3:0]				hpm_wstrb_pop = {3'b0, dmem_wstrb[0]} + {3'b0, dmem_wstrb[1]} +
 											  {3'b0, dmem_wstrb[2]} + {3'b0, dmem_wstrb[3]} +
 											  {3'b0, dmem_wstrb[4]} + {3'b0, dmem_wstrb[5]} +
@@ -599,17 +680,14 @@ module linux_tb (
 	};
 
 	always @(*) begin
-		//	block new writes while a B is pending OR an eth write is in flight; and
-		//	don't accept an eth write while the bridge is busy (covers a write
-		//	arriving while an eth read is in flight -- karu_eth drops a *_req
-		//	asserted while busy, which would otherwise hang the AXI side).
-		dmem_awready = !dmem_b_pending && !eth_wr_inflight &&
-					   (!is_eth(dmem_awaddr) || !eth_busy);
-		dmem_wready	 = !dmem_b_pending && !eth_wr_inflight &&
-					   (!is_eth(dmem_awaddr) || !eth_busy);
+		// Keep AW independently until all W beats arrive. W may wait for AW;
+		// a held bridge operation or B response blocks the next transaction.
+		dmem_awready = !dmem_w_active && !dmem_b_pending && !eth_wr_inflight;
+		dmem_wready = !dmem_b_pending && !eth_wr_inflight &&
+			(dmem_w_active || dmem_awvalid) && (!is_eth(wr_addr) || !eth_busy);
 		dmem_bvalid	 = dmem_b_pending;
 		dmem_bid	 = dmem_b_id;
-		dmem_bresp	 = `AXI_RESP_OKAY;
+		dmem_bresp	 = dmem_b_resp;
 	end
 
 	integer b;
@@ -617,21 +695,39 @@ module linux_tb (
 		if (rst) begin
 			dmem_b_pending  <= 1'b0;
 			eth_wr_inflight <= 1'b0;
+			dmem_w_active <= 1'b0;
+			dmem_w_resp <= `AXI_RESP_OKAY;
+			dmem_b_resp <= `AXI_RESP_OKAY;
 		end else begin
 			if (dmem_b_pending && dmem_bready)
 				dmem_b_pending <= 1'b0;
-			if (dmem_awvalid && dmem_awready && dmem_wvalid && dmem_wready) begin
-				if (is_eth(dmem_awaddr)) begin
-					//	hand to the bridge (eth_wr_req pulses this cycle); defer B.
+			if (dmem_awvalid && dmem_awready) begin
+				dmem_w_active <= 1'b1;
+				dmem_w_addr <= dmem_awaddr;
+				dmem_w_left <= dmem_awlen;
+				dmem_w_resp <= write_frame_resp(dmem_awaddr, dmem_awlen, dmem_awsize, dmem_awburst);
+				dmem_b_id <= dmem_awid;
+			end
+			if (dmem_wvalid && dmem_wready) begin
+				dmem_w_resp <= wr_resp;
+				dmem_w_addr <= {wr_addr[31:3], 3'b0} + 32'd8;
+				if (wr_left != 0) dmem_w_left <= wr_left - 1'b1;
+				else dmem_w_left <= 0;
+				if (wr_commit && is_eth(wr_addr)) begin
+					// One accepted device beat starts the bridge; B follows done.
 					eth_wr_inflight <= 1'b1;
-					dmem_b_id <= dmem_awid;
-				end else begin
+				end else if (wr_commit) begin
 					for (b = 0; b < 8; b = b + 1) begin
 						if (dmem_wstrb[b])
-							write_byte(dmem_awaddr + b[31:0], dmem_wdata[b*8 +: 8]);
+							write_byte({wr_addr[31:3],3'b0} + b[31:0], dmem_wdata[b*8 +: 8]);
 					end
-					dmem_b_pending <= 1'b1;
-					dmem_b_id <= dmem_awid;
+				end
+				// Never acknowledge an incomplete burst. A malformed burst is
+				// poisoned and drained through WLAST without further side effects.
+				if (dmem_wlast) begin
+					dmem_w_active <= 1'b0;
+					dmem_b_resp <= wr_resp;
+					if (!eth_wr_req) dmem_b_pending <= 1'b1;
 				end
 			end
 			//	bridge finished the eth write -> now raise the B response.
@@ -681,8 +777,7 @@ module linux_tb (
 		sim_exit_code  = 32'd0;
 		sim_exit_valid = 1'b0;
 	end
-	wire sim_exit_we = dmem_awvalid && dmem_awready && dmem_wvalid && dmem_wready &&
-					   (dmem_awaddr == SIM_EXIT_ADDR);
+	wire sim_exit_we = wr_commit && wr_addr == SIM_EXIT_ADDR && |dmem_wstrb[3:0];
 	always @(posedge clk) begin
 		if (sim_exit_we) begin
 			sim_exit_code  <= dmem_wdata[31:0];
@@ -743,28 +838,42 @@ module linux_tb (
 	always @(posedge clk) begin
 		timer_irq_q <= timer_irq;
 		if (timer_irq & ~timer_irq_q)
-			$display("[IRQ] t=%0d MTIP^ mtime=%0d mtimecmp=%0d", cyc, mtime, mtimecmp);
-		if (dmem_awvalid && dmem_awready && dmem_wvalid && dmem_wready &&
-			dmem_awaddr[31:16] == 16'h0200 && dmem_awaddr[15:3] == 13'h800)
+			$display("[IRQ] t=%0d MTIP^ mtime=%0d mtimecmp=%0d", cyc, mtime, u_clint.mtimecmp);
+		if (wr_commit && wr_addr[31:16] == 16'h0200 && wr_addr[15:3] == 13'h800)
 			$display("[IRQ] t=%0d mtimecmp<=%0d (mtime=%0d)", cyc, dmem_wdata, mtime);
 	end
 `endif
 
 	karu64 #(
-		.RESET_PC(RESET_PC)
+		.RESET_PC(RESET_PC), .EXT_TIME(1)
 	) cpu (
 		.clk		(clk),
-		.rst		(rst),
+		.rst		(core_rst),
 		.trap		(trap),
 		.irq		(timer_irq),
+		.irq_software	(software_irq),
 		.irq_external_m	(external_irq_m),
 		.irq_external_s	(external_irq_s),
-		.time_in	(64'b0),		//	EXT_TIME=0: rdtime uses the cycle counter (sim mtime==cyc anyway)
+		.time_in	(mtime),
 		.uncache_page(32'h1000_0000),
 		.hpm_events	(hpm_events),
 		.cache_flush_req		(),
 		.cache_flush_invalidate	(),
 		.cache_flush_done		(1'b1),
+`ifdef TEST_LINUX_AXI
+		.imem_arid(), .imem_araddr(), .imem_arlen(), .imem_arsize(),
+		.imem_arburst(), .imem_arprot(), .imem_arvalid(), .imem_arready(1'b0),
+		.imem_rid(0), .imem_rdata(0), .imem_rresp(0), .imem_rlast(1'b0),
+		.imem_rvalid(1'b0), .imem_rready(),
+		.dmem_arid(), .dmem_araddr(), .dmem_arlen(), .dmem_arsize(),
+		.dmem_arburst(), .dmem_arprot(), .dmem_arvalid(), .dmem_arready(1'b0),
+		.dmem_rid(0), .dmem_rdata(0), .dmem_rresp(0), .dmem_rlast(1'b0),
+		.dmem_rvalid(1'b0), .dmem_rready(),
+		.dmem_awid(), .dmem_awaddr(), .dmem_awlen(), .dmem_awsize(),
+		.dmem_awburst(), .dmem_awprot(), .dmem_awvalid(), .dmem_awready(1'b0),
+		.dmem_wdata(), .dmem_wstrb(), .dmem_wlast(), .dmem_wvalid(), .dmem_wready(1'b0),
+		.dmem_bid(0), .dmem_bresp(0), .dmem_bvalid(1'b0), .dmem_bready()
+`else
 		.imem_arid		(imem_arid),	.imem_araddr	(imem_araddr),
 		.imem_arlen		(imem_arlen),	.imem_arsize	(imem_arsize),
 		.imem_arburst	(imem_arburst),	.imem_arprot	(imem_arprot),
@@ -788,6 +897,7 @@ module linux_tb (
 		.dmem_wready	(dmem_wready),
 		.dmem_bid		(dmem_bid),		.dmem_bresp		(dmem_bresp),
 		.dmem_bvalid	(dmem_bvalid),	.dmem_bready	(dmem_bready)
+`endif
 	);
 
 	wire _unused = &{imem_arsize, imem_arburst, imem_arprot,

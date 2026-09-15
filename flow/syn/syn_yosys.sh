@@ -10,11 +10,15 @@ set -o pipefail
 cd "$(dirname "$0")"
 
 if [ ! -f syn_setup.sh ]; then
-	echo "syn_setup.sh missing -- copy syn_setup.example.sh and edit." >&2
+	echo "syn_setup.sh missing -- incomplete synthesis flow checkout." >&2
 	exit 1
 fi
 # shellcheck source=/dev/null
 . ./syn_setup.sh
+
+if [ "${KARU_DIV_AUDIT_ONLY:-0}" = "1" ]; then
+	export KARU_NO_STA=1
+fi
 
 if [ ! -f "$KARU_LIB" ]; then
 	echo "KARU_LIB does not exist: $KARU_LIB" >&2
@@ -22,6 +26,40 @@ if [ ! -f "$KARU_LIB" ]; then
 fi
 
 mkdir -p "$KARU_OUT_DIR/generated" "$KARU_OUT_DIR/log" "$KARU_OUT_DIR/reports/timing"
+
+input_manifest() {
+	sha256sum "$KARU_LIB" syn_setup.sh syn_yosys.sh tcl/* sdc/*
+	find ../../rtl -type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' \) -print0 \
+		| sort -z | xargs -0 sha256sum
+}
+input_manifest > "$KARU_OUT_DIR/log/inputs.before.sha256"
+
+# Bind measurements to the actual working-tree sources, not only a commit ID.
+# Git commands here are read-only; builds never alter repository state.
+{
+	date -u '+UTC %Y-%m-%dT%H:%M:%SZ'
+	yosys -V
+	yosys_path=$(command -v yosys)
+	printf 'YOSYS_EXECUTABLE=%s\n' "$yosys_path"
+	sha256sum "$yosys_path"
+	yosys_abc_path=$(command -v yosys-abc)
+	printf 'YOSYS_ABC_EXECUTABLE=%s\n' "$yosys_abc_path"
+	sha256sum "$yosys_abc_path"
+	if [ "${KARU_NO_STA:-0}" != "1" ] && [ "${KARU_NO_STA:-}" != "yes" ]; then
+		sta -version
+		sta_path=$(command -v sta)
+		printf 'OPENSTA_EXECUTABLE=%s\n' "$sta_path"
+		sha256sum "$sta_path"
+	fi
+	if command -v git >/dev/null 2>&1 && git -C ../.. rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		git -C ../.. rev-parse HEAD
+		git -C ../.. status --short -- rtl flow/syn
+	fi
+	printf 'KARU_DEFINES=%s\nKARU_CLK_PS=%s\nKARU_ABC_UPRATE_PS=%s\n' "$KARU_DEFINES" "$KARU_CLK_PS" "$KARU_ABC_UPRATE_PS"
+	printf 'KARU_IN_PCT=%s\nKARU_OUT_PCT=%s\nKARU_NOSHARE=%s\n' "$KARU_IN_PCT" "$KARU_OUT_PCT" "${KARU_NOSHARE:-}"
+	printf 'KARU_NO_STA=%s\nKARU_ABC_FULL=%s\nKARU_ABC_FAST=%s\nKARU_FLATTEN=%s\nKARU_DIV_AUDIT_ONLY=%s\n' "${KARU_NO_STA:-}" "${KARU_ABC_FULL:-}" "${KARU_ABC_FAST:-}" "${KARU_FLATTEN:-}" "${KARU_DIV_AUDIT_ONLY:-}"
+	cat "$KARU_OUT_DIR/log/inputs.before.sha256"
+} > "$KARU_OUT_DIR/log/manifest.txt"
 
 #	Generate the SDC: substitute clock period & IO delay percentages
 #	from env into the template.
@@ -43,12 +81,29 @@ export KARU_OUT_DIR KARU_LIB KARU_CLK_PS KARU_ABC_UPRATE_PS
 echo "===== yosys synthesis ====="
 yosys -c tcl/yosys_run_synth.tcl 2>&1 | tee "$KARU_OUT_DIR/log/syn.log"
 
+if [ "${KARU_DIV_AUDIT_ONLY:-0}" = "1" ]; then
+	input_manifest > "$KARU_OUT_DIR/log/inputs.after.sha256"
+	cmp -s "$KARU_OUT_DIR/log/inputs.before.sha256" "$KARU_OUT_DIR/log/inputs.after.sha256" || {
+		echo "synthesis inputs changed during the structural audit" >&2
+		diff -u "$KARU_OUT_DIR/log/inputs.before.sha256" "$KARU_OUT_DIR/log/inputs.after.sha256" >&2 || true
+		exit 1
+	}
+	exit 0
+fi
+
 if [ "${KARU_NO_STA:-0}" = "1" ] || [ "${KARU_NO_STA:-}" = "yes" ]; then
 	echo "===== opensta skipped (KARU_NO_STA) ====="
 else
 	echo "===== opensta reports ====="
 	sta -no_init -no_splash tcl/sta_run_reports.tcl 2>&1 | tee "$KARU_OUT_DIR/log/sta.log"
 fi
+
+input_manifest > "$KARU_OUT_DIR/log/inputs.after.sha256"
+cmp -s "$KARU_OUT_DIR/log/inputs.before.sha256" "$KARU_OUT_DIR/log/inputs.after.sha256" || {
+	echo "synthesis inputs changed while the flow was running" >&2
+	diff -u "$KARU_OUT_DIR/log/inputs.before.sha256" "$KARU_OUT_DIR/log/inputs.after.sha256" >&2 || true
+	exit 1
+}
 
 echo
 echo "===== summary ====="

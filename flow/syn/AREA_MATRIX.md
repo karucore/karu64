@@ -1,345 +1,133 @@
-# Karu area matrix handoff
+# Karu area and timing estimates
 
-This is the fast, area-only scoping flow for the current `karu64` processor
-top. It is intended for cloud runs where we want NAND2 gate-equivalent numbers
-for feature and multiplier/divider choices before tightening the top-level
-scope.
+This file records the current release measurements for the `karu64` processor
+top. Older checkpoints and superseded tool runs are intentionally omitted;
+the retained output manifests under `_build/syn_out` bind each result to its
+exact RTL, scripts, tools and Liberty input.
 
-The matrix runner uses the same Nangate45/Yosys setup as `make synth`, but sets
-`KARU_NO_STA=1` for each row. It still uses the default fast ABC script
-(`abc_fast.script`) unless you explicitly set `KARU_ABC_FULL=1`. For vector
-scoping, use `KARU_NOSHARE=1` initially: it skips Yosys' SAT-based `share`
-pass, which otherwise dominates `karu_varith`/`karu_vlsu` runs.
+These are comparative NanGate45 standard-cell estimates. They are not an ASIC
+macro-area estimate, a signoff timing result or an FPGA utilization report.
+Memories are mapped to cells by this flow; use the maintained
+[`flow/asic` inventory](../asic/README.md) when planning SRAM replacement.
 
-## Run commands
+## Release setup
 
-From the repo root:
+- Yosys 0.69+24 (`d0e71cfb7`).
+- OpenSTA 3.1.0, resolved from `PATH` and fingerprinted in the run manifest.
+- NanGate45 typical Liberty; `NAND2_X1 = 0.798 um2`.
+- Hierarchical `synth -noshare`, no flattening.
+- Generic timing constraints with 30% input and 70% output budgets.
+- Full timing-oriented ABC mapping for the 5 ns run.
+- Fast ABC mapping with STA disabled for area comparison rows.
 
-```sh
-cd flow/syn
-```
+The release refresh measures the two affected crypto leaves, their common
+baseline and umbrella configurations, and the exact shipping composition. The
+minimal RVA23S64 row does not enable vector crypto, so the `.vs` correction
+cannot change its mapped logic.
 
-Recommended first cloud run: scalar/F/D and multiplier knobs.
+## Current results — 2026-09-15
 
-```sh
-PER_TIMEOUT=1800 \
-CONFIGS="imac_m4d64 imac_nob_m4d64 imac_min_m4d64 imacb_min_m4d64 imafc_m4d64 rv64gc_m4d64 rv64gc_allcomb rv64gc_m16 rv64gc_m64 rv64gc_fp_serial rv64gc_m64_fp_serial" \
-./syn_area_matrix.sh
-```
+All six corrected-source rows completed successfully. The before/after input
+manifests are byte-identical for every row; the summary CSV SHA-256 is
+`03516f4e84df287f79e03f5a98a175f8ecb03b5a47c9d32580344836c6ea0c8c`.
 
-For the processor-only scalar comparison, include the no-L1 rows:
+| Configuration | Top kGE | Top − memory kGE | Memory kGE | Varith kGE | Vcrypto kGE | Keccak kGE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `rv64gcv_default` | 3667.90 | 3273.16 | 394.74 | 2180.45 | 0.00 | 0.00 |
+| `rv64gcv_zvkned` | 3706.47 | 3311.74 | 394.74 | 2218.05 | 3.42 | 0.00 |
+| `rv64gcv_zvksed` | 3683.68 | 3288.95 | 394.74 | 2192.98 | 3.47 | 0.00 |
+| `rv64gcv_zvk` | 3806.98 | 3412.24 | 394.74 | 2318.30 | 10.44 | 0.00 |
+| `rv64gcv_zvk_keccak` | 3894.17 | 3499.44 | 394.74 | 2406.02 | 10.44 | 31.20 |
+| `rva23s64_ship` | 4390.60 | 3995.86 | 394.74 | 2543.86 | 10.44 | 31.20 |
 
-```sh
-PER_TIMEOUT=1800 \
-CONFIGS="imac_core_m4d64 imacb_core_m4d64" \
-./syn_area_matrix.sh
-```
+Area output:
+`_build/syn_out/area_matrix_zvk_vs_fsm_final_20260914/summary.csv`.
 
-Recommended second cloud run: vector, vector multiplier, Zvk leaves, and
-Keccak. Run the individual Zvk leaves before the umbrella rows; the umbrella
-`KARU_ZVK` row is too coarse to isolate a synthesis hot spot.
+Against the common RV64GCV+Zvbb baseline, the isolated Zvkned and Zvksed rows
+add 38.57 and 15.78 kGE respectively. All standard Zvk leaves together add
+139.08 kGE. Adding the Keccak instruction to that row adds 87.19 kGE at the
+top; this includes 31.20 kGE in the Keccak hierarchy and its wrapper/state
+integration in `karu_varith`. The exact shipping composition is larger than
+the feature-comparison rows because it also selects the profile, I-cache and
+shipping pipeline/counter options.
 
-```sh
-KARU_NOSHARE=1 JOBS=2 PER_TIMEOUT=7200 \
-CONFIGS="rv64gcv_default rv64gcv_vmul1 rv64gcv_vmul4 rv64gcv_vmul64 rv64gcv_zvkb rv64gcv_zvkned rv64gcv_zvknha rv64gcv_zvknhb rv64gcv_zvksed rv64gcv_zvksh rv64gcv_zvkg rv64gcv_zvk rv64gcv_keccak rv64gcv_zvk_keccak" \
-./syn_area_matrix.sh
-```
-
-`JOBS` runs multiple configs concurrently. On the 115 GiB server, `JOBS=2`
-peaked at 60.4 GiB for the vector/Zvk/Keccak batch. A previous `JOBS=4` trial
-on an 86 GB host reached ~78 GiB used during techmap, with no swap, so four-way
-parallelism is too close to the OOM edge. Rows are appended to `summary.csv` as
-jobs finish, so parallel output is completion-ordered rather than
-matrix-ordered.
-`KARU_NOSHARE=1` changes the coarse Yosys flow by adding `synth -noshare`; use
-it for first-pass vector deltas, then rerun selected rows without it if an exact
-same-flow number is needed.
-
-Full default matrix:
-
-```sh
-PER_TIMEOUT=7200 ./syn_area_matrix.sh
-```
-
-The Make wrapper passes the same environment through:
-
-```sh
-make area-matrix KARU_NOSHARE=1 JOBS=2 CONFIGS="rv64gcv_default rv64gcv_zvkned rv64gcv_zvkg rv64gcv_zvk rv64gcv_keccak rv64gcv_zvk_keccak" PER_TIMEOUT=7200
-```
-
-For unattended runs:
-
-```sh
-nohup env KARU_NOSHARE=1 JOBS=2 PER_TIMEOUT=7200 \
-  CONFIGS="rv64gcv_default rv64gcv_vmul1 rv64gcv_vmul4 rv64gcv_vmul64 rv64gcv_zvkb rv64gcv_zvkned rv64gcv_zvknha rv64gcv_zvknhb rv64gcv_zvksed rv64gcv_zvksh rv64gcv_zvkg rv64gcv_zvk rv64gcv_keccak rv64gcv_zvk_keccak" \
-  ./syn_area_matrix.sh > area_matrix.run.log 2>&1 &
-```
-
-## Outputs
-
-Each run creates `_build/syn_out/area_matrix_<timestamp>/`.
-
-Important files:
-
-- `summary.csv`: one appended row per completed, failed, or timed-out config.
-- `<config>.console.log`: full console log for that config.
-- `<config>/reports/area.rpt`: raw Yosys `stat -liberty` area report.
-- `rows.txt`: exact matrix rows used for this run.
-
-With `JOBS>1`, `summary.csv` and the console progress table are completion
-ordered. Join by the `config` column, not by row position.
-
-Monitor progress with:
-
-```sh
-tail -f _build/syn_out/area_matrix_*/summary.csv
-tail -f _build/syn_out/area_matrix_*/*.console.log
-```
-
-## CSV columns
-
-`kGE` is `area_um2 / NAND2_X1`, using `NAND2_X1 = 0.798 um2` by default.
-Override with `NAND2_UM2=<area>` if the library changes.
-
-The current `karu64` top includes more than just a processor core:
-
-- `kGE`: full current top.
-- `kGE_minus_karu_mem`: subtracts the hierarchy bucket for `karu_mem`.
-- `kGE_minus_karu_mem_sv39`: also subtracts the aggregate `karu_sv39` bucket.
-
-Those subtraction columns are for orientation only. For processor-only/no-MMU
-numbers, use the `*_core_*` rows, which synthesize with `KARU_NO_MEM` instead
-of subtracting the `karu_mem` hierarchy bucket after the fact.
-
-The remaining bucket columns come from Yosys hierarchy-area rows and are useful
-for attribution:
-
-- `karu_mem_kGE`: unified write-through L1/cache wrapper bucket.
-- `karu_sv39_kGE`: aggregate Sv39 walker bucket (IMMU + DMMU when S is enabled).
-- `karu_csr_kGE`: CSR/privilege block.
-- `karu_bitmanip_kGE`: scalar Zba/Zbb/Zbs unit.
-- `karu_m_kGE`: integer M extension.
-- `karu_fpu_kGE`, `karu_fregfile_kGE`: FP container and FP register file.
-- `karu_fmul_kGE`, `karu_fmul_d_kGE`: F/D standalone multipliers.
-- `karu_ffma_kGE`, `karu_ffma_d_kGE`: F/D fused multiply-add datapaths.
-- `karu_fdiv_kGE`, `karu_fdiv_d_kGE`: F/D dividers.
-- `karu_varith_kGE`: vector arithmetic container, including vector mul/div.
-- `karu_vcrypto_kGE`: standard Zvk crypto subunit.
-- `keccak_kGE`: Zvknhk `vkeccak.vi` permutation FSM and round datapath.
-
-Hierarchy bucket areas may be rounded by Yosys in the design hierarchy table.
-Use them for deltas and order-of-magnitude attribution; use `kGE` and the raw
-`area.rpt` when exact top area matters.
-
-## Matrix rows
-
-Scalar and FP rows:
-
-- `imac_m4d64`: RV64IMAC+B, no F/D/V/K.
-- `imac_nob_m4d64`: RV64IMAC, no scalar B, no F/D/V/K.
-- `imac_min_m4d64`: RV64IMAC, no B/S-mode/Sv39/HPM, no F/D/V/K.
-- `imacb_min_m4d64`: RV64IMAC+B, no S-mode/Sv39/HPM, no F/D/V/K.
-- `imac_core_m4d64`: RV64IMAC, no B/S-mode/Sv39/HPM/L1, no F/D/V/K.
-- `imacb_core_m4d64`: RV64IMAC+B, no S-mode/Sv39/HPM/L1, no F/D/V/K.
-- `imafc_m4d64`: RV64IMAFC+B, adds single-precision F.
-- `rv64gc_m4d64`: RV64GC+B, F+D, no V/K.
-- `rv64gc_allcomb`: RV64GC+B with 1-cycle M/F/D multiply and 1-cycle M divide.
-- `rv64gc_m16`: RV64GC+B with isolated 16-cycle integer multiply.
-- `rv64gc_m64`: RV64GC+B with isolated 64-cycle integer multiply.
-- `rv64gc_fp_serial`: RV64GC+B with serial F/D multiply and FMA.
-- `rv64gc_m64_fp_serial`: RV64GC+B with serial integer M plus serial F/D multiply and FMA.
-
-Vector and crypto rows:
-
-- `rv64gcv_default`: no explicit `KARU_DEFINES`; RTL non-SIM defaults resolve
-  to M/F/D mul4, div64, vector mul16, vector div64, perm lanes 2.
-- `rv64gcv_vmul1`: same defaults except 1-cycle vector multiply.
-- `rv64gcv_vmul4`: same defaults except 4-cycle vector multiply.
-- `rv64gcv_vmul64`: same defaults except 64-cycle vector multiply.
-- `rv64gcv_zvkb`: default vector core plus Zvk bit-manip glue
-  (`vandn`/`vbrev8`/`vrev8`/`vrol`/`vror`). This is lane logic and does not
-  instantiate `karu_vcrypto`, so expect its area delta under `karu_varith` or
-  `karu_vlane`, not `karu_vcrypto_kGE`.
-- `rv64gcv_zvkned`: default vector core plus Zvkned AES.
-- `rv64gcv_zvknha`: default vector core plus Zvknha SHA-256.
-- `rv64gcv_zvknhb`: default vector core plus Zvknhb SHA-256/SHA-512; this
-  implies Zvknha in `karu_ext.vh`.
-- `rv64gcv_zvksed`: default vector core plus Zvksed SM4.
-- `rv64gcv_zvksh`: default vector core plus Zvksh SM3.
-- `rv64gcv_zvkg`: default vector core plus Zvkg GHASH/GCM.
-- `rv64gcv_zvk`: default vector core plus all implemented standard Zvk leaves.
-- `rv64gcv_keccak`: default vector core plus Zvknhk `vkeccak.vi`.
-- `rv64gcv_zvk_keccak`: default vector core plus both Zvk and `vkeccak`.
-
-## Delta recipes
-
-Use `kGE_minus_karu_mem_sv39` first, then confirm with raw `area.rpt`.
-
-- F cost: `imafc_m4d64 - imac_m4d64`.
-- D cost: `rv64gc_m4d64 - imafc_m4d64`.
-- Scalar B cost: `imac_m4d64 - imac_nob_m4d64`; check
-  `karu_bitmanip_kGE`.
-- S-mode/Sv39/HPM scoped cost: compare `imac_nob_m4d64` with
-  `imac_min_m4d64`; check `karu_sv39_kGE` and `karu_csr_kGE`.
-- Scalar L1/cache wrapper cost: compare `imac_min_m4d64` with
-  `imac_core_m4d64`, or `imacb_min_m4d64` with `imacb_core_m4d64`;
-  check `karu_mem_kGE`.
-- Integer multiplier cost: compare `rv64gc_m4d64`, `rv64gc_m16`,
-  `rv64gc_m64`, and `rv64gc_allcomb`; check `karu_m_kGE`.
-- F/D multiplier and FMA cost: compare `rv64gc_m4d64`,
-  `rv64gc_fp_serial`, and `rv64gc_m64_fp_serial`; check `karu_fmul_*` and
-  `karu_ffma_*`.
-- Vector baseline cost: `rv64gcv_default - rv64gc_m4d64`.
-- Vector multiplier cost: compare `rv64gcv_vmul1`, `rv64gcv_default`,
-  `rv64gcv_vmul4`, and `rv64gcv_vmul64`; check `karu_varith_kGE`.
-- Zvk leaf costs: compare `rv64gcv_zvkb`, `rv64gcv_zvkned`,
-  `rv64gcv_zvknha`, `rv64gcv_zvknhb`, `rv64gcv_zvksed`, `rv64gcv_zvksh`, and
-  `rv64gcv_zvkg` against `rv64gcv_default`. Check `karu_vcrypto_kGE` for the
-  crypto leaves; check `karu_varith_kGE`/raw hierarchy for `rv64gcv_zvkb`.
-- Zvk umbrella cost: `rv64gcv_zvk - rv64gcv_default`; use this only after the
-  leaf rows identify which subextension is tractable.
-- Keccak cost: `rv64gcv_keccak - rv64gcv_default`; check `keccak_kGE`.
-
-## Extension gating facts
-
-`rtl/karu_ext.vh` cascades feature opt-outs:
-
-- `KARU_NO_F` also drops D, V, and K.
-- `KARU_NO_D` also drops V and K.
-- `KARU_NO_V` also drops K.
-- `KARU_NO_B` drops scalar Zba/Zbb/Zbs decode/datapath.
-- `KARU_NO_S` drops S-mode/Sv39 and ties fetch/data translation to PA=VA,
-  pruning the IMMU/DMMU walkers.
-- `KARU_NO_HPM` drops `mhpmcounter3..31` and `mhpmevent3..31`; `cycle`,
-  `time`, and `instret` remain.
-- `KARU_NO_MEM` drops the scalar L1/cache wrapper in non-vector builds and
-  connects the scalar LSU directly to the existing dmem arbiter. Vector builds
-  force `karu_mem` on because the VLSU uses its 128-bit vector port.
-
-Zvk and Keccak are opt-in only. `KARU_ZVK` enables all implemented standard
-Zvk leaves. The individual Zvk leaf knobs are `KARU_ZVKB`, `KARU_ZVKNED`,
-`KARU_ZVKNHA`, `KARU_ZVKNHB`, `KARU_ZVKSED`, `KARU_ZVKSH`, and `KARU_ZVKG`.
-`KARU_ZVKNHB` implies `KARU_ZVKNHA`. `KARU_ZVKB` is lane bit-manip glue and
-does not imply the shared `KARU_EN_ZVK`/`karu_vcrypto` plumbing. `KARU_KECCAK`
-enables the Zvknhk `vkeccak.vi` op. These are only effective when V is present.
-
-`syn_setup.sh` now preserves an intentionally empty `KARU_DEFINES`, so a matrix
-row with an empty define field passes no `-D` flags to Yosys and lets the RTL
-headers choose their non-SIM defaults.
-
-## Local checkpoint
-
-A local RV64IMAC smoke run completed before the full matrix was moved to cloud:
-
-```sh
-KARU_OUT_DIR="../../_build/syn_out/check_imac_20260617_171325" \
-KARU_DEFINES="KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64 KARU_NO_F" \
-KARU_NO_STA=1 ./syn_yosys.sh
-```
-
-Result:
-
-- full current top: 639.29 kGE.
-- minus `karu_mem`: 262.10 kGE.
-- minus `karu_mem` and two `karu_sv39` instances: 193.80 kGE.
-- real no-L1/no-S/no-HPM/no-B scalar row (`imac_core_m4d64`): 104.53 kGE.
-- real no-L1/no-S/no-HPM scalar+B row (`imacb_core_m4d64`): 121.13 kGE.
-
-The later local matrix attempt was intentionally stopped before any row
-completed; use the cloud run for real matrix data.
-
-Current 115 GiB server vector/Zvk/Keccak checkpoint (2026-09-11), using Yosys
-0.66+179, `KARU_NOSHARE=1`, and `PER_TIMEOUT=7200`. The ten feature rows ran
-with `JOBS=2` in a cgroup with `MemoryHigh=80G` and `MemoryMax=90G`; observed
-aggregate peak usage was 60.4 GiB, with no swap or throttling. The baseline
-and three umbrella rows ran serially. Raw outputs are in:
+The exact shipping timing row uses this composition:
 
 ```text
-_build/syn_out/area_matrix_server_first_20260911_091002/
-_build/syn_out/area_matrix_server_feature_rows_20260911_114800/
-_build/syn_out/area_matrix_server_remaining_20260911_095254/
+KARU_RVA23S64 KARU_ICACHE KARU_ZVK KARU_KECCAK
+KARU_M_MUL_CYCLES=4 KARU_M_DIV_CYCLES=64
+KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64
+KARU_V_LANE_PIPE KARU_V_CWB_STAGE
+KARU_SMCNTRPMF KARU_SSCOFPMF
 ```
 
-The ordered 14-row CSV is
-`_build/syn_out/area_matrix_server_complete_20260911.csv`. `_build/syn_out/`
-is not committed, so the completed rows are archived below.
+| Target | Register-to-register WNS | TNS | Critical path | Coverage/electrical |
+| --- | ---: | ---: | --- | --- |
+| 5 ns / 200 MHz | -0.2043 ns | -5.13 ns | vector widening/estimate path (`karu_varith` through `u_widen_b` and lane `u_est`) | input-to-register +1.5412 ns; register-to-output +2.6833 ns; no input-to-output paths; electrical-limit violations remain |
 
-Top-level and structural buckets:
+Timing output:
+`_build/syn_out/timing_rva23s64_ship_200_zvk_vs_fsm_final_20260914/`.
+The full-ABC timing netlist is independent of the fast area netlists; do not
+quote OpenSTA timing from an area row.
 
-| row | defines | status | area um2 | kGE | delta kGE | no `karu_mem` | no `karu_mem`/Sv39 | `karu_mem` | `karu_sv39` | `karu_csr` | wall |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `rv64gcv_default` | empty | ok | 2860101.160 | 3584.09 | +0.00 | 3196.87 | 3112.28 | 387.22 | 84.59 | 85.96 | 2130s |
-| `rv64gcv_vmul1` | `KARU_V_MUL_CYCLES=1` | ok | 4710860.532 | 5903.33 | +2319.24 | 5516.12 | 5431.53 | 387.22 | 84.59 | 85.96 | 2878s |
-| `rv64gcv_vmul4` | `KARU_V_MUL_CYCLES=4` | ok | 2865067.380 | 3590.31 | +6.22 | 3203.10 | 3118.51 | 387.22 | 84.59 | 85.96 | 2304s |
-| `rv64gcv_vmul64` | `KARU_V_MUL_CYCLES=64` | ok | 2858932.622 | 3582.62 | -1.47 | 3195.40 | 3110.81 | 387.22 | 84.59 | 85.96 | 2172s |
-| `rv64gcv_zvkb` | `KARU_ZVKB` | ok | 2895209.968 | 3628.08 | +43.99 | 3240.86 | 3156.28 | 387.22 | 84.59 | 85.96 | 2220s |
-| `rv64gcv_zvkned` | `KARU_ZVKNED` | ok | 2892067.444 | 3624.14 | +40.05 | 3236.93 | 3152.34 | 387.22 | 84.59 | 85.96 | 2345s |
-| `rv64gcv_zvknha` | `KARU_ZVKNHA` | ok | 2913249.556 | 3650.69 | +66.60 | 3263.47 | 3178.88 | 387.22 | 84.59 | 85.96 | 2165s |
-| `rv64gcv_zvknhb` | `KARU_ZVKNHB` | ok | 2913263.920 | 3650.71 | +66.62 | 3263.48 | 3178.90 | 387.22 | 84.59 | 85.96 | 2180s |
-| `rv64gcv_zvksed` | `KARU_ZVKSED` | ok | 2873908.688 | 3601.39 | +17.30 | 3214.17 | 3129.59 | 387.22 | 84.59 | 85.96 | 2264s |
-| `rv64gcv_zvksh` | `KARU_ZVKSH` | ok | 2888463.942 | 3619.63 | +35.54 | 3232.41 | 3147.82 | 387.22 | 84.59 | 85.96 | 2292s |
-| `rv64gcv_zvkg` | `KARU_ZVKG` | ok | 2881124.204 | 3610.43 | +26.34 | 3223.21 | 3138.62 | 387.22 | 84.59 | 85.96 | 2222s |
-| `rv64gcv_zvk` | `KARU_ZVK` | ok | 3007791.010 | 3769.16 | +185.07 | 3381.94 | 3297.36 | 387.22 | 84.59 | 85.96 | 2310s |
-| `rv64gcv_keccak` | `KARU_KECCAK` | ok | 2931337.822 | 3673.36 | +89.27 | 3286.14 | 3201.55 | 387.22 | 84.59 | 85.96 | 2227s |
-| `rv64gcv_zvk_keccak` | `KARU_ZVK KARU_KECCAK` | ok | 3076811.892 | 3855.65 | +271.56 | 3468.43 | 3383.85 | 387.22 | 84.59 | 85.96 | 2316s |
+A bounded retry with a tighter 2.5 ns internal ABC budget produced the same
+-0.2043 ns WNS and -5.13 ns TNS, at slightly higher mapped area, so the regular
+map above is retained. The estimate corresponds to about 192.1 MHz at zero
+register-to-register slack. The longest path begins at a `karu_varith` register,
+passes through a high-fanout buffer chain, `u_widen_b` and the lane estimate
+logic, and returns to `karu_varith`; it is not in the corrected AES/SM4 `.vs`
+source-address path.
 
-Compute and extension buckets:
+## Reproduce
 
-| row | `varith` | delta `varith` | `vcrypto` | `keccak` | `bitmanip` | `fpu` | `fregfile` | `karu_m` |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `rv64gcv_default` | 2155.39 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul1` | 4473.68 | +2318.29 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul4` | 2167.92 | +12.53 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_vmul64` | 2155.39 | +0.00 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkb` | 2205.51 | +50.12 | 0.00 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkned` | 2192.98 | +37.59 | 3.42 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvknha` | 2218.05 | +62.66 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvknhb` | 2218.05 | +62.66 | 8.58 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvksed` | 2167.92 | +12.53 | 3.47 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvksh` | 2192.98 | +37.59 | 9.54 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvkg` | 2180.45 | +25.06 | 4.60 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvk` | 2343.36 | +187.97 | 10.44 | 0.00 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_keccak` | 2243.11 | +87.72 | 0.00 | 31.20 | 17.67 | 491.23 | 30.45 | 20.55 |
-| `rv64gcv_zvk_keccak` | 2431.08 | +275.69 | 10.44 | 31.20 | 17.67 | 491.23 | 30.45 | 20.55 |
-
-Immediate deltas from this checkpoint:
-
-- `rv64gcv_vmul1` adds 2319.24 kGE at top level versus default; almost all of
-  it is in `karu_varith`. `rv64gcv_vmul4`, default `rv64gcv_default`
-  (`vmul16`), and `rv64gcv_vmul64` are effectively the same size in this flow.
-- Zvk leaf top-level deltas versus default are: `zvkb` +43.99 kGE, `zvkned`
-  +40.05 kGE, `zvknha` +66.60 kGE, `zvknhb` +66.62 kGE, `zvksed` +17.30 kGE,
-  `zvksh` +35.54 kGE, and `zvkg` +26.34 kGE.
-- `rv64gcv_zvk` adds 185.07 kGE at top level. The leaf deltas are not
-  additive because the umbrella row shares decode, sequencing, and
-  `karu_vcrypto` plumbing.
-- `rv64gcv_keccak` adds 89.27 kGE at top level. The explicit `keccak` bucket is
-  31.20 kGE; `karu_varith` also grows by 87.72 kGE.
-- `rv64gcv_zvk_keccak` adds 271.56 kGE at top level, matching the expected
-  `zvk` plus Keccak combination within rounding.
-
-Compared with the 2026-06-17 checkpoint, the default top is 517.39 kGE
-smaller and the `karu_varith` bucket is 551.38 kGE smaller. This is consistent
-with replacing the accidental runtime `/ epr` and `% epr` operators in
-`vfslide1up/down` with a shift and mask. The current run also uses a newer
-Yosys build, so the absolute change is not a controlled one-variable A/B;
-extension deltas remain close to the previous checkpoint.
-
-The earlier Zvk hang was isolated to the lane-side ZVKB byte/bit reversal
-frontend shape. `rtl/karu_vlane.v` now uses fixed-slice helper functions for
-`vbrev8`/`vrev8`; after that change the `rv64gcv_zvkb` and umbrella Zvk rows
-complete.
-
-## Custom rows
-
-Rows are `config|description|defines`. Provide a file:
+Run the exact shipping 200 MHz estimate from the repository root:
 
 ```sh
-MATRIX_FILE=/path/to/rows.txt PER_TIMEOUT=7200 ./syn_area_matrix.sh
+PATH=/path/to/opensta/bin:$PATH \
+KARU_LIB=/path/to/NangateOpenCellLibrary_typical.lib \
+KARU_DEFINES='KARU_RVA23S64 KARU_ICACHE KARU_ZVK KARU_KECCAK KARU_M_MUL_CYCLES=4 KARU_M_DIV_CYCLES=64 KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_SMCNTRPMF KARU_SSCOFPMF' \
+KARU_CLK_PS=5000 KARU_ABC_UPRATE_PS=2000 \
+KARU_ABC_FAST=0 KARU_ABC_FULL=1 KARU_NO_STA=0 \
+KARU_FLATTEN=0 KARU_NOSHARE=1 KARU_IN_PCT=30 KARU_OUT_PCT=70 \
+KARU_OUT_DIR=_build/syn_out/timing_rva23s64_ship_200 \
+  flow/syn/syn_yosys.sh
 ```
 
-Or pass rows directly:
+Run the affected area rows:
 
 ```sh
-MATRIX_ROWS='rv64gc_no_m|RV64GC without M|KARU_NO_M KARU_NO_V' ./syn_area_matrix.sh
+PATH=/path/to/opensta/bin:$PATH \
+KARU_LIB=/path/to/NangateOpenCellLibrary_typical.lib \
+KARU_CLK_PS=4000 KARU_ABC_UPRATE_PS=2000 \
+KARU_ABC_FAST=1 KARU_ABC_FULL=0 KARU_NO_STA=1 \
+KARU_FLATTEN=0 KARU_NOSHARE=1 KARU_IN_PCT=30 KARU_OUT_PCT=70 \
+JOBS=1 PER_TIMEOUT=21600 \
+CONFIGS='rv64gcv_default rv64gcv_zvkned rv64gcv_zvksed rv64gcv_zvk rv64gcv_zvk_keccak rva23s64_ship' \
+  flow/syn/syn_area_matrix.sh
 ```
+
+Use `CONFIGS` with any names from `syn_area_matrix.sh` for a broader design
+space sweep. Compare feature deltas only among rows produced by the same run:
+shared decode and execution logic means individual extension deltas are not
+additive.
+
+## Interpretation and checks
+
+`summary.csv` reports top area and selected inclusive hierarchy buckets. The
+`Top − memory` column subtracts the mapped `karu_mem` hierarchy for orientation;
+it is not a separately synthesized core. FPGA LUT, register, BRAM and DSP use
+comes only from the Vivado reports.
+
+For timing, inspect all of the following rather than WNS alone:
+
+- register-to-register, input-to-register, register-to-output and
+  input-to-output path groups;
+- constrained/unconstrained endpoint coverage;
+- maximum slew, capacitance and fanout checks; and
+- the longest-path report to identify the actual RTL cone.
+
+Run `make syn-runtime-div-audit-rva23s64` after arithmetic or indexing changes.
+The audit rejects live variable `/` and `%` operators that could infer an
+unintended divider; constant and elaboration-time arithmetic are allowed.
+
+See [README.md](README.md) for flow controls and output-file details.

@@ -7,10 +7,9 @@
 _start:
     #   Enable FPU + vector state in mstatus (FS=11, VS=11). Newer spike
     #   resets with FS/VS=Off and raises illegal-instruction on every FP and
-    #   vector insn (incl. vsetvli) until M-mode software enables them; the
-    #   spike this repo was originally validated against came up enabled.
-    #   karu64 does not gate FP/V execution on these bits, so this is a
-    #   no-op there -- it exists so one ELF keeps working on both sims.
+    #   vector insn (incl. vsetvli) until M-mode software enables them.
+    #   karu64 also gates FP/vector execution on FS/VS, so the same firmware
+    #   initialization is required on both cores.
     li      t0, (3 << 13) | (3 << 9)
     csrs    mstatus, t0
 

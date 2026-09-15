@@ -17,6 +17,7 @@ module karu_lsu (
     input  wire         is_store,       //  1 for plain integer/FP store
     input  wire [4:0]   sub_in,         //  the LSU sub-op (lets us decode LR/SC/AMO)
     input  wire [63:0]  addr,
+    input  wire [1:0]   pbmt, pbmt2,    // first/second page: PMA=0, NC=1, IO=2
     input  wire [63:0]  addr2,          //  beat-2 base PA for a misaligned 8-byte-
                                     //  crossing access (the core translates the
                                     //  second page separately; within one page it
@@ -27,9 +28,12 @@ module karu_lsu (
 
     //  --- completion ---
     output reg          done,
+    output reg          fault,          // access-fault pulse, never done
+    output reg          fault_second,   // faulting byte is in the second beat
     output reg [63:0]   rd_v,           //  load / amo result (sc returns 0/1)
 
     //  --- AXI4 master ---
+    output reg [1:0]                ar_pbmt, aw_pbmt,
     output reg [`AXI_ID_W-1:0]      arid,
     output reg [`AXI_ADDR_W-1:0]    araddr,
     output reg [`AXI_LEN_W-1:0]     arlen,
@@ -82,6 +86,8 @@ module karu_lsu (
 
     //  Latched request fields
     reg [63:0]  addr_q;
+    reg [1:0]   pbmt_q, pbmt2_q;
+    reg         io_q;
     reg [63:0]  addr2_q;            //  latched beat-2 base PA (see addr2 port)
     reg [63:0]  wdata_q;
     reg [1:0]   size_q;
@@ -92,8 +98,10 @@ module karu_lsu (
     reg [63:0]  amo_loaded;     //  stashed memory value for the AMO ALU op
 
     //  ---- LR/SC reservation tracking ----
-    //  Single-core: any normal store, any AMO store, or any SC clears
-    //  the reservation. LR establishes it.
+    //  Single hart / no external DRAM writer: LR establishes an 8-byte
+    //  aligned reservation granule; SC additionally requires the exact LR
+    //  operand address. SC, AMO, reset and access faults clear it. Ordinary
+    //  same-hart stores retain it. Physical device atomics are rejected.
     reg         reserve_valid;
     reg [63:0]  reserve_addr;
 
@@ -133,7 +141,10 @@ module karu_lsu (
         (size == `LS_B) ? 4'd1 :
         (size == `LS_H) ? 4'd2 :
         (size == `LS_W) ? 4'd4 : 4'd8;
-    wire        cross_i = ({1'b0, addr[2:0]} + size_bytes_i) > 4'd8;
+    //  Zicbom/Zicboz name the aligned cache block containing addr. Their
+    //  unaligned operand is not a scalar access spanning addr and addr2.
+    wire        cross_i = !is_cbonop_in && !is_cboz_in &&
+                          ({1'b0, addr[2:0]} + size_bytes_i) > 4'd8;
 
     //  == load formatting ==
     wire [127:0] rd_pair = {rdata, rd_lo_q};
@@ -181,27 +192,57 @@ module karu_lsu (
     //  rd_v from AMO: sign-extended original value (the "old" memory contents).
     wire [63:0] amo_rd = (size_q == `LS_W) ? amo_op_a : amo_loaded;
 
+    `include "karu_pma.vh"
+    //  All three Zicbom management operations accept load-or-store access;
+    //  unlike ZERO, INVAL does not require physical write permission.
+    wire [1:0] pma_acc = (is_store || is_sc_in || is_amo_in || is_cboz_in)
+                         ? 2'd2 : is_cbonop_in ? 2'd3 : 2'd1;
+    wire pma_first = karu_pma_ok(addr, pma_acc);
+    wire pma_second = !cross_i || karu_pma_ok(addr2, pma_acc);
+    // IO uses native widths; LR/SC/AMO require natural alignment everywhere.
+    // Reject these unsupported accesses with an access fault before AXI.
+    wire access_misaligned = !is_cbonop_in && !is_cboz_in &&
+                             (({1'b0, addr[2:0]} & (size_bytes_i - 4'd1)) != 0);
+    wire io_first = pbmt == 2'b10 || (pbmt == 0 && karu_pma_io(addr));
+    wire io_second = pbmt2 == 2'b10 || (pbmt2 == 0 && karu_pma_io(addr2));
+    wire io_bad_first = io_first && access_misaligned;
+    wire io_bad_second = cross_i && io_second && access_misaligned;
+    // Physical devices have neither atomic bus operations nor device-write
+    // reservation invalidation. PBMT cannot grant these PMA capabilities;
+    // an NC/IO alias of ordinary RAM retains aligned atomic support.
+    wire atomic_bad = (is_lr_in || is_sc_in || is_amo_in) &&
+                      (access_misaligned || karu_pma_io(addr));
+
     always @(posedge clk) begin
         if (rst) begin
             state   <= S_IDLE;
             arvalid <= 0; rready    <= 0;
             awvalid <= 0; wvalid    <= 0; bready <= 0;
             done    <= 0;
+            fault <= 0; fault_second <= 0;
             reserve_valid <= 0;
         end else begin
             done <= 0;  //  one-cycle pulse default
+            fault <= 0;
 
             case (state)
                 S_IDLE: begin
                     if (req) begin
                         addr_q  <= addr;
+                        pbmt_q <= pbmt; pbmt2_q <= pbmt2;
+                        io_q <= io_first;
+                        ar_pbmt <= pbmt; aw_pbmt <= pbmt;
                         addr2_q <= addr2;
                         wdata_q <= wdata;
                         size_q  <= size;
                         sign_q  <= sign_l;
                         cross_q <= cross_i;
                         sub_q   <= sub_in;
-                        if (is_sc_in && !sc_pass_i) begin
+                        if (atomic_bad || !pma_first || !pma_second || io_bad_first || io_bad_second) begin
+                            fault <= 1;
+                            fault_second <= !atomic_bad && pma_first && !io_bad_first;
+                            reserve_valid <= 0;
+                        end else if (is_sc_in && !sc_pass_i) begin
                             //  SC failure: no AXI activity, rd=1.
                             rd_v    <= 64'b1;
                             done    <= 1'b1;
@@ -212,10 +253,11 @@ module karu_lsu (
                             done    <= 1'b1;    //  no memory transaction
                         end else if (is_store || (is_sc_in && sc_pass_i)) begin
                             //  prepare AW + W payload, drive both VALID
-                            awaddr  <= { addr[`AXI_ADDR_W-1:3], 3'b000 };
+                            awaddr  <= io_first ? addr[`AXI_ADDR_W-1:0]
+                                                    : {addr[`AXI_ADDR_W-1:3], 3'b000};
                             awid    <= 0;
                             awlen   <= 0;
-                            awsize  <= `AXI_SIZE_8B;
+                            awsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             awburst <= `AXI_BURST_INCR;
                             awprot  <= 0;
                             awvalid <= 1;
@@ -255,7 +297,7 @@ module karu_lsu (
                             araddr  <= addr[`AXI_ADDR_W-1:0];
                             arid    <= 0;
                             arlen   <= 0;
-                            arsize  <= `AXI_SIZE_8B;
+                            arsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             arburst <= `AXI_BURST_INCR;
                             arprot  <= 0;
                             arvalid <= 1;
@@ -275,6 +317,7 @@ module karu_lsu (
                         if (cross_q) begin
                             rd_lo_q <= rdata;
                             araddr  <= addr2_q[`AXI_ADDR_W-1:0];    //  beat-2 base PA
+                            ar_pbmt <= pbmt2_q;
                             arvalid <= 1;
                             state   <= S_AR2;
                         end else if (is_amo_q) begin
@@ -336,6 +379,7 @@ module karu_lsu (
                     if (bvalid && bready) begin
                         if (cross_q) begin
                             awaddr  <= addr2_q[`AXI_ADDR_W-1:0];    //  beat-2 base PA
+                            aw_pbmt <= pbmt2_q;
                             wdata_o <= wdata_hi_q;
                             wstrb   <= strb_hi_q;
                             awvalid <= 1;
@@ -368,10 +412,11 @@ module karu_lsu (
                     //  Issue AW + W with the ALU result. amo_loaded was
                     //  registered on the previous clk edge so amo_result
                     //  is stable this cycle.
-                    awaddr  <= {addr_q[`AXI_ADDR_W-1:3], 3'b000};
+                    awaddr  <= io_q ? addr_q[`AXI_ADDR_W-1:0]
+                                             : {addr_q[`AXI_ADDR_W-1:3], 3'b000};
                     awid    <= 0;
                     awlen   <= 0;
-                    awsize  <= `AXI_SIZE_8B;
+                    awsize  <= io_q ? {1'b0, size_q} : `AXI_SIZE_8B;
                     awburst <= `AXI_BURST_INCR;
                     awprot  <= 0;
                     awvalid <= 1;
@@ -419,11 +464,21 @@ module karu_lsu (
                     end
                 end
             endcase
+            // Error beats terminate the architectural access, including an
+            // AMO read (no write follows) and either half of a split access.
+            if (((state == S_R || state == S_R2) && rvalid && rready && rresp[1]) ||
+                ((state == S_B || state == S_B2 || state == S_AMO_B ||
+                  state == S_CBOZ_B) && bvalid && bready && bresp[1])) begin
+                fault <= 1; done <= 0; state <= S_IDLE;
+                fault_second <= state == S_R2 || state == S_B2;
+                arvalid <= 0; rready <= 0; awvalid <= 0; wvalid <= 0; bready <= 0;
+                reserve_valid <= 0;
+            end
         end
     end
 
     assign busy = (state != S_IDLE);
 
     //  silence unused
-    wire _unused = &{rid, rresp, rlast, bid, bresp, 1'b0};
+    wire _unused = &{rid, rlast, bid, 1'b0};
 endmodule

@@ -3,8 +3,9 @@
 //
 //  Holds two 64-bit prefetch entries (buf0 covers [buf0_pc, buf0_pc+8);
 //  buf1 covers the next quadword). The 32 bits at the current pc are
-//  always assembled from these, including the cross-boundary case
-//  (pc == buf0_pc+6 puts the high 16 bits of the instruction in buf1).
+//  assembled from these, including the cross-boundary case for 32-bit
+//  instructions. A compressed instruction in the last halfword needs only
+//  buf0; fetching buf1 could fault beyond that instruction's bytes.
 //
 //  The decoder consumes one instruction per cycle by asserting `take`; the
 //  IFU derives the consumed length locally from the assembled instruction.
@@ -29,6 +30,7 @@ module karu_ifu (
     output wire [63:0]  ins_pc,
     output wire [31:0]  ins_w,
     input  wire         take,
+    input  wire         fetch_safe,    // no older instruction can fault/redirect
 
     //  -- virtual-to-physical translation for fetches --
     output reg          xlate_req,
@@ -38,12 +40,24 @@ module karu_ifu (
     input  wire         xlate_fault,
     input  wire [63:0]  xlate_fault_va,
     input  wire [63:0]  xlate_fault_cause,
+    input  wire         xlate_fault_gva,
+    input  wire         xlate_fault_gpa_valid,
+    input  wire [63:0]  xlate_fault_gpa,
+    input  wire [63:0]  xlate_fault_tinst,
+    input  wire         xlate_fault_gpa_is_pte,
     input  wire [63:0]  xlate_pa,
+    input  wire [1:0]   xlate_pbmt,
     output reg          fault_valid,
     output reg [63:0]   fault_va,
     output reg [63:0]   fault_cause,
+    output reg          fault_gva,
+    output reg          fault_gpa_valid,
+    output reg [63:0]   fault_gpa,
+    output reg [63:0]   fault_tinst,
+    output reg          fault_gpa_is_pte,
 
     //  -- AXI4 master (read-only) --
+    output reg [1:0]                ar_pbmt,
     output reg [`AXI_ID_W-1:0]      arid,
     output reg [`AXI_ADDR_W-1:0]    araddr,
     output reg [`AXI_LEN_W-1:0]     arlen,
@@ -70,7 +84,9 @@ module karu_ifu (
     reg         ar_pending;     //  AR has been issued, awaiting R
     reg [63:0]  ar_addr;        //  address of in-flight fetch
     reg [63:0]  ar_pa;          //  physical address of in-flight fetch
+    reg [2:0]   fault_offset;   //  first instruction byte in this fetch quad
     reg         xlate_pending;
+    reg         io_wait;       // translated IO demand waits for older execution
     reg         r_discard;      //  the next R is stale (post-redirect drain)
     reg         xlate_discard;  //  an in-flight sv39 walk predates a redirect; drop its result
 
@@ -81,6 +97,7 @@ module karu_ifu (
     //  (rel_pc == 6 && buf1_v): low 16 from buf0, high 16 from buf1
     wire same_q = buf0_v && (pc[63:3] == buf0_a[63:3]);
     wire next_q = buf1_v && (pc[63:3] == buf1_a[63:3]);
+    wire tail_is_c = (buf0_d[49:48] != 2'b11);
     wire xline  = buf0_v && buf1_v && pc[2:0] == 3'b110 &&
                   buf1_a == (buf0_a + 64'd8);
 
@@ -91,13 +108,13 @@ module karu_ifu (
             2'b00: in_buf0 = buf0_d[31:0];
             2'b01: in_buf0 = buf0_d[47:16];
             2'b10: in_buf0 = buf0_d[63:32];
-            default: in_buf0 = 32'h0000_0013;   //  pc[2:1]==11 -> use xline (cross)
+            default: in_buf0 = {16'b0, buf0_d[63:48]}; // compressed tail
         endcase
         case (pc[2:1])
             2'b00: in_buf1 = buf1_d[31:0];
             2'b01: in_buf1 = buf1_d[47:16];
             2'b10: in_buf1 = buf1_d[63:32];
-            default: in_buf1 = 32'h0000_0013;
+            default: in_buf1 = {16'b0, buf1_d[63:48]};
         endcase
     end
     //  Cross boundary: low 16 from buf0[63:48], high 16 from buf1[15:0]
@@ -109,14 +126,14 @@ module karu_ifu (
                     next_q ? in_buf1 :
                              32'h0000_0013; //  nop placeholder (ignored)
     assign ins_valid = xline
-                    || (same_q && pc[2:0] != 3'b110)
-                    || next_q;
+                    || (same_q && (pc[2:0] != 3'b110 || tail_is_c))
+                    || (next_q && (pc[2:0] != 3'b110 || buf1_d[49:48] != 2'b11));
 
     //  -- pick next fetch address --
     //  Maintain invariant: if buf0_v, buf0 is "current" (contains pc).
     //  If pc moves out of buf0 (rel_pc >= 8), shift buf1 -> buf0.
     //  Then fetch into buf1 the next quadword.
-    wire need_buf1 = buf0_v && !buf1_v && pc[2:0] == 3'b110;
+    wire need_buf1 = same_q && !buf1_v && pc[2:0] == 3'b110 && !tail_is_c;
     wire need_buf0 = !buf0_v;
 
     wire [63:0] next_ar_addr =
@@ -149,12 +166,19 @@ module karu_ifu (
             buf1_v     <= 0;
             ar_pending <= 0;
             xlate_pending <= 0;
+            io_wait <= 0;
+            ar_pbmt <= 0;
             xlate_req  <= 0;
             arvalid    <= 0;
             rready     <= 0;
             r_discard  <= 0;
             xlate_discard <= 0;
             fault_valid <= 0;
+            fault_gva <= 0;
+            fault_gpa_valid <= 0;
+            fault_gpa <= 0;
+            fault_tinst <= 0;
+            fault_gpa_is_pte <= 0;
         end else begin
             xlate_req <= 1'b0;
 
@@ -184,6 +208,12 @@ module karu_ifu (
                 if (!(arvalid && !arready))
                     arvalid <= 0;
                 fault_valid <= 0;
+                fault_gva <= 0;
+                fault_gpa_valid <= 0;
+                fault_gpa <= 0;
+                fault_tinst <= 0;
+                fault_gpa_is_pte <= 0;
+                io_wait <= 0;
                 if (ar_pending && !(rvalid && rready)) begin
                     //  stale R hasn't arrived yet -- drain when it does
                     r_discard <= 1'b1;
@@ -222,11 +252,15 @@ module karu_ifu (
                 //  !xlate_busy is the req/accept handshake: karu_sv39 only
                 //  samples req in S_IDLE, so never present a request (and never
                 //  mark it pending) while a walk is active.
-                if (!ar_pending && !xlate_pending && !xlate_discard && !r_discard
+                if (!ar_pending && !io_wait && !xlate_pending && !xlate_discard && !r_discard
                     && !xlate_busy && !fault_valid && (need_buf0 || need_buf1)) begin
                     xlate_va <= next_ar_addr;
                     xlate_req <= 1'b1;
                     ar_addr <= next_ar_addr;
+                    //  First fetch faults identify pc, not its aligned quad.
+                    //  The second fetch of a straddled instruction identifies
+                    //  its upper halfword, which starts at the next quad.
+                    fault_offset <= need_buf0 ? pc[2:0] : 3'b000;
                     xlate_pending <= 1'b1;
                 end
                 if (xlate_pending && xlate_done) begin
@@ -235,20 +269,45 @@ module karu_ifu (
                         xlate_discard <= 1'b0;
                     end else if (xlate_fault) begin
                         fault_valid <= 1'b1;
-                        fault_va <= xlate_fault_va;
+                        fault_va <= {xlate_fault_va[63:3], fault_offset};
                         fault_cause <= xlate_fault_cause;
+                        fault_gva <= xlate_fault_gva;
+                        fault_gpa_valid <= xlate_fault_gpa_valid;
+                        // H guest-page faults report the same instruction byte
+                        // in VA and GPA. An implicit VS-PTE read instead reports
+                        // that PTE's GPA, with its supplied pseudoinstruction;
+                        // the instruction's halfword offset must not alter it.
+                        // Keep the full GPA here; trap CSR entry applies >> 2.
+                        fault_gpa <= !xlate_fault_gpa_valid ? 64'b0 :
+                            xlate_fault_gpa_is_pte ? xlate_fault_gpa :
+                            {xlate_fault_gpa[63:3], fault_offset};
+                        fault_tinst <= xlate_fault_tinst;
+                        fault_gpa_is_pte <= xlate_fault_gpa_valid &&
+                                            xlate_fault_gpa_is_pte;
                     end else begin
                         ar_pa <= xlate_pa;
+                        ar_pbmt <= xlate_pbmt;
                         arid    <= 0;
                         araddr  <= xlate_pa[`AXI_ADDR_W-1:0];
                         arlen   <= 0;
                         arsize  <= `AXI_SIZE_8B;
                         arburst <= `AXI_BURST_INCR;
                         arprot  <= 0;
-                        arvalid <= 1;
-                        rready  <= 1;
-                        ar_pending <= 1;
+                        // IO fetches are non-speculative. A naturally aligned
+                        // 8-byte implicit-read region is permitted; bypass the
+                        // I-cache and wait until older execution is irrevocable.
+                        if (xlate_pbmt != 2'b10 || fetch_safe) begin
+                            arvalid <= 1;
+                            rready  <= 1;
+                            ar_pending <= 1;
+                        end else io_wait <= 1;
                     end
+                end
+                if (io_wait && fetch_safe) begin
+                    io_wait <= 0;
+                    arvalid <= 1;
+                    rready <= 1;
+                    ar_pending <= 1;
                 end
                 if (arvalid && arready) begin
                     arvalid <= 0;
@@ -264,6 +323,17 @@ module karu_ifu (
                 if (rvalid && rready) begin
                     if (r_discard) begin
                         r_discard <= 1'b0;
+                    end else if (rresp[1]) begin
+                        fault_valid <= 1;
+                        fault_va <= {ar_addr[63:3], fault_offset};
+                        fault_cause <= 64'd1;
+                        // A physical bus error is not a guest-page fault and
+                        // must not reuse metadata from a translation response.
+                        fault_gva <= 0;
+                        fault_gpa_valid <= 0;
+                        fault_gpa <= 0;
+                        fault_tinst <= 0;
+                        fault_gpa_is_pte <= 0;
                     end else begin
                         //  Re-derive the post-shift emptiness of buf0
                         if ((take && buf0_v && post_out_of_buf0 && !buf1_v)
@@ -285,5 +355,5 @@ module karu_ifu (
     end
 
     //  silence unused
-    wire _unused = &{rid, rresp, rlast, 1'b0};
+    wire _unused = &{rid, rlast, xlate_fault_va[2:0], 1'b0};
 endmodule

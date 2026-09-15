@@ -15,16 +15,16 @@
 //      double-fires while varith is frozen.
 //
 //  WRITES (granule-only): one register granule per g_we pulse, committed to BRAM
-//  port A at {g_wd, g_wg} with byte-enable g_wbe (karu_varith merges tail/mask
-//  per element via the lanes, so g_wbe is full today; partial g_wbe is the
-//  undisturbed-without-RMW path once reads narrow). g_wlast (op's final granule)
+//  port A at {g_wd, g_wg} with exact byte-enable g_wbe. Both lane results and
+//  contiguous loads preserve inactive bytes without reading old vd.
+//  g_wlast (op's final granule)
 //  drives read-cache coherence. The g_we port is shared varith/vlsu (single-
 //  issue; muxed in karu64 by write signal).
 //
 //  READS: per-operand GRANULE latches (vs1_g/vs2_g/vold_g) refilled whenever a
 //  requested address changes; varith is stalled meanwhile. v0 is the BRAM flop
 //  shadow (combinational, never stalled). vlsu's registered granule read is
-//  absorbed by a +1 wait state in karu_vlsu.
+//  pipelined for contiguous stores; per-element snapshots retain a wait state.
 //
 //  Specialised to VGRAN=2 (VLEN=2*VBUS_W); guarded at elaboration.
 
@@ -68,7 +68,8 @@ module karu_vrf_bram_wr #(
     //  the granule operand tags invalidated (a mid-granule-loop write must
     //  NOT clear them -- in-place vd==vs2 needs the old granule held across
     //  the loop).
-    //  vlsu drives g_wlast=1 every write (independent granules) and g_wbe=all-ones.
+    //  vlsu drives g_wlast=1 every write (independent granules), with exact
+    //  byte enables for contiguous loads and full enables for merged pelem data.
     input  wire [4:0]           g_rs,
     input  wire                 g_rg,
     output wire [VBUS_W-1:0]    g_rdata,
@@ -181,7 +182,13 @@ module karu_vrf_bram_wr #(
             end
             G_RD1: if (src_vold) begin a_en=1'b1; a_addr={vr_rs,src_gv}; end    //  vold granule
             G_RD2: ;    //  capture only
-            default: ;  //  F_IDLE: a direct granule commit is handled by direct_gw above
+            F_IDLE: if (start_fill && !g_we) begin
+                // Start the synchronous reads on the demand cycle itself.
+                // A coincident write still takes F_DRAIN before any reads.
+                if (src_vs1) begin a_en=1'b1; a_addr={vr_rs2,src_g1}; end
+                if (src_vs2) begin b_en=1'b1; b_addr={vr_rs3,src_g2}; end
+            end
+            default: ;
             endcase
         end
     end
@@ -211,7 +218,7 @@ module karu_vrf_bram_wr #(
                     if (g_we) begin
                         whold_wd<=g_wd; whold_wg<=g_wg; whold_wbe<=g_wbe; whold_wdata<=g_wdata;
                         whold_wlast<=g_wlast; end
-                    fs <= g_we ? F_DRAIN : G_RD0;
+                    fs <= g_we ? F_DRAIN : G_RD1;
                 end else if (direct_gw && g_wlast) begin
                     //  direct commit -> invalidate the granule tags so a later
                     //  op reusing this register refills. ONLY on the op's FINAL

@@ -1,0 +1,43 @@
+From: Karu verification maintainers
+Subject: [PATCH] Keep reconstructed memory-fault addresses in the virtual domain
+
+The physical offset locates a failed constituent of an access whose
+translation already succeeded.  Its corresponding virtual address is not
+limited by the implemented physical-address width.  In particular, a valid
+Sv39 address above a 32-bit physical window must retain its high bits in
+xtval; a split access must report the virtual address of the failed portion.
+
+Preserve the existing physical subtraction and XLEN-sized offset, but do
+not apply the physical implementation mask to the reconstructed address.
+Bare accesses retain their original effective address through the same
+helper.  No translation, PMA, PMP, or exception-priority policy changes.
+
+Normative basis: Privileged ISA 1.13, Machine/Supervisor Trap Value:
+https://github.com/riscv/riscv-isa-manual/blob/main/src/priv/machine.adoc
+https://github.com/riscv/riscv-isa-manual/blob/main/src/priv/supervisor.adoc
+
+--- a/model/sys/vmem_utils.sail
++++ b/model/sys/vmem_utils.sail
+@@ -43,9 +43,9 @@
+ // `virtaddr` access may be split into smaller `physaddr` accesses,
+ // the correct offset from the base `virtaddr` needs to be reported.
+ // Since `virtaddr` accesses that straddle page boundaries are already
+-// split, the offset computation is quite simple. The result is also
+-// masked to physaddr_bits, since bits above it aren't part of any
+-// physical address this configuration implements.
++// split, the offset computation is quite simple. The reconstructed
++// address remains in the virtual domain, including bits above the
++// implemented physical-address width. Addition wraps at XLEN.
+ 
+ function offset_virtaddr_by(
+   Virtaddr(base_vaddr) : virtaddr,
+@@ -56,8 +56,7 @@
+   // Physical addresses may have a different size.
+   let offset = (exc_paddr - base_paddr)[xlen - 1 .. 0];
+   let reconstructed = base_vaddr + offset;
+-  let masked = if physaddr_bits < xlen then reconstructed & zero_extend(ones(physaddr_bits)) else reconstructed;
+-  Virtaddr(masked)
++  Virtaddr(reconstructed)
+ }
+ 
+ // The context for an access.

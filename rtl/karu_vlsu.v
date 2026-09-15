@@ -34,9 +34,9 @@ module karu_vlsu #(
     input  wire         req,
     output wire         busy,
     input  wire         is_store,
-    input  wire [63:0]  base,           //  x[rs1] (64-bit VA -- phase V1 of
-                                        //  doc/architecture.md; identity/bare
-                                        //  until the V2 preflight translator)
+    input  wire [63:0]  base,           // raw x[rs1], before pointer masking
+    input  wire [5:0]   dpmlen,         // effective privilege PMLEN (0/7/16)
+    input  wire         pm_virtual,    // sign-extend virtual; zero-extend Bare
     input  wire [4:0]   vd,             //  vd / vs3 (group base)
     input  wire [1:0]   eew,            //  0=8,1=16,2=32,3=64 (bytes = 1<<eew)
     input  wire [63:0]  vl,
@@ -62,28 +62,40 @@ module karu_vlsu #(
     //  -- translation preflight (phase V2, doc/architecture.md) --
     //  Every memory access is translated through karu64's shared DMMU BEFORE
     //  any VRF write or store side effect (precise by construction; vstart
-    //  stays 0 across a fault). In bare/M mode karu_sv39 answers identity in
-    //  one cycle, so this unit needs no mode awareness at all.
+    //  stays 0 across a fault). Pointer masking precedes translation and
+    //  applies to each final effective address, not to its base operand.
     output reg          xlate_req,      //  1-cycle pulse
     output reg  [63:0]  xlate_va,
     output reg          xlate_st,       //  1 = store access (PTE W/D semantics)
     input  wire         xlate_done,     //  pulse; pa/fault valid this cycle
     input  wire         xlate_fault,
     input  wire [63:0]  xlate_pa,
+    input  wire [1:0]   xlate_pbmt,
     output reg          fault_abort,    //  pulse: op aborted on a translation fault
                                         //  (no architectural side effects occurred);
                                         //  the core traps with the DMMU cause/VA
     output reg          trim_req,       //  pulse: fault-only-first trimmed vl
+    output reg          fault_bus,      // fault_abort describes an AXI error
+    output reg  [63:0]  fault_va,
+    output reg  [31:0]  fault_index,
     output reg  [31:0]  trim_vl,        //  the new (nonzero) vl
 
     //  -- karu_mem vector port --
     output reg          vmem_req,
     input  wire         vmem_busy,
+    input  wire         store_pending,
+    input  wire         vmem_fault,
+    input  wire [63:0]  vmem_fault_va,
+    output wire         vmem_allow_post,
+    output reg  [63:0]  vmem_va,
     output reg          vmem_is_store,
     output reg  [63:0]  vmem_addr,      //  64-bit (V1); bare/identity today, so the
                                         //  core truncates to the 32-bit physical port
     output reg  [127:0] vmem_wdata,
     output reg  [15:0]  vmem_wstrb,
+    output reg  [15:0]  vmem_rstrb,     // exact active bytes for non-idempotent reads
+    output reg  [1:0]   vmem_pbmt,
+    output wire [1:0]   vmem_size,      // preferred IO transfer size (element width)
     input  wire         vmem_done,
     input  wire [127:0] vmem_rdata,
 
@@ -94,15 +106,20 @@ module karu_vlsu #(
     output reg          vg_we,
     output reg  [4:0]   vg_wd,
     output reg  [GW-1:0] vg_wg,
-    output reg  [127:0] vg_wdata
+    output reg  [127:0] vg_wdata,
+    output reg  [15:0] vg_wbe
 );
     localparam integer MAXRG = 8 * GRAN;    //  register granules at LMUL=8
     localparam integer MAXMG = MAXRG + 2;   //  + slack for the misaligned head
 
     //  latched request
     reg [63:0]  base_q;
+    reg [5:0]   dpmlen_q;
+    reg         pm_virtual_q;
     reg [4:0]   vd_q;
     reg         st_q, vta_q, vm_q, vma_q;
+    reg         pelem_q, fault_pending;
+    assign vmem_allow_post = !pelem_q;
     reg [1:0]   eew_q;
     reg [`KARU_VLEN-1:0] v0_q;
     reg [31:0]  nbytes;         //  (last active element + 1) * EEW_bytes
@@ -115,20 +132,42 @@ module karu_vlsu #(
     //  tail elements neither fault nor (for vle*ff) trim vl, even when they
     //  land on an unmapped page (review finding: the first version used
     //  [vstart, vl) and translated a masked-off second page). Combinational
-    //  scan over the request inputs, sampled only at S_IDLE; this unit is
-    //  nowhere near a timing wall. No active elements -> vst_b == nbytes ==
-    //  0 -> the existing no-traffic path (loads write the unchanged group).
+    //  tree over the request inputs, sampled only at S_IDLE. The first/last
+    //  indices use logarithmic-depth priority trees, not a VLEN-deep scan.
+    //  No active elements -> vst_b == nbytes == 0 -> complete without
+    //  memory traffic or VRF writes.
+    localparam integer ACT_IW = $clog2(`KARU_VLEN);
     integer ai;
-    reg [31:0]  act_lo, act_hi; reg act_any;
+    reg [`KARU_VLEN-1:0] act_bits;
     always @(*) begin
-        act_lo = 32'd0; act_hi = 32'd0; act_any = 1'b0;
+        act_bits = 0;
         for (ai = 0; ai < `KARU_VLEN; ai = ai + 1)
-            if ((ai >= vstart) && (ai < vl) && (vm || v0mask[ai])) begin
-                if (!act_any) act_lo = ai[31:0];
-                act_hi  = ai[31:0];
-                act_any = 1'b1;
-            end
+            act_bits[ai] = (ai >= vstart) && (ai < vl) && (vm || v0mask[ai]);
     end
+    wire act_valid [1:2*`KARU_VLEN-1];
+    wire [ACT_IW-1:0] act_first [1:2*`KARU_VLEN-1];
+    wire [ACT_IW-1:0] act_last  [1:2*`KARU_VLEN-1];
+    genvar AB;
+    generate
+        if (`KARU_VLEN < 2 || (`KARU_VLEN & (`KARU_VLEN-1)) != 0)
+            begin : g_active_bounds_guard
+                KARU_BAD_VLEN_must_be_power_of_two _elab_error();
+            end
+        for (AB=0; AB<`KARU_VLEN; AB=AB+1) begin : g_active_leaf
+            localparam [ACT_IW-1:0] INDEX = AB;
+            assign act_valid[`KARU_VLEN+AB] = act_bits[AB];
+            assign act_first[`KARU_VLEN+AB] = INDEX;
+            assign act_last [`KARU_VLEN+AB] = INDEX;
+        end
+        for (AB=1; AB<`KARU_VLEN; AB=AB+1) begin : g_active_fold
+            assign act_valid[AB] = act_valid[2*AB] | act_valid[2*AB+1];
+            assign act_first[AB] = act_valid[2*AB] ? act_first[2*AB] : act_first[2*AB+1];
+            assign act_last[AB] = act_valid[2*AB+1] ? act_last[2*AB+1] : act_last[2*AB];
+        end
+    endgenerate
+    wire act_any = act_valid[1];
+    wire [31:0] act_lo = act_any ? {{(32-ACT_IW){1'b0}},act_first[1]} : 32'd0;
+    wire [31:0] act_hi = act_any ? {{(32-ACT_IW){1'b0}},act_last[1]} : 32'd0;
     wire [31:0] vst_b_w = act_any ? (act_lo << eew) : 32'd0;
     wire [31:0] nb_w    = act_any ? ((act_hi + 32'd1) << eew) : 32'd0;
     reg [3:0]   boff;           //  base & 15
@@ -139,6 +178,9 @@ module karu_vlsu #(
     reg [5:0]   rg;             //  current register granule (global, 0..nrg-1)
 
     wire [127:0] asm_gran;
+    wire [15:0] asm_be;
+    wire [5:0] rg_next = rg + 6'd1;
+    wire [5:0] rg_ahead = rg + 6'd2;
     wire [127:0] st_wdata;
     wire [15:0]  st_strb;
 
@@ -149,10 +191,12 @@ module karu_vlsu #(
     //  translations cover every granule. vp0 = first accessed VA page;
     //  pp0/pp1 = its phys page and the next page's.
     reg [51:0]  vp0, pp0, pp1;
+    reg [1:0]   pbmt0, pbmt1;
     //  pelem path: phys pages for the current element's 1-or-2 granules,
     //  plus a 1-entry VA-page -> PA-page cache (strided/segment ops hammer
     //  the same page; misses re-translate through the DMMU TLB, 1 cycle).
     reg [51:0]  pe_pp0, pe_pp1;
+    reg [1:0]   pe_pbmt0, pe_pbmt1, xc_pbmt;
     reg         xc_v;
     reg [51:0]  xc_vp, xc_pp;
     reg         pe_pass1;               //  pelem STORE check-only pass (translate
@@ -188,12 +232,27 @@ module karu_vlsu #(
     wire [4:0]  idx_rreg = idx_vs_q + rg[5:GW];
     wire [GW-1:0] idx_roff = rg[GW-1:0];
 
+    // Pointer Masking v1.0: first generate the XLEN-wide effective address,
+    // then ignore its tag bits. Applying PM to the base alone would leave
+    // high index/stride bits live and mishandle carries into the tag field.
+    // Each constituent granule is transformed separately for split accesses.
+    function [63:0] pm_addr;
+        input [63:0] a;
+        begin
+            pm_addr = (dpmlen_q == 6'd16)
+                    ? {{16{pm_virtual_q && a[47]}}, a[47:0]}
+                    : (dpmlen_q == 6'd7)
+                    ? {{7{pm_virtual_q && a[56]}}, a[56:0]} : a;
+        end
+    endfunction
+
     //  current element address + geometry (64-bit VA arithmetic, V1: strided
     //  offsets wrap in 64 bits like the scalar XLEN stride; indexed offsets
     //  are zero-extended per the spec)
-    wire [63:0] eaddr  = base_q
+    wire [63:0] eaddr_raw = base_q
                        + (idx_mode_q ? idxv : ({32'b0, pe_i} * stride_q))
                        + ({60'b0, pe_f} * {32'b0, eewb});
+    wire [63:0] eaddr = pm_addr(eaddr_raw);
     wire [3:0]  pe_off = eaddr[3:0];
     wire [63:0] g0abs  = {eaddr[63:4], 4'b0};
     wire        straddle = ({2'b0, pe_off} + eewb[5:0]) > 6'd16;
@@ -202,17 +261,28 @@ module karu_vlsu #(
     //  granule's PA is its VA offset under pp0/pp1. Pelem: the element's
     //  granule pair needs page(g0abs) and, when the pair crosses a 4 KiB
     //  boundary, page(g0abs+16).
-    wire [63:0] va_first = base_q + {32'b0, vst_b};
-    wire [63:0] va_last  = base_q + {32'b0, nbytes} - 64'd1;
-    wire [63:0] g_va = base_al + ({58'b0, mg} << 4);
+    wire [63:0] va_first_raw = base_q + {32'b0, vst_b};
+    wire [63:0] va_first = pm_addr(va_first_raw);
+    wire [63:0] va_last  = pm_addr(base_q + {32'b0, nbytes} - 64'd1);
+    wire [63:0] g_raw = base_al + ({58'b0, mg} << 4);
+    wire [63:0] g_va = pm_addr(g_raw);
     wire [63:0] g_pa = {(g_va[63:12] == vp0) ? pp0 : pp1, g_va[11:0]};
+    wire [1:0] g_pbmt = (g_va[63:12] == vp0) ? pbmt0 : pbmt1;
+    // Naturally aligned IO elements remain single transfers. Misaligned
+    // elements may be decomposed into exact bytes, with no inactive reads.
+    wire [2:0] elem_low = pelem_q ? eaddr[2:0] : base_q[2:0];
+    wire [2:0] elem_align_mask = eew_q == 2'd0 ? 3'b000 :
+                                eew_q == 2'd1 ? 3'b001 :
+                                eew_q == 2'd2 ? 3'b011 : 3'b111;
+    assign vmem_size = (|(elem_low & elem_align_mask)) ? 2'd0 : eew_q;
     wire [51:0] pgA      = g0abs[63:12];
-    wire [63:0] g1va     = g0abs + 64'd16;
+    wire [63:0] g1va     = pm_addr({eaddr_raw[63:4], 4'b0} + 64'd16);
     wire        need_hi  = straddle && (g1va[63:12] != pgA);
     //  fault-only-first trim geometry (contiguous): elements wholly below
     //  the faulting second page survive; 0 survivors = element-0 fault.
-    wire [63:0] pg1_base = {va_first[63:12] + 52'd1, 12'b0};
-    wire [63:0] ff_bytes = pg1_base - base_q;
+    wire [63:0] pg1_raw = {va_first_raw[63:12] + 52'd1, 12'b0};
+    wire [63:0] pg1_base = pm_addr(pg1_raw);
+    wire [63:0] ff_bytes = pg1_raw - base_q;
     wire [31:0] ff_vl    = ff_bytes[31:0] >> eew_q;
     wire [31:0] ff_nb    = ff_vl << eew_q;
     wire        pe_act = vm_q || v0_q[pe_i[7:0]];
@@ -235,23 +305,58 @@ module karu_vlsu #(
     //  Extra +1 wait states: the macro-VRF granule read is registered, so each
     //  VRF-read issue state needs one bubble before its capture state. See
     //  doc/architecture.md.
-    localparam [5:0] S_RDREG_B=6'd24, S_PE_IDX_B=6'd25, S_PE_RD_B=6'd26;
+    localparam [5:0] S_PE_IDX_B=6'd25, S_PE_RD_B=6'd26;
     //  V2 translation-preflight states: contiguous 2-page xlate (XLT*) and
     //  the per-element 1-or-2 page xlate (PE_XL*).
     localparam [5:0] S_XLT0=6'd27, S_XLT0W=6'd28, S_XLT1=6'd29, S_XLT1W=6'd30,
-               S_PE_XLA=6'd31, S_PE_XLAW=6'd32, S_PE_XLB=6'd33, S_PE_XLBW=6'd34;
+               S_PE_XLA=6'd31, S_PE_XLAW=6'd32, S_PE_XLB=6'd33, S_PE_XLBW=6'd34,
+               S_DRAIN=6'd35;
     reg [5:0] state;
     assign busy = (state != S_IDLE);
+
+    // First active element intersecting a failed contiguous granule. Only
+    // sixteen byte-sized elements can intersect it; no VLMAX-wide scan.
+    // The group spans at most a page and PM never changes these low bits.
+    // Modular subtraction therefore recovers its byte offset even across
+    // XLEN/tag wrap; a negative result is only the unaligned head granule.
+    wire [31:0] err_delta = vmem_fault_va[31:0] - base_q[31:0];
+    wire [31:0] err_first = err_delta[31] ? 32'd0 : (err_delta >> eew_q);
+    integer ei;
+    reg err_found;
+    reg [31:0] err_index, err_candidate;
+    always @* begin
+        err_found=0; err_index=err_first; err_candidate=0;
+        for (ei=0; ei<16; ei=ei+1) begin
+            err_candidate=err_first + ei;
+            if (!err_found && err_candidate >= act_lo_q &&
+                (err_candidate << eew_q) < nbytes &&
+                (vm_q || v0_q[err_candidate[7:0]])) begin
+                err_index=err_candidate; err_found=1;
+            end
+        end
+    end
+    wire [63:0] err_elem_va = pm_addr(base_q + ({32'b0, err_index} << eew_q));
+    wire [63:0] err_access_va = pelem_q ? eaddr : err_elem_va;
+    // Coarse errors identify a granule; IO errors identify the exact failed
+    // constituent. Never move an exact byte address back to the element start.
+    // Do not use live vmem_pbmt here: a queued request can have a different
+    // type from the preceding posted store whose error is now arriving.
+    wire [63:0] err_tval = (vmem_fault_va[63:4] == err_access_va[63:4])
+                        && (vmem_fault_va[3:0] < err_access_va[3:0])
+                        ? err_access_va : vmem_fault_va;
 
     karu_vlsu_buf #(.GRAN(GRAN), .GW(GW)) buf_u (
         .clk(clk),
         .rg(rg), .mg(mg), .boff(boff), .nbytes(nbytes), .vst_b(vst_b),
         .eew_q(eew_q), .vm_q(vm_q), .v0_q(v0_q),
-        .asm_gran(asm_gran), .st_wdata(st_wdata), .st_strb(st_strb),
+        .asm_gran(asm_gran), .asm_be(asm_be), .st_wdata(st_wdata), .st_strb(st_strb),
         .idx_eew_q(idx_eew_q), .pe_i(pe_i), .rbyte0(rbyte0), .eewb(eewb),
         .pe_off(pe_off), .idxv(idxv), .pe_wd0(pe_wd0), .pe_wd1(pe_wd1),
         .pe_st0(pe_st0), .pe_st1(pe_st1), .pe_wbgran(pe_wbgran),
         .regbuf_we(state == S_RDREG_W), .regbuf_wrg(rg), .regbuf_wdata(vg_rdata),
+        // An IO fault may follow successful earlier elements in this granule.
+        // Capture that prefix too; the fault/FF bound below masks every byte
+        // at or after the failing element before architectural writeback.
         .membuf_we((state == S_MEMRD_W) && vmem_done), .membuf_wmg(mg), .membuf_wdata(vmem_rdata),
         .pib_we(state == S_PE_IDXW), .pib_wrg(rg), .pib_wdata(vg_rdata),
         .peb_gran_we(state == S_PE_RDW), .peb_wrg(rg), .peb_wdata(vg_rdata),
@@ -261,16 +366,19 @@ module karu_vlsu #(
 
     always @(posedge clk) begin
         if (rst) begin
-            state<=S_IDLE; done<=0; vmem_req<=0; vg_we<=0;
+            state<=S_IDLE; done<=0; vmem_req<=0; vg_we<=0; vg_wbe<=16'hffff;
             xlate_req<=0; fault_abort<=0; trim_req<=0;
+            fault_bus<=0; fault_pending<=0;
         end else begin
-            done<=0; vmem_req<=0; vg_we<=0;
+            done<=0; vmem_req<=0; vg_we<=0; vg_wbe<=16'hffff;
             xlate_req<=0; fault_abort<=0; trim_req<=0;
             case (state)
                 S_IDLE: if (req) begin
                     base_q<=base; vd_q<=vd; st_q<=is_store; vta_q<=vta;
+                    dpmlen_q<=dpmlen; pm_virtual_q<=pm_virtual;
                     vm_q<=vm; vma_q<=vma; v0_q<=v0mask; eew_q<=eew;
                     ff_q<=ff; xc_v<=0;
+                    pelem_q<=pelem; fault_bus<=0; fault_pending<=0;
                     pe_pass1<=pelem && is_store;    //  stores: check-only pass first
                     rg<=0;
                     if (pelem) begin
@@ -292,32 +400,31 @@ module karu_vlsu #(
                         boff    <= base[3:0];
                         base_al <= {base[63:4], 4'b0};
                         n_mg <= ((base[3:0] + nb_w) + 32'd15) >> 4;
-                        nrg  <= {2'b0, nreg} << GW;     //  nreg * GRAN (GRAN = 1<<GW)
+                        nrg  <= (nb_w + 32'd15) >> 4;
+                        rg <= vst_b_w >> 4;
                         //  the granule walk starts at the first ACTIVE byte's granule
                         mg <= (({28'b0, base[3:0]} + vst_b_w) >> 4) & 6'h3F;
-                        vg_rs<=vd; vg_rg<={GW{1'b0}};
-                        state<=S_RDREG;
+                        vg_rs<=vd + (vst_b_w >> (4+GW)); vg_rg<=vst_b_w[4 +: GW];
+                        if (!act_any) begin done<=1; state<=S_IDLE; end
+                        else state<=is_store ? S_RDREG : S_XLT0;
                     end
                 end
 
-                //  ---- read all register granules in the group into regbuf ----
+                // Store snapshot: one registered VRF read per cycle, bounded
+                // by the active byte interval. Loads use byte-enabled writes.
                 S_RDREG: begin
-                    vg_rs<=rg_reg; vg_rg<=rg_off;
-                    state<=S_RDREG_B;
+                    vg_rs<=vd_q + rg_next[5:GW]; vg_rg<=rg_next[GW-1:0];
+                    state<=S_RDREG_W;
                 end
-                S_RDREG_B: state<=S_RDREG_W;    //  BRAM registered-read bubble
                 S_RDREG_W: begin
                     if (rg == nrg-1) begin
                         rg<=0;
-                        //  no active bytes (vl == 0, or vstart >= vl) -> NO memory
-                        //  traffic, no translation (RVV: no accessed element, no
-                        //  exception). Loads still write the (unchanged) group;
-                        //  stores do nothing. Otherwise translate the <=2 touched
-                        //  pages BEFORE any memory access (V2 preflight).
-                        state <= (vst_b >= nbytes) ? (st_q ? S_STWR : S_LDWR)
-                                                   : S_XLT0;
+                        // Empty contiguous operations complete in S_IDLE.
+                        // Translate before any store side effect.
+                        state <= S_XLT0;
                     end else begin
-                        rg<=rg+1; state<=S_RDREG;
+                        rg<=rg_next;
+                        vg_rs<=vd_q + rg_ahead[5:GW]; vg_rg<=rg_ahead[GW-1:0];
                     end
                 end
 
@@ -344,6 +451,7 @@ module karu_vlsu #(
                         end
                     end else begin
                         vp0<=va_first[63:12]; pp0<=xlate_pa[63:12];
+                        pbmt0<=xlate_pbmt; pbmt1<=xlate_pbmt;
                         pp1<=xlate_pa[63:12];   //  overwritten if a 2nd page exists
                         if (va_last[63:12] != va_first[63:12]) state<=S_XLT1;
                         else state <= st_q ? S_STWR : S_MEMRD;
@@ -372,6 +480,7 @@ module karu_vlsu #(
                         end
                     end else begin
                         pp1<=xlate_pa[63:12];
+                        pbmt1<=xlate_pbmt;
                         state <= st_q ? S_STWR : S_MEMRD;
                     end
                 end
@@ -390,6 +499,8 @@ module karu_vlsu #(
                     end else begin
                         vmem_req<=1; vmem_is_store<=0;
                         vmem_addr<= g_pa;
+                        vmem_pbmt<=g_pbmt; vmem_rstrb<=st_strb;
+                        vmem_va<=g_va;
                         state<=S_MEMRD_W;
                     end
                 end
@@ -398,8 +509,10 @@ module karu_vlsu #(
                     else begin mg<=mg+1; state<=S_MEMRD; end
                 end
                 S_LDWR: begin
-                    vg_we<=1; vg_wd<=rg_reg; vg_wg<=rg_off; vg_wdata<=asm_gran;
-                    if (rg == nrg-1) begin done<=1; state<=S_IDLE; end
+                    vg_we<=1; vg_wd<=rg_reg; vg_wg<=rg_off; vg_wdata<=asm_gran; vg_wbe<=asm_be;
+                    if ((vst_b >= nbytes) || (({26'b0, rg_next} << 4) >= nbytes)) begin
+                        done<=!fault_pending; fault_abort<=fault_pending; state<=S_IDLE;
+                    end
                     else rg<=rg+1;
                 end
 
@@ -408,20 +521,22 @@ module karu_vlsu #(
                 //  is SKIPPED, not written: a zero-strobe AXI write is still an
                 //  access an MMIO slave could observe.
                 S_STWR: begin
-                    if (vst_b >= nbytes) begin done<=1; state<=S_IDLE; end
+                    if (vst_b >= nbytes) state<=S_DRAIN;
                     else if (st_strb == 16'b0) begin
-                        if (mg == n_mg-1) begin done<=1; state<=S_IDLE; end
+                        if (mg == n_mg-1) state<=S_DRAIN;
                         else mg<=mg+1;
                     end else begin
                         vmem_req<=1; vmem_is_store<=1;
                         vmem_addr<= g_pa;
+                        vmem_va<=g_va;
                         vmem_wdata<= st_wdata;
                         vmem_wstrb<= st_strb;
+                        vmem_pbmt<=g_pbmt;
                         state<=S_STWR_W;
                     end
                 end
                 S_STWR_W: if (vmem_done) begin
-                    if (mg == n_mg-1) begin done<=1; state<=S_IDLE; end
+                    if (mg == n_mg-1) state<=S_DRAIN;
                     else begin mg<=mg+1; state<=S_STWR; end
                 end
 
@@ -473,9 +588,10 @@ module karu_vlsu #(
                 S_PE_XLA: begin
                     if (xc_v && xc_vp == pgA) begin
                         pe_pp0 <= xc_pp;    pe_pp1 <= xc_pp;
+                        pe_pbmt0<=xc_pbmt; pe_pbmt1<=xc_pbmt;
                         state  <= need_hi ? S_PE_XLB : pe_run;
                     end else begin
-                        xlate_req<=1; xlate_va<=g0abs; xlate_st<=st_q;
+                        xlate_req<=1; xlate_va<=eaddr; xlate_st<=st_q;
                         state<=S_PE_XLAW;
                     end
                 end
@@ -490,6 +606,8 @@ module karu_vlsu #(
                         end else begin fault_abort<=1; state<=S_IDLE; end
                     end else begin
                         pe_pp0 <= xlate_pa[63:12];  pe_pp1 <= xlate_pa[63:12];
+                        pe_pbmt0<=xlate_pbmt; pe_pbmt1<=xlate_pbmt;
+                        xc_pbmt<=xlate_pbmt;
                         xc_v<=1; xc_vp<=pgA; xc_pp<=xlate_pa[63:12];
                         state <= need_hi ? S_PE_XLB : pe_run;
                     end
@@ -506,12 +624,15 @@ module karu_vlsu #(
                         end else begin fault_abort<=1; state<=S_IDLE; end
                     end else begin
                         pe_pp1 <= xlate_pa[63:12];
+                        pe_pbmt1<=xlate_pbmt; xc_pbmt<=xlate_pbmt;
                         //  cache the HIGH page: the next element usually starts there
                         xc_v<=1; xc_vp<=g1va[63:12]; xc_pp<=xlate_pa[63:12];
                         state <= pe_run;
                     end
                 end
                 S_PE_RD0: begin
+                    vmem_va<=g0abs;
+                    vmem_pbmt<=pe_pbmt0; vmem_rstrb<=pe_st0;
                     vmem_req<=1; vmem_is_store<=0; vmem_addr<={pe_pp0, g0abs[11:0]};
                     state<=S_PE_RD0W;
                 end
@@ -520,6 +641,8 @@ module karu_vlsu #(
                     state <= straddle ? S_PE_RD1 : S_PE_LDB;
                 end
                 S_PE_RD1: begin
+                    vmem_va<=g1va;
+                    vmem_pbmt<=pe_pbmt1; vmem_rstrb<=pe_st1;
                     vmem_req<=1; vmem_is_store<=0; vmem_addr<={pe_pp1, g1va[11:0]};
                     state<=S_PE_RD1W;
                 end
@@ -528,12 +651,16 @@ module karu_vlsu #(
                     state <= S_PE_NEXT;
                 end
                 S_PE_WR0: begin
+                    vmem_va<=g0abs;
+                    vmem_pbmt<=pe_pbmt0;
                     vmem_req<=1; vmem_is_store<=1; vmem_addr<={pe_pp0, g0abs[11:0]};
                     vmem_wdata<=pe_wd0; vmem_wstrb<=pe_st0;
                     state<=S_PE_WR0W;
                 end
                 S_PE_WR0W: if (vmem_done) state <= straddle ? S_PE_WR1 : S_PE_NEXT;
                 S_PE_WR1: begin
+                    vmem_va<=g1va;
+                    vmem_pbmt<=pe_pbmt1;
                     vmem_req<=1; vmem_is_store<=1; vmem_addr<={pe_pp1, g1va[11:0]};
                     vmem_wdata<=pe_wd1; vmem_wstrb<=pe_st1;
                     state<=S_PE_WR1W;
@@ -557,10 +684,28 @@ module karu_vlsu #(
                 //  ---- load writeback: flat bytes -> dest register granules ----
                 S_PE_WB: begin
                     vg_we<=1; vg_wd<=rg_reg; vg_wg<=rg_off; vg_wdata<=pe_wbgran;
-                    if (rg == pe_nrg-1) begin done<=1; state<=S_IDLE; end
+                    if (rg == pe_nrg-1) begin done<=!fault_pending; fault_abort<=fault_pending; state<=S_IDLE; end
                     else rg<=rg+1;
                 end
+                S_DRAIN: if (!store_pending) begin done<=1; state<=S_IDLE; end
             endcase
+            // AXI errors can arrive after posted acceptance. Stay active until
+            // the final B, so the fault still belongs to this instruction.
+            if (vmem_fault && state != S_IDLE) begin
+                vmem_req<=0; done<=0; vg_we<=0;
+                fault_bus<=1;
+                fault_index<=pelem_q ? pe_i : err_index;
+                fault_va<=err_tval;
+                if (st_q) begin fault_abort<=1; state<=S_IDLE; end
+                else begin
+                    fault_pending<=!(ff_q && (pelem_q ? pe_i != 0 : err_index != 0));
+                    if (ff_q && (pelem_q ? pe_i != 0 : err_index != 0)) begin
+                        trim_req<=1; trim_vl<=pelem_q ? pe_i : err_index;
+                    end
+                    if (pelem_q) begin pe_vl<=pe_i; rg<=0; state<=S_PE_WB; end
+                    else begin nbytes<=err_index << eew_q; state<=S_LDWR; end
+                end
+            end
         end
     end
 endmodule

@@ -13,7 +13,8 @@
 //  of this module (a VLEN==VBUS_W build would need a single-granule variant).
 //
 //  NOT reset: the BRAM array, read latches, and v0 shadow retain across soft
-//  reset. They power up through INIT/initial state and then move only on writes.
+//  reset. FPGA/simulation power-up uses initial state; KARU_ASIC leaves contents
+//  unspecified until written. Software must initialize registers before use.
 
 `include "karu_vcfg.vh"
 
@@ -84,9 +85,13 @@ module karu_vrf_bram #(
     //  soft `rst`). Resetting only v0_q would break the invariant
     //  v0_shadow == BRAM[reg0] after a soft reset (mask reads -> 0 while normal
     //  operand reads of v0 return the retained BRAM data). So both start at
-    //  `initial` 0 and only ever change on a write -> always coherent.
+    //  `initial` 0 in FPGA builds. KARU_ASIC supplies no power-up value: each
+    //  byte becomes coherent when written; software must initialize v0 before
+    //  using it as a mask. Soft reset preserves both copies in either build.
     reg  [VLEN-1:0] v0_q;
+`ifndef KARU_ASIC
     initial         v0_q = {VLEN{1'b0}};
+`endif
     wire            a_is0 = (a_addr[AW-1:GB] == 5'd0);
     wire            b_is0 = (b_addr[AW-1:GB] == 5'd0);
     wire [GB-1:0]   a_g   = a_addr[GB-1:0];
@@ -106,7 +111,7 @@ module karu_vrf_bram #(
     //  retain across a soft reset -- re-initialisation happens only at FPGA
     //  configuration. The read latches a_rdata/b_rdata hold stale data only
     //  until the next read, which the consumer awaits; `initial` zeroes all
-    //  sim state. Keeping reset off these also avoids a second driver and does
+    //  non-ASIC sim state. Keeping reset off these also avoids a second driver and does
     //  not defeat block-RAM output-register inference. `rst` is kept in the
     //  port list for interface uniformity with the checker and future macro
     //  substitutions.)

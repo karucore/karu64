@@ -80,18 +80,38 @@ int main(void){
     //  ---- fround / fcvtmod anchors ----
     r32=froundd_s(0x3fc00000,&fl); chk("fround.s 1.5",r32,0x40000000); chk("fround.s fl",fl,0);
     r32=froundnx_s(0x3fc00000,&fl);chk("froundnx 1.5",r32,0x40000000); chk("froundnx fl",fl,0x01);
+    chk("froundnx.s -tiny",froundnx_s(0x80000001,&fl),0x80000000); chk("froundnx.s -tiny fl",fl,1);
+    chk("froundnx.d -tiny",froundnx_d(0x8000000000000001ULL,&fl),0x8000000000000000ULL); chk("froundnx.d -tiny fl",fl,1);
+    chk("fround.d sNaN",froundd_d(0x7ff0000000000001ULL,&fl),0x7ff8000000000000ULL); chk("fround.d sNaN fl",fl,0x10);
     r32=fcvtmod(0x4034000000000000ULL,&fl); chk("fcvtmod 20",r32,20); chk("fcvtmod fl",fl,0);
     r32=fcvtmod(0x41f0000000000000ULL,&fl); chk("fcvtmod 2^32",r32,0); chk("fcvtmod ovf fl",fl,0x10);
     r32=fcvtmod(0x7ff8000000000000ULL,&fl); chk("fcvtmod NaN",r32,0); chk("fcvtmod NaN fl",fl,0x10);
+    r32=fcvtmod(0x432fffffffffffffULL,&fl); chk("fcvtmod +overflow fraction",r32,0xffffffff); chk("fcvtmod NV suppresses NX",fl,0x10);
+    r32=fcvtmod(0xc32fffffffffffffULL,&fl); chk("fcvtmod -overflow fraction",r32,1); chk("fcvtmod negative NV suppresses NX",fl,0x10);
 
     //  ================= digest sweep (spike-cross golden) =================
     static const uint32_t s_in[]={0x3fc00000,0x3f000000,0x3f400000,0x40490fdb,0xbf000000,
         0xc0490fdb,0x4b000000,0x7f800000,0xff800000,0x7fc00000,0x7fa00000,0x00400000,
-        0x80400000,0x00000000,0x80000000,0x40000000,0x42f60000};
+        0x80400000,0x00000000,0x80000000,0x40000000,0x42f60000,
+        0x00000001,0x80000001,0x007fffff,0x807fffff,0x00800000,0x80800000,
+        0x3effffff,0x3f000001,0xbeffffff,0xbf000001,0x3fbfffff,0x3fc00001,
+        0xbfbfffff,0xbfc00001,0x4affffff,0xcaffffff,0xcb000000,0xcb000001,
+        0x7f7fffff,0xff7fffff,0xff800001,0xffc00001};
     static const uint64_t d_in[]={0x3ff8000000000000ULL,0x3fe0000000000000ULL,0x4009210fb0000000ULL,
         0xc004000000000000ULL,0x4034000000000000ULL,0x7ff0000000000000ULL,0x7ff8000000000000ULL,
         0x0000000000000001ULL,0x41f0000000000000ULL,0xc1e0000000000001ULL,0x43e0000000000000ULL,
-        0x3fe0000000000000ULL,0x8000000000000000ULL};
+        0x3fe0000000000000ULL,0x8000000000000000ULL,
+        0x0000000000000000ULL,0x8000000000000001ULL,
+        0x000fffffffffffffULL,0x800fffffffffffffULL,
+        0x0010000000000000ULL,0x8010000000000000ULL,
+        0x3fdfffffffffffffULL,0x3fe0000000000001ULL,
+        0xbfdfffffffffffffULL,0xbfe0000000000000ULL,0xbfe0000000000001ULL,
+        0x3ff7ffffffffffffULL,0x3ff8000000000001ULL,
+        0xbff7ffffffffffffULL,0xbff8000000000000ULL,0xbff8000000000001ULL,
+        0x432fffffffffffffULL,0x4330000000000000ULL,0x4330000000000001ULL,
+        0xc32fffffffffffffULL,0xc330000000000000ULL,0xc330000000000001ULL,
+        0x7fefffffffffffffULL,0xffefffffffffffffULL,0xfff0000000000000ULL,
+        0x7ff0000000000001ULL,0xfff0000000000001ULL,0xfff8000000000001ULL};
     uint64_t dig=0xcbf29ce484222325ULL;
     #define MIX(v) do{ dig=(dig^(uint64_t)(v))*0x100000001b3ULL; }while(0)
     for(int rm=0;rm<5;rm++){ set_frm(rm);
@@ -104,8 +124,12 @@ int main(void){
             MIX(froundnx_d(d_in[i],&fl)); MIX(fl);
         }
     }
+    sio_puts("[ZFA] rounding-digest="); put_hex(dig); sio_putc('\n');
     set_frm(0);
-    for(unsigned i=0;i<sizeof(d_in)/8;i++){ MIX(fcvtmod(d_in[i],&fl)); MIX(fl); }
+    for(unsigned i=0;i<sizeof(d_in)/8;i++){
+        uint32_t mod_result=fcvtmod(d_in[i],&fl); MIX(mod_result); MIX(fl);
+    }
+    sio_puts("[ZFA] modulo-digest="); put_hex(dig); sio_putc('\n');
     //  fminm/fmaxm/fleq/fltq over pairs
     for(unsigned i=0;i<sizeof(s_in)/4;i++)for(unsigned j=0;j<sizeof(s_in)/4;j+=3){
         MIX(fminm_s(s_in[i],s_in[j],&fl)); MIX(fl);

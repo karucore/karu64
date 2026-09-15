@@ -5,6 +5,9 @@
 //    TEST 1  CLINT machine-timer interrupt (mtimecmp/mtime -> MTIP, cause 7)
 //    TEST 2  PLIC external interrupt from the NS16550 RX line
 //            (UART IRQ -> PLIC source 1 -> MEIP, cause 11; claim/complete)
+//    TEST 3/4 Timer interrupts drain vector arithmetic and VLSU preflight
+//    TEST 5  CLINT machine-software interrupt (MSIP, cause 3), CSR read-only
+//            pending bit, masking, MMIO clear and rearm
 //
 //  Console + exit go through test/fw/ns16550.c (sio_* + htif_exit). On success the
 //  firmware calls htif_exit(0); fpga_tb watches the HTIF tohost word and stops
@@ -15,6 +18,7 @@
 
 //  ------------------------------------------------------------------ MMIO map
 #define CLINT_BASE      0x02000000UL
+#define CLINT_MSIP      (*(volatile uint32_t *)(CLINT_BASE + 0x0000))
 #define CLINT_MTIMECMP  (*(volatile uint64_t *)(CLINT_BASE + 0x4000))
 #define CLINT_MTIME     (*(volatile uint64_t *)(CLINT_BASE + 0xBFF8))
 
@@ -31,6 +35,8 @@
 #define UART_SCR        7
 
 //  mie / mstatus bit positions
+#define MIE_MSIE        (1UL << 3)
+#define MIP_MSIP        (1UL << 3)
 #define MIE_MTIE        (1UL << 7)
 #define MIE_MEIE        (1UL << 11)
 #define MSTATUS_MIE     (1UL << 3)
@@ -45,6 +51,7 @@ extern void trap_entry(void);       //  test/fw/irq_trap.S
 void htif_exit(int code);           //  test/fw/ns16550.c
 
 static volatile int     timer_fired = 0;
+static volatile int     software_fired = 0;
 static volatile int     ext_fired   = 0;
 static volatile uint8_t ext_byte    = 0;
 
@@ -79,6 +86,12 @@ void c_trap(void)
     }
 
     switch (cause & 0xff) {
+    case 3:     //  machine software (MSIP): clear its MMIO source, not mip.
+        CLINT_MSIP = 0;
+        clear_csr(mie, MIE_MSIE);
+        software_fired++;
+        break;
+
     case 7:     //  machine timer (MTIP)
         CLINT_MTIMECMP = 0xFFFFFFFFFFFFFFFFUL;  //  push compare out: deassert MTIP
         clear_csr(mie, MIE_MTIE);
@@ -91,7 +104,7 @@ void c_trap(void)
             ext_byte = UART[UART_RBR];          //  read RX byte ...
             UART[UART_SCR] = 0;                 //  ... and pop it (deassert IRQ)
         }
-        PLIC_CLAIM_M = id;                      //  complete (ignored by level PLIC)
+        PLIC_CLAIM_M = id;                      // release the source gateway
         clear_csr(mie, MIE_MEIE);
         ext_fired = 1;
         break;
@@ -213,7 +226,9 @@ int main(void)
         volatile uint64_t *MARK = (volatile uint64_t *)0x80001100UL;
         *MARK = 1;
         timer_fired = 0;
-        CLINT_MTIMECMP = CLINT_MTIME + 1;           //  fire within ~1 tick
+        //  Leave one full tick for the MMIO/CSR setup even when this read
+        //  occurs immediately before a tick edge; +1 can trap before vsse64.
+        CLINT_MTIMECMP = CLINT_MTIME + 2;
         set_csr(mie, MIE_MTIE);
 
         asm volatile(
@@ -237,6 +252,42 @@ int main(void)
         }
     }
     sio_puts("[irq-test] interrupt-during-VLSU-preflight OK\n");
+
+    //  ========== TEST 5: CLINT machine-software interrupt ==================
+    //  mip.MSIP is a read-only view of the CLINT line. CSR writes cannot
+    //  inject an interrupt or clear one held pending by the MMIO register.
+    {
+        clear_csr(mie, MIE_MSIE);
+        CLINT_MSIP = 0;
+        set_csr(mip, MIP_MSIP);
+        if (read_csr(mip) & MIP_MSIP)
+            fail(9, "mip write injected MSIP", read_csr(mip));
+
+        CLINT_MSIP = 1;
+        volatile uint64_t g = 0;
+        while (!(read_csr(mip) & MIP_MSIP))
+            if (++g > WATCHDOG)
+                fail(10, "CLINT MSIP not pending", CLINT_MSIP);
+        clear_csr(mip, MIP_MSIP);
+        if (!(read_csr(mip) & MIP_MSIP) || software_fired != 0)
+            fail(11, "MSIP pending or masking wrong", read_csr(mip));
+
+        for (int expected = 1; expected <= 2; expected++) {
+            if (expected == 2) CLINT_MSIP = 1;
+            set_csr(mie, MIE_MSIE);
+            g = 0;
+            while (software_fired < expected)
+                if (++g > WATCHDOG)
+                    fail(12, "software interrupt never fired", software_fired);
+            if (software_fired != expected || (CLINT_MSIP & 1))
+                fail(13, "software interrupt count or clear wrong", software_fired);
+            g = 0;
+            while (read_csr(mip) & MIP_MSIP)
+                if (++g > WATCHDOG)
+                    fail(14, "MSIP remains pending after MMIO clear", read_csr(mip));
+        }
+    }
+    sio_puts("[irq-test] software interrupt OK\n");
 
     sio_puts("[irq-test] PASS\n");
     htif_exit(0);

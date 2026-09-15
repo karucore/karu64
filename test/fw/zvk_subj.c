@@ -8,11 +8,11 @@
 #include <stdint.h>
 #include "sio_generic.h"
 
-static uint32_t vd[8]  __attribute__((aligned(32)));
-static uint32_t vs1[8] __attribute__((aligned(32)));
-static uint32_t vs2[8] __attribute__((aligned(32)));
-static uint32_t out[8] __attribute__((aligned(32)));
-static uint32_t ref[8] __attribute__((aligned(32)));
+static uint32_t vd[16]  __attribute__((aligned(32)));
+static uint32_t vs1[16] __attribute__((aligned(32)));
+static uint32_t vs2[16] __attribute__((aligned(32)));
+static uint32_t out[16] __attribute__((aligned(32)));
+static uint32_t ref[16] __attribute__((aligned(32)));
 
 static int fails;
 
@@ -36,7 +36,7 @@ static void put_hex32(uint32_t x)
 
 static void clear(void)
 {
-    for (int i = 0; i < 8; i++) vd[i] = vs1[i] = vs2[i] = 0, out[i] = 0xeeeeeeeeu;
+    for (int i = 0; i < 16; i++) vd[i] = vs1[i] = vs2[i] = 0, out[i] = 0xeeeeeeeeu;
 }
 
 static void check(const char *name, const uint32_t *exp, int n)
@@ -45,7 +45,9 @@ static void check(const char *name, const uint32_t *exp, int n)
     for (int i = 0; i < n; i++) {
         if (out[i] != exp[i]) {
             if (!bad) { sio_puts("[FAIL] "); sio_puts(name); }
-            sio_puts("\n  i="); sio_putc('0' + i);
+            sio_puts("\n  i=");
+            if (i >= 10) sio_putc('1');
+            sio_putc('0' + (i % 10));
             sio_puts(" got=0x"); put_hex32(out[i]);
             sio_puts(" exp=0x"); put_hex32(exp[i]);
             bad++;
@@ -98,6 +100,82 @@ static void run256(uint32_t word)
         : [vl]"r"((long)8), [vd]"r"(vd), [vs1]"r"(vs1), [vs2]"r"(vs2),
           [out]"r"(out), [word]"i"(word)
         : "t0", "memory");
+}
+
+//  The .vs AES/SM4 forms use vs2 element group zero as a scalar key for every
+//  destination element group. Compare them with the corresponding .vv form fed
+//  an explicitly repeated key. Distinct later vs2 groups make this fail if the
+//  integration accidentally advances vs2 with vd.
+#define GROUP_RUN(name, vtype, word)                                      \
+static void name(long avl)                                                \
+{                                                                         \
+    asm volatile(                                                         \
+        "vsetvli t0,%[vl],e32," vtype ",tu,mu\n"                         \
+        "vle32.v v8,(%[vd])\n"                                           \
+        "vle32.v v12,(%[vs2])\n"                                        \
+        ".word " word "\n"                                               \
+        "vse32.v v8,(%[out])\n"                                         \
+        :                                                                 \
+        : [vl]"r"(avl), [vd]"r"(vd), [vs2]"r"(vs2), [out]"r"(out)       \
+        : "t0", "memory");                                               \
+}
+
+GROUP_RUN(run_aesem_vv_m1, "m1", "0xa2c12477") // vaesem.vv v8,v12
+GROUP_RUN(run_aesem_vs_m1, "m1", "0xa6c12477") // vaesem.vs v8,v12
+GROUP_RUN(run_aesem_vv_m2, "m2", "0xa2c12477")
+GROUP_RUN(run_aesem_vs_m2, "m2", "0xa6c12477")
+GROUP_RUN(run_aesef_vv_m1, "m1", "0xa2c1a477") // vaesef.vv v8,v12
+GROUP_RUN(run_aesef_vs_m1, "m1", "0xa6c1a477") // vaesef.vs v8,v12
+GROUP_RUN(run_aesef_vv_m2, "m2", "0xa2c1a477")
+GROUP_RUN(run_aesef_vs_m2, "m2", "0xa6c1a477")
+GROUP_RUN(run_aesdm_vv_m1, "m1", "0xa2c02477") // vaesdm.vv v8,v12
+GROUP_RUN(run_aesdm_vs_m1, "m1", "0xa6c02477") // vaesdm.vs v8,v12
+GROUP_RUN(run_aesdm_vv_m2, "m2", "0xa2c02477")
+GROUP_RUN(run_aesdm_vs_m2, "m2", "0xa6c02477")
+GROUP_RUN(run_aesdf_vv_m1, "m1", "0xa2c0a477") // vaesdf.vv v8,v12
+GROUP_RUN(run_aesdf_vs_m1, "m1", "0xa6c0a477") // vaesdf.vs v8,v12
+GROUP_RUN(run_aesdf_vv_m2, "m2", "0xa2c0a477")
+GROUP_RUN(run_aesdf_vs_m2, "m2", "0xa6c0a477")
+GROUP_RUN(run_aesz_vs_m1,  "m1", "0xa6c3a477") // vaesz.vs v8,v12
+GROUP_RUN(run_aesz_vs_m2,  "m2", "0xa6c3a477")
+GROUP_RUN(run_sm4r_vv_m1,  "m1", "0xa2c82477") // vsm4r.vv v8,v12
+GROUP_RUN(run_sm4r_vs_m1,  "m1", "0xa6c82477") // vsm4r.vs v8,v12
+GROUP_RUN(run_sm4r_vv_m2,  "m2", "0xa2c82477")
+GROUP_RUN(run_sm4r_vs_m2,  "m2", "0xa6c82477")
+
+#undef GROUP_RUN
+
+static void prepare_vs_groups(int n, int repeated)
+{
+    static const uint32_t key[4] = {
+        0xa458fea3u, 0x37c08027u, 0x1f6d4b92u, 0xe3a5c761u
+    };
+    for (int i = 0; i < n; i++) {
+        vd[i] = (0x10203040u * (uint32_t)(i + 1)) ^ 0x5a17c3e9u;
+        vs2[i] = repeated || i < 4
+               ? key[i & 3]
+               : (0x11111111u * (uint32_t)(i + 1)) ^ 0xc39a5a16u;
+        out[i] = 0xeeeeeeeeu;
+    }
+}
+
+static void check_vs_broadcast(const char *name, int n,
+                               void (*vv)(long), void (*vs)(long))
+{
+    prepare_vs_groups(n, 1);
+    vv(n);
+    for (int i = 0; i < n; i++) ref[i] = out[i];
+    prepare_vs_groups(n, 0);
+    vs(n);
+    check(name, ref, n);
+}
+
+static void check_aesz_broadcast(const char *name, int n, void (*vs)(long))
+{
+    prepare_vs_groups(n, 0);
+    for (int i = 0; i < n; i++) ref[i] = vd[i] ^ vs2[i & 3];
+    vs(n);
+    check(name, ref, n);
 }
 
 //  General-vs1 (non-v3) end-to-end coverage with the REAL OpenSSL libcrypto
@@ -197,6 +275,32 @@ int main(void)
     vs2[0]=0xf12186f9u; vs2[1]=0x41662b61u; vs2[2]=0x5a6ab19au; vs2[3]=0x7ba92077u;
     run128(0xa22820f7u);        //  vsm4r.vv v1,v2
     check("vsm4r.vv", exp_sm4r, 4);
+
+    sio_puts("[ZVK .vs scalar element-group broadcast]\n");
+    check_vs_broadcast("vaesem.vs broadcast vl=8,m1", 8,
+                       run_aesem_vv_m1, run_aesem_vs_m1);
+    check_vs_broadcast("vaesem.vs broadcast vl=16,m2", 16,
+                       run_aesem_vv_m2, run_aesem_vs_m2);
+    check_vs_broadcast("vaesef.vs broadcast vl=8,m1", 8,
+                       run_aesef_vv_m1, run_aesef_vs_m1);
+    check_vs_broadcast("vaesef.vs broadcast vl=16,m2", 16,
+                       run_aesef_vv_m2, run_aesef_vs_m2);
+    check_vs_broadcast("vaesdm.vs broadcast vl=8,m1", 8,
+                       run_aesdm_vv_m1, run_aesdm_vs_m1);
+    check_vs_broadcast("vaesdm.vs broadcast vl=16,m2", 16,
+                       run_aesdm_vv_m2, run_aesdm_vs_m2);
+    check_vs_broadcast("vaesdf.vs broadcast vl=8,m1", 8,
+                       run_aesdf_vv_m1, run_aesdf_vs_m1);
+    check_vs_broadcast("vaesdf.vs broadcast vl=16,m2", 16,
+                       run_aesdf_vv_m2, run_aesdf_vs_m2);
+    check_aesz_broadcast("vaesz.vs broadcast vl=8,m1", 8,
+                         run_aesz_vs_m1);
+    check_aesz_broadcast("vaesz.vs broadcast vl=16,m2", 16,
+                         run_aesz_vs_m2);
+    check_vs_broadcast("vsm4r.vs broadcast vl=8,m1", 8,
+                       run_sm4r_vv_m1, run_sm4r_vs_m1);
+    check_vs_broadcast("vsm4r.vs broadcast vl=16,m2", 16,
+                       run_sm4r_vv_m2, run_sm4r_vs_m2);
 
     //  Zvksh: SM3 message expansion.
     static const uint32_t exp_sm3me[8] = {

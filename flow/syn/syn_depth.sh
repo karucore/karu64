@@ -15,7 +15,7 @@
 #	everything except the big combinational dividers and karu_varith.
 #
 #	Why standalone + techmap avoids the false-loop problem that defeats `ltp`
-#	in the mapped area-synth flow (make sweep):
+#	in the mapped area-synth flow (`make area-matrix`):
 #	  - ltp finds flops by cell type. After `dfflibmap` flops are liberty
 #	    DFF_X1 cells ltp does NOT recognise, so it reads every Q->D feedback
 #	    as a combinational loop and reports a bogus thousand-stage path. Here
@@ -28,7 +28,7 @@
 #	IMPORTANT: techmap is UNOPTIMISED (no abc minimisation), so these depths
 #	are an *upper bound* / relative indicator, not the final mapped
 #	critical-path depth (e.g. karu_alu techmap=27 vs abc-mapped=22). For the
-#	optimised depth + area use `make sweep`; this is the fast, all-modules,
+#	optimised depth + area use `make area-matrix`; this is the fast, all-modules,
 #	all-configs (incl. the vector core the area synth can't finish) companion.
 #	Set DEPTH_AIG=1 to decompose to a 2-input AIG (`aigmap`) instead.
 #
@@ -52,7 +52,8 @@ RTL="$(find ../../rtl -maxdepth 2 -type f -name '*.v' \
 	| tr '\n' ' ')"
 DECOMP="${DEPTH_AIG:+aigmap}"; DECOMP="${DECOMP:-techmap}"
 #	Cycle-count knobs that actually reshape modules. Default = README "small
-#	core" (matches `make sweep`). FP dividers/sqrt are always combinational.
+#	core" (matches the corresponding area-matrix rows). FP dividers/sqrt are
+#	always combinational.
 DEFINES="${DEFINES-KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64}"
 PER_TIMEOUT="${PER_TIMEOUT:-900}"
 dflags=""; for t in $DEFINES; do dflags="$dflags -D$t"; done

@@ -2,9 +2,9 @@
 
 `karu64` targets the **Xilinx VCU118** board (part `xcvu9p-flga2104-2L-e`,
 Virtex UltraScale+ VU9P), built with **Vivado 2026.1** (previously 2025.2.1; the
-full-vector ROM bit was last reproduced on 2026.1). The part is wildly
-over-provisioned for this core (6840 DSP48E2, 4320 BRAM), so **area is a
-non-issue — timing is the only question.**
+full-vector ROM bit was last reproduced on 2026.1). The part provides
+6840 DSP48E2 units and 2160 36-Kib block-RAM tiles. The full-vector ROM
+configuration targets a 75 MHz core clock.
 
 There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 
@@ -17,17 +17,31 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Toolchain: the `xilinx` alias
+## Current profile candidate — 2026-09-15
 
-Vivado is **not** on the default `$PATH` on purpose — sourcing its settings drags
-a legacy Verilator into the environment that shadows the one used for the sims.
-Bring Vivado in only when needed:
+The current RVA23S64 DDR/SGMII ROM bitstream was built with Vivado 2026.1 from
+the corrected RTL. Routed 75 MHz CPU setup/hold slack is +0.046/+0.010 ns;
+whole-design worst setup/hold is +0.009/+0.010 ns. All timing constraints and
+all 14 bus-skew constraints pass. Utilization is 366,098 LUTs, 86,857
+registers, 317.5 BRAM tiles and 29 DSPs. Bitgen and its prerequisite DRC
+completed with zero errors. Both matched ACT4 configurations passed 2872/2872
+tests with the maintained local
+[dependency patches](../test/act4-karu/README.md#dependencies).
+
+The current image (`c61da577…ed0da`) boots Linux 7.2.4-zvk and passes karudeb
+board acceptance, including vector ABI, memory and crypto checks.
+See [diagnostics and constraint coverage](release-diagnostics-2026-09-14.md)
+and the [matching boot selection](#opt-in-rva23s64-boot-selection).
+
+## Tool environment
+
+Use the wrapper to load Vivado's settings for one command. It keeps bundled
+tools from shadowing the simulation toolchain in the parent shell. Set
+`VIVADO_SETTINGS` to the installation's settings file when needed:
 
 ```sh
-alias xilinx='source $HOME/Xilinx/2026.1/Vivado/settings64.sh'
-xilinx
-make vcu118-ddr          # synth + place + route -> _build/vcu118_ddr.bit
-make prog_vcu118_ddr     # program a connected board over JTAG
+flow/with_vivado.sh make vcu118-ddr       # build -> _build/vcu118_ddr.bit
+flow/with_vivado.sh make prog_vcu118_ddr  # separate, explicit JTAG programming
 ```
 
 The boot/ROM builds compile bare-metal fu-boot with the `XCHAIN` toolchain
@@ -35,16 +49,17 @@ The boot/ROM builds compile bare-metal fu-boot with the `XCHAIN` toolchain
 installed, override it — fu-boot is freestanding, so it builds fine:
 
 ```sh
-make vcu118-ddr-sgmii-rom-vec XCHAIN=riscv64-linux-gnu- \
+flow/with_vivado.sh make vcu118-ddr-sgmii-rom-vec XCHAIN=riscv64-linux-gnu- \
      VIVADO_VMEM_KB=84000000 VIVADO_THREADS=8
 ```
 
 The Makefile launches Vivado from `_build`, so journals, logs, `.Xil`, generated
 IP, project state, reports, checkpoints, and bitstreams stay under `_build`. The
-sim/spike targets must run in a shell where `xilinx` has **not** been sourced.
+sim/Spike targets should use the simulation toolchain's environment.
 
 `make prog_vcu118_ddr` deliberately does **not** depend on the build rule — it
-flashes whatever `_build/vcu118_ddr.bit` exists (a prerequisite would let make
+programs volatile FPGA configuration from whatever `_build/vcu118_ddr.bit`
+exists (a prerequisite would let make
 decide the bitstream is stale and silently start a multi-hour resynth). Build
 first, then program.
 
@@ -56,10 +71,9 @@ without issue. `flow/with_vivado.sh` sources 2026.1 if installed and otherwise
 falls back to 2025.2.1, so the same command works on the build host and the lab
 JTAG host.
 
-For one-off Vivado/JTAG work without changing your shell, `flow/with_vivado.sh
-<cmd>` sources the settings in a subshell only (e.g. `flow/with_vivado.sh make
-prog_vcu118_ddr` to program the DDR4/ROM bit), and `flow/hw_server.sh`
-start|stop|status manages the JTAG `hw_server`.
+`flow/hw_server.sh start|stop|status` manages the JTAG `hw_server`.
+`flow/with_vivado.sh vivado -nolog -mode batch -source flow/hw_scan.tcl`
+performs a read-only target/device scan without programming the FPGA.
 
 ### Driving the console from the host
 
@@ -69,12 +83,9 @@ assert RTS, which the CTS-gated NS16550 TX requires:
 
 - `flow/serial_cap.py /dev/ttyUSB1 115200 _build/boot.log` — capture the console
   to an unbuffered, line-timestamped log.
-- `flow/uart_cl.py /dev/ttyUSB1 115200 _build/boot.log` — drive U-Boot/fu-boot or
-  the Linux shell (commands on stdin; `@wait <s>` sets the post-command capture
-  window). It types **one character at a time** and self-corrects against the
-  echo: the NS16550 RX intermittently doubles host→FPGA characters, but the FPGA
-  echo is clean and reflects the true line buffer, so it lands long commands that
-  the older whole-line `uart_drive.py` loses to the glitch.
+- `flow/hw_monitor.py /dev/ttyUSB1 115200 _build/monitor.log` — send commands
+  from stdin to fu-boot, U-Boot or Linux and capture replies (`@wait <s>` sets
+  the next command's response window).
 
 The hands-off ROM bit (`vcu118-ddr-sgmii-rom-{gc,vec}`) bakes the netboot bootcmd
 and skips console typing entirely — preferred when you control the build.
@@ -88,7 +99,7 @@ flow/fpga/
                     (driven by fpga_tb.v); the hardware board top is
                     vcu118_ddr_top.v (DDR4 main memory).
   karu_axi_mem.v    synthesizable AXI4 memory: imem (RO) + dmem (RW, INCR-burst
-                    refill + single-beat write-through) from BRAM, 0x10000000 -> UART
+                    refill + one/two-beat write-through) from BRAM, 0x10000000 -> UART
   karu_ns16550.v    NS16550-register-compatible UART (wraps uart_tx/uart_rx)
   fpga_tb.v         verilator/iverilog testbench for fpga_top
 ```
@@ -98,7 +109,7 @@ flow/fpga/
 | Region       | Base         | Notes                                              |
 |--------------|--------------|----------------------------------------------------|
 | Main RAM     | `0x80000000` | BRAM (`1 << RAM_XADR` bytes, default 1 MiB) / DDR4 |
-| CLINT        | `0x02000000` | `msip`/`mtimecmp`/`mtime` → machine-timer interrupt |
+| CLINT        | `0x02000000` | `msip` → machine software IRQ; `mtimecmp`/`mtime` → timer IRQ |
 | PLIC         | `0x0c000000` | NS16550 = source 1 → `irq_external_m/s`            |
 | NS16550 UART | `0x10000000` | one 4 KiB page, uncacheable; `intr` → PLIC          |
 
@@ -107,6 +118,11 @@ flow/fpga/
 is bit-compatible with the default spike machine map, so a spike-targeted DTB
 drives this SoC unchanged. Everything outside the DRAM window is uncacheable by
 construction, so all MMIO bypasses the L1.
+
+CLINT software and timer interrupts are wired to the core in both SoC
+flavours. `mip.MSIP` reflects the MMIO-controlled hardware input and cannot
+be set by CSR writes. `make irq-test ddr-irq-test` checks delivery, masking,
+clear/rearm and interrupt drain with vector memory operations in flight.
 
 ### NS16550 console — one binary for spike and hardware
 
@@ -119,9 +135,9 @@ run the same image on the FPGA. Two conventions matter:
 > **Byte-wide accesses only.** spike rejects any access whose width ≠ 1;
 > `test/fw/ns16550.c` uses `volatile uint8_t *` throughout.
 
-> **RX consume = a write to SCR, not a read.** karu64's LSU issues only
-> 8-byte-aligned reads and extracts the byte itself, so a read can't be the
-> RBR-pop trigger (every LSR poll would alias to "RBR read" and drain the FIFO).
+> **RX consume = a write to SCR, not a read.** The UART retains its original
+> explicit-pop protocol. Current scalar IO accesses preserve native byte
+> addresses; this does not change the peripheral's RX-consume convention.
 > `sio_getc()` reads RBR, then writes SCR (offset 7) to pop. On spike the read
 > pops and the SCR write is a harmless scratch, so one binary advances exactly
 > once on both. (Validated on hardware — it caught a real directed-rounding FP
@@ -176,12 +192,15 @@ instruction-memory latency.
   | U-Boot  | `0x60000` | `0x80200000`         |
   | DTB     | `0xFC000` | `0x81B00000`         |
 
-  `FUBOOT_DTB_OFF` was moved `0xF0000`→`0xFC000` once a U-Boot v2025.01 built with
-  `riscv64-linux-gnu` gcc-15 grew to ~579 KiB and overran the old 576 KiB U-Boot
-  region; the move enlarges that region to 624 KiB while the ~2.8 KiB DTB still
-  has a 16 KiB region (ROM stays 1 MiB — no `karu_boot_mem` change). If U-Boot
-  ever overruns again, `build_fuboot_rom.sh` aborts with an explicit
-  `... overruns its region` error before P&R, so the failure is fast and obvious.
+  Region capacities are 64 KiB for fu-boot, 320 KiB for OpenSBI, 624 KiB for
+  U-Boot and 16 KiB for the DTB. The generated blob-size header is refreshed
+  on every ROM build, and the packer rejects any region overrun before P&R.
+
+  Build the companion firmware with `make -C ../karudeb karu-opensbi` when
+  needed. The vector ROM uses `build/karu64/opensbi/fw_jump.bin` and
+  `build/karu64/karu64-zvk-ddr.dtb` from that checkout; do not substitute
+  firmware from a different image series. The embedded DTB and the separately
+  TFTP-served `board.dtb` must be identical.
 
   After U-Boot relocates to DRAM, its baked netboot bootcmd (from the per-profile
   one-liner in `../karudeb/build/karu64/tftp/<variant>/uboot-netboot-one-line.txt`)
@@ -201,6 +220,62 @@ instruction-memory latency.
     bit (adds the vector timing knobs below; enables the opt-in Smcntrpmf +
     Sscofpmf counter extensions, both reset-inert).
 
+### Opt-in RVA23S64 boot selection
+
+`make vcu118-ddr-sgmii-rom-rva23s64` reuses the vector SGMII ROM flow and
+75 MHz timing settings, adding `KARU_RVA23S64`. The original vector target
+is unchanged. Optional Zvk, Keccak and Smcntrpmf remain enabled in this FPGA
+image; the profile contract supplies H/Ssstateen and requires Sscofpmf.
+
+Build/stage the matching companion image first:
+
+```sh
+make -C ../karudeb karu64-rva23s64-check karu-opensbi
+TFTP_SERVER=192.168.42.1 GUEST_IP=192.168.42.10 \
+  NFS_SERVER=192.168.42.1 NFSROOT=/srv/nfs/karudeb \
+  make -C ../karudeb karu64-rva23s64-tftp
+make rva23-boot-inputs-check
+flow/with_vivado.sh make vcu118-ddr-sgmii-rom-rva23s64
+```
+
+The wrapper selects `FUBOOT_RVA23_DTB` (default
+`../karudeb/build/karu64/karu64-rva23s64-ddr.dtb`) and
+`VCU118_NETBOOT_FILE_RVA23` (the one-liner under the matching profile TFTP
+staging directory). It rejects a missing command/DTB, missing required
+H/supervisor discovery leaves, or a mismatch with the staged `board.dtb`.
+The 0/0x10000/0x60000/0xFC000 ROM layout and blob-overrun checks are unchanged.
+Reports default to tag `ddr_rva23s64_sgmii_75_rom`. The bitstream output is
+the existing `_build/vcu118_ddr.bit`; the command does not program the board.
+
+For board programming on another host, run `make vcu118-program-bundle` and
+transfer `_build/vcu118_programming.tgz`. Its members retain the `_build/...`
+paths and contain the mandatory bitstream plus `_build/vcu118_ddr.ltx` when
+available. The programming host can extract it at the repository root and run
+`flow/with_vivado.sh make prog_vcu118_ddr`. For boot, separately stage `Image`
+and `board.dtb` from the matching karudeb TFTP directory.
+The NFS rootfs is separate. Keep the ROM/TFTP DTBs identical and use the normal
+Svpbmt-enabled profile. The lab netboot command uses server 192.168.42.1,
+board 192.168.42.10 and NFS root `/srv/nfs/karudeb`; TFTP loads Image at
+0x80200000 and the DTB at 0x84000000.
+
+Capture UART with `python3 flow/serial_cap.py /dev/ttyUSB1 115200 _build/boot.log`.
+From another terminal, with `hw_server` running and the intended board selected,
+run `flow/with_vivado.sh make prog_vcu118_ddr`. This programs volatile FPGA
+configuration, not flash; DDR calibration releases the CPU automatically.
+After each new build, run karudeb's `board_accept.sh` as root. Require all
+six `vill_probe` cases and the applicable ptrace cases, including syscall
+clobbering; record skips separately. Run the cache/CPI probe with
+`perf_run --user-count -- cache_window_probe` to enable its counters and
+compare code/data costs across the 256 MiB boundary. Retain explicit
+completion logs for crypto and KVM guest tests.
+
+The profile DTS inherits the same hardware map and timing properties, removes
+the incorrect inherited PMP description, and the companion kernel enables KVM
+through an additional fragment. Staging without `TFTP_ROOT` does not update
+the live TFTP service. Source configuration, routed timing closure and an
+actual board/guest boot are separate results; none is implied by this target
+name.
+
 ## Clocking and timing
 
 The DDR4 board build derives the core `cpu_clk` from the MIG user clock —
@@ -216,17 +291,29 @@ threads 75 MHz down via `DIV=4`.
 Even at the relaxed ~75 MHz core clock (~13.3 ns), this RV64GCV core with
 combinational mul/div has deep cones, so two levers shorten them:
 
-- **Don't leave the multiplies combinational.** Default `KARU_MUL_CYCLES=1`
+- **Don't leave the multiplies combinational.** Setting `KARU_MUL_CYCLES=1`
   writes the 64×64 (`karu_m`) and 53×53 (`karu_fmul_d`) multiplies as a Verilog
   `*`, which maps to *unpipelined* DSP cascades — the classic Fmax killer. The
   multi-cycle knobs (`KARU_M_MUL_CYCLES`, `KARU_D_MUL_CYCLES`,
   `KARU_V_MUL_CYCLES`, `KARU_V_DIV_CYCLES`) and the FP fast-path multiply
   pipeline (`KARU_D_MUL_PIPE`) shorten them.
-- **Two vector writeback levers** close the full-vector bitstream: the 2-stage
+- **Two vector writeback levers** support full-vector timing closure: the 2-stage
   lane pipeline `KARU_V_LANE_PIPE` (splits the `vsew`→result cone) and the
   cold-funnel writeback stage `KARU_V_CWB_STAGE` (lands the whole-register
-  assemblies in a dedicated register before the VRF-write funnel). Both are
-  byte-identical when off and cost ~0.1 % cycles.
+  assemblies in a dedicated register before the VRF-write funnel). Both
+  preserve architectural results; their cycle cost depends on the workload.
+
+The scalar `fround` converters now have an intermediate register. Vector
+mask count/first-index operations use registered 16-bit summaries and a
+balanced fold, removing a 128-deep conditional count chain. These stages add
+fixed compute latency, not operand-dependent early exits. Default and shipping
+Yosys configurations pass the [runtime-divider audit](../flow/syn/README.md#runtime-divisionmodulo-audit);
+the serial arithmetic settings do not elaborate combinational dividers.
+The lane stage captures controls and mask bits with its integer operands,
+and a complete request register separates vector-FP operand selection from
+FPU normalization. The latter adds one dispatch cycle per lane-FPU request.
+The VLSU uses balanced first/last-active-element trees; this shortens its
+request path without changing memory-access cycles.
 
 The flow drops a **post-synthesis** snapshot (utilization / timing / worst-paths
 / `.dcp`) minutes in, before the long P&R, so structural long paths surface
@@ -235,45 +322,28 @@ under `_build/`. `make elab` / `make elab-ddr` are fast RTL-elaboration-only
 checks for iterating on elaboration/range errors, and `make ooc OOC_TOP=<module>`
 runs an out-of-context synth of a single module.
 
-**Memory-restricted hosts:** the recipes cap Vivado's address space
-(`VIVADO_VMEM_KB`) and thread count (`VIVADO_THREADS`). The scalar/IMAFDC builds
-fit a 32 GB box; the full-vector build wants more (≈84 GB box, 8 threads).
+**Build resources:** configure Vivado's address-space limit (`VIVADO_VMEM_KB`)
+and thread count (`VIVADO_THREADS`) for the available resources. Full-vector
+implementation requires substantially more memory than scalar synthesis.
+An address-space limit is not a resident-memory limit.
 
-## Validated status
+## Hardware status and remaining board work
 
-- **DDR4 main memory** is validated on the real VCU118: the bitstream programs,
-  the MIG calibrates, and the DDR memtest payload (fill/verify, alias, strobe,
-  executing from DDR) passes.
-- **Scalar Linux on hardware:** a standalone, hands-off boot to a **BusyBox
-  shell** from the bitstream-baked boot ROM (fu-boot + OpenSBI + U-Boot + DTB),
-  with 2 GiB DRAM and a working **LiteEth network stack** (eth0 up, ping + TCP +
-  wget) on the real board.
-- **Full-vector Linux on hardware:** the RV64GCV + Zvk bitstream boots **Debian
-  trixie NFS-root to a root shell** (`root@karudeb:~#`, kernel `7.1.2-zvk`) —
-  the first RV64GCV bit to reach userspace on hardware. Timing closed with
-  `KARU_V_CWB_STAGE` plus a MIG `DM_NO_DBI` fix (post-route WNS +0.040 ns,
-  0 failing endpoints). OpenSBI enables `mstatus.VS` from `misa.V`; the kernel
-  detects V and runs vector userspace.
-- **In simulation:** OpenSBI → Linux boots to a BusyBox/Debian shell in
-  Verilator (`make linux-sim` / `make linux-v-sim` / `make linux-v-irfs-sim`),
-  matching spike on the identical image. The Linux harness can bind
-  `rtl/karu_assert.sv` into the core for frontend/MMU regression checking.
+VCU118 bring-up has validated MIG calibration, 2 GiB DDR tests, the baked
+fu-boot/OpenSBI/U-Boot chain, NFS-root Linux and LiteEth networking. The first
+RVA23S64 profile image also booted Linux 7.2.4-zvk and passed the initial KVM
+`ebreak_test` and `arch_timer` guests.
 
-The Linux/rootfs/DTB/kernel artifacts are produced by the companion `../karudeb`
-repository.
+Those results predate later RTL fixes. The current release image must repeat:
 
-### Open items
+- routed setup and hold checks for every constrained clock group;
+- `board_accept.sh`, including all vector ABI and ptrace cases;
+- cache/CPI tests with code placed throughout the 2 GiB DRAM window;
+- OpenSSL, riscv-pqc, multi-group vector-crypto `.vs`, and resident Keccak
+  absorb/squeeze tests; and
+- the KVM exception and timer guests.
 
-- Runtime functional retest of the vector-crypto paths — the Zvk three-operand
-  `.vv` general-`vs1` SHA-2/SM3/GHASH decode that OpenSSL's runtime-dispatched
-  vector SHA-2 needs — under the on-board benchmarks. The **boot-level** retest is
-  done: the `vcu118-ddr-sgmii-rom-vec` bit (rebuilt on **Vivado 2026.1**, **closed
-  timing** — post-route WNS +0.015 ns, cpu_clk-region cone +0.021 ns, 0 failing
-  endpoints, DRC 0 errors, LUTs 29.8 %) was programmed from the lab JTAG host's
-  older **2025.2.1** Vivado and auto-booted hands-off — validating the auto-boot
-  reset removal — through OpenSBI → U-Boot → NFS-root **Linux 7.1.2** to userspace
-  with no panic. What remains is exercising the crypto at runtime.
-- QSPI config-flash hardware reads.
-- LiteEth throughput tuning (~150 KB/s today).
-- Advertising the standard Zvk leaves in the DTB `riscv,isa` string for
-  userspace auto-detection.
+QSPI configuration-flash reads and LiteEth throughput tuning remain platform
+enhancements, not CPU-profile gates. Linux/rootfs/DTB/kernel artifacts come
+from the companion `../karudeb` repository. Its ROM and TFTP DTB copies must
+remain byte-identical when deploying a new build.
