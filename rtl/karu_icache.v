@@ -31,6 +31,7 @@ module karu_icache #(
     input  wire [`AXI_SIZE_W-1:0]   s_arsize,
     input  wire [`AXI_BURST_W-1:0]  s_arburst,
     input  wire [`AXI_PROT_W-1:0]   s_arprot,
+    input  wire [1:0]               s_ar_pbmt,
     input  wire                     s_arvalid,
     output reg                      s_arready,
     output reg  [`AXI_ID_W-1:0]     s_rid,
@@ -71,6 +72,7 @@ module karu_icache #(
     reg [2:0]   state;
     reg [2:0]   beat;           //  refill beat counter
     reg [63:0]  serve_data;     //  the word to return (hit / refilled / uncached)
+    reg [1:0]   serve_resp;
     reg         poison;         //  a flush hit during this refill -> don't validate
 
     //  ---- request decode (latched on AR accept) ----
@@ -103,8 +105,8 @@ module karu_icache #(
         .we(ctag_we), .waddr(a_idx), .wdata(a_tag),
         .raddr(s_idx), .rdata(ctag_rdata)
     );
-    //  (code lives in RAM 0x8xxx_xxxx; everything else bypasses -- decoded
-    //  directly off the incoming s_araddr in S_IDLE below.)
+    //  Standard-map RAM spans 0x80000000..0xffffffff, matching karu_pma.vh
+    //  and the DDR crossbar. Decode the incoming physical address in S_IDLE.
 
     integer i;
     always @(posedge clk) begin
@@ -124,26 +126,28 @@ module karu_icache #(
                     s_arready <= 1'b1;
                     if (s_arvalid && s_arready) begin
                         addr_q <= s_araddr; id_q <= s_arid;
+                        serve_resp <= `AXI_RESP_OKAY;
                         s_arready <= 1'b0;
                         //  (a_* below see the NEW addr next cycle; decode here off
                         //  the incoming s_araddr for the immediate branch.)
                         //  A FENCE.I flush this cycle DOMINATES acceptance: a
                         //  concurrent hit must not serve a line being invalidated,
                         //  so it is forced down the (fresh) refill path.
-                        if (s_araddr[31:28] != 4'h8) begin
+                        if (!s_araddr[31] || s_ar_pbmt != 2'b00) begin
                             state <= S_UC_AR;
                         end else if (!flush && cvalid[s_idx] && ctag_rdata == s_tag) begin
                             serve_data <= cdata_rdata;
                             state <= S_SERVE;
                         end else begin
                             poison <= 1'b0;
+                            cvalid[s_idx] <= 0;
                             state <= S_MISS_AR;
                         end
                     end
                 end
                 S_SERVE: begin
                     s_rvalid <= 1'b1; s_rid <= id_q; s_rdata <= serve_data;
-                    s_rlast  <= 1'b1; s_rresp <= `AXI_RESP_OKAY;
+                    s_rlast  <= 1'b1; s_rresp <= serve_resp;
                     if (s_rvalid && s_rready) begin
                         s_rvalid <= 1'b0; s_rlast <= 1'b0;
                         s_arready <= 1'b1;
@@ -163,10 +167,11 @@ module karu_icache #(
                 S_MISS_R: begin
                     if (m_rvalid && m_rready) begin
                         if (beat == a_qw) serve_data <= m_rdata;    //  requested word
+                        if (m_rresp[1]) serve_resp <= m_rresp;
                         beat <= beat + 3'd1;
                         if (m_rlast) begin
                             m_rready <= 1'b0;
-                            if (!poison && !flush) begin
+                            if (!poison && !flush && !serve_resp[1] && !m_rresp[1]) begin
                                 cvalid[a_idx] <= 1'b1;
                             end
                             state <= S_SERVE;
@@ -186,6 +191,7 @@ module karu_icache #(
                 S_UC_R: begin
                     if (m_rvalid && m_rready) begin
                         serve_data <= m_rdata;
+                        serve_resp <= m_rresp;
                         m_rready <= 1'b0;
                         state <= S_SERVE;
                     end
@@ -221,5 +227,5 @@ module karu_icache #(
 // synthesis translate_on
 
     //  silence unused AR attributes from the IFU (single-beat 8B INCR always).
-    wire _unused = &{1'b0, s_arlen, s_arsize, s_arburst, s_arprot, m_rid, m_rresp, m_rlast};
+    wire _unused = &{1'b0, s_arlen, s_arsize, s_arburst, s_arprot, m_rid};
 endmodule

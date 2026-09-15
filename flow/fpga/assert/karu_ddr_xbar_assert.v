@@ -248,7 +248,9 @@ module karu_ddr_xbar_assert #(
 	reg [7:0]	rd_beat;
 	reg [31:0]	rd_cnt;
 	reg			wr_track;
-	reg			wr_seen_w;
+	reg [7:0]	wr_len;
+	reg [7:0]	wr_beat;
+	reg			wr_seen_last;
 	reg [31:0]	wr_cnt;
 
 	always @(posedge clk) begin
@@ -260,7 +262,9 @@ module karu_ddr_xbar_assert #(
 			rd_beat <= 8'b0;
 			rd_cnt <= 32'b0;
 			wr_track <= 1'b0;
-			wr_seen_w <= 1'b0;
+			wr_len <= 8'b0;
+			wr_beat <= 8'b0;
+			wr_seen_last <= 1'b0;
 			wr_cnt <= 32'b0;
 		end else begin
 			//	================= state / owner contracts =================
@@ -375,14 +379,22 @@ module karu_ddr_xbar_assert #(
 			`XCHK(!m_awvalid || (w_st == W_IDLE), "X43 m_awvalid outside W_IDLE")
 			`XCHK(!m_awvalid || (m_awaddr[31] && m_awaddr[2:0] == 3'b000),
 				  "X44 m_awaddr not aligned DRAM address")
-			`XCHK(!m_awvalid || (m_awlen == 8'd0 && m_awsize == `AXI_SIZE_8B &&
+			`XCHK(!m_awvalid || ((m_awlen == 8'd0 || m_awlen == 8'd1) &&
+				   m_awsize == `AXI_SIZE_8B &&
 				   m_awburst == `AXI_BURST_INCR),
-				  "X45 write AW is not the current single-beat 64-bit contract")
+				  "X45 write AW is not a single- or two-beat 64-bit INCR burst")
 			`XCHK(!m_wvalid || (w_st == W_DRAM), "X46 m_wvalid outside W_DRAM")
-			`XCHK(!m_wvalid || m_wlast, "X47 current write contract requires WLAST on every beat")
+			`XCHK(!m_wvalid || (wr_track && !wr_seen_last &&
+				   m_wlast == (wr_beat == wr_len)),
+				  "X47 WVALID/WLAST does not match outstanding write beat")
 			`XCHK(!m_bvalid || (w_st == W_DRAM), "X48 m_bvalid without W_DRAM owner")
 			`XCHK((w_st != W_DRAM) || dmem_awready == 1'b0,
 				  "X49 dmem_awready high while a DRAM write is outstanding")
+			`XCHK(!m_awvalid || m_awlen != 8'd1 || m_awaddr[3:0] == 4'b0,
+				  "X60 two-beat write is not granule aligned")
+			`XCHK(!(dmem_awvalid && dmem_awready && !dmem_awaddr[31]) ||
+				  (dmem_awlen == 8'd0 && dmem_wvalid && dmem_wlast),
+				  "X61 local MMIO/boot write must be a single beat with AW and W together")
 
 			//	================= read burst accounting =================
 			if (m_arvalid && m_arready) begin
@@ -409,21 +421,24 @@ module karu_ddr_xbar_assert #(
 			if (m_awvalid && m_awready) begin
 				`XCHK(!wr_track, "X54 new write AW accepted while previous write outstanding")
 				wr_track <= 1'b1;
-				wr_seen_w <= 1'b0;
+				wr_len <= m_awlen;
+				wr_beat <= 8'b0;
+				wr_seen_last <= 1'b0;
 			end
 			if (m_wvalid && m_wready) begin
 				`XCHK(wr_track, "X55 write data accepted before write AW")
-				`XCHK(!wr_seen_w, "X56 more than one W beat in single-beat write")
-				`XCHK(m_wlast, "X57 accepted write beat without WLAST")
-				wr_seen_w <= 1'b1;
+				`XCHK(!wr_seen_last, "X56 write beat accepted after WLAST")
+				`XCHK(m_wlast == (wr_beat == wr_len), "X57 WLAST on wrong write beat")
+				if (m_wlast) wr_seen_last <= 1'b1;
+				else wr_beat <= wr_beat + 8'b1;
 			end
 			if (m_bvalid) begin
 				`XCHK(wr_track, "X58 BVALID without outstanding write")
-				`XCHK(wr_seen_w, "X59 BVALID before WLAST beat was accepted")
+				`XCHK(wr_seen_last, "X59 BVALID before WLAST beat was accepted")
 			end
 			if (m_bvalid && m_bready) begin
 				wr_track <= 1'b0;
-				wr_seen_w <= 1'b0;
+				wr_seen_last <= 1'b0;
 			end
 			wr_cnt <= wr_track ? wr_cnt + 32'b1 : 32'b0;
 			if (wr_track && wr_cnt > WR_STALL_LIMIT)

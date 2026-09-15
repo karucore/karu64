@@ -1,5 +1,5 @@
 {
-  "$schema": "/opt/riscv/share/sail-riscv/sail_riscv_config_schema.json",
+  "$schema": "/home/mjos-ai/.local/opt/sail-riscv-0.13.1/share/sail-riscv/sail_riscv_config_schema.json",
   "base": {
     "xlen": 64,
     "E": false,
@@ -8,8 +8,19 @@
     // Added for the newer sail_riscv_sim (0.11) config schema, which made
     // these required. Values mirror the emulator's --print-default-config.
     "mcounteren_writable_bits": { "len": 32, "value": "0xFFFF_FFFF" },
-    "mtvec": { "base_alignment": { "direct": 2, "vectored": 2 } },
-    "stvec": { "base_alignment": { "vectored": 2 } },
+    "mtvec": { "direct":   { "supported": true, "base_alignment": 2 },
+               "vectored": { "supported": true, "base_alignment": 2 } },
+    "stvec": { "direct":   { "supported": true },
+               "vectored": { "supported": true, "base_alignment": 2 } },
+    // sail-riscv 0.13.1 schema additions. karu64 is Sm 1.12 (UDB config);
+    // delegation sets are the priv-1.12 delegatable exceptions/interrupts
+    // (karu's medeleg/mideleg are fully writable -- priv tests are excluded);
+    // FS/VS use the four-state Off/Initial/Clean/Dirty encoding.
+    "medeleg": { "delegatable_bits": { "len": 64, "value": "0x0000_0000_0000_b3FF" } },
+    "mideleg": { "delegatable_bits": { "len": "xlen", "value": "0x0000_0000_0000_2222" } },
+    "mstatus": { "fs_legal_states": "ExtContext_FourState",
+                 "vs_legal_states": "ExtContext_FourState" },
+    "privileged_isa_version": "Privileged_ISA_1_12",
     // The top 29 bits in this value control whether the corresponding
     // HPM counters (hpmcounter31 .. hpmcounter3) are supported
     // (i.e. are not read-only zero). A set bit specifies that the
@@ -17,7 +28,8 @@
     // (writable_hpm_counters[2 .. 0]) are ignored.
     "writable_hpm_counters": {
       "len": 32,
-      "value": "0x0"
+      // karu64 (KARU_EN_HPM default): mhpmcounter3..31 are real writable counters.
+      "value": "0xFFFF_FFF8"
     },
     // The top 29 bits in this value control whether the
     // corresponding bits of the `scounteren` CSR that control HPM
@@ -81,6 +93,8 @@
     }
   },
   "memory": {
+    // Sv39 physical addresses (56 bits).
+    "physaddr_bits": 56,
     "pmp": {
       "grain": 0,
       // This specifies the number of PMP entries present.
@@ -123,7 +137,7 @@
         "lrsc": "AccessFault",
         // Similarly, a misaligned AMO currently always faults, and this field
         // can specify either `"AccessFault"` or `"AlignmentException"`.
-        "amo": "AccessFault"
+        "amo": { "Some": "AccessFault" }
       },
       // If a misaligned access was specified to have no fault in `exceptions` above, the
       // fields below specify how it is handled.
@@ -132,7 +146,7 @@
       // 2^allowed_within_exp sized regions will be split into multiple
       // memory operations. 0 means all misaligned accesses will be split.
       // The maximum value is 12 (one page).
-      "allowed_within_exp": 0,
+      "default_allowed_within_exp": 0,
       // If the access gets split due to `allowed_within_exp` then the size
       // of the operations will be one byte if `byte_by_byte` is set, otherwise
       // they will be the maximum size possible based on the alignment. For
@@ -183,6 +197,9 @@
             },
             "amo": "AccessFault"
           },
+          // 0.13.1: no atomicity guarantee for misaligned accesses beyond bytes.
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
           "atomic_support": "AMONone",
           "reservability": "RsrvNone",
           "supports_cbo_zero": false,
@@ -219,6 +236,9 @@
             },
             "amo": "AccessFault"
           },
+          // 0.13.1: no atomicity guarantee for misaligned accesses beyond bytes.
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
           "atomic_support": "AMONone",
           "reservability": "RsrvNone",
           "supports_cbo_zero": false,
@@ -255,6 +275,9 @@
             },
             "amo": "AccessFault"
           },
+          // 0.13.1: no atomicity guarantee for misaligned accesses beyond bytes.
+          "misaligned_atomicity_granule_size_exp": 0,
+          "vector_misaligned_atomicity_granule_size_exp": 0,
           "atomic_support": "AMOCASQ",
           "reservability": "RsrvEventual",
           "supports_cbo_zero": true,
@@ -270,6 +293,9 @@
     "archid": 0,
     "impid": 0,
     "hartid": 0,
+    // With S implemented, U-mode WFI is illegal regardless of mstatus.TW.
+    // The supervisor overlay inherits this policy; TW controls S-mode WFI.
+    "wfi_available_to_user_mode": false,
     // Cache block size, specified as a power of 2.
     "cache_block_size_exp": 6,
     "reservation": {
@@ -281,7 +307,7 @@
       // address as the matching Load-Reserve in order to succeed, regardless of the
       // configured reservation set size.  This controls whether such an exact address
       // match is required for a Store-Conditional to succeed.
-      "require_exact_reservation_addr": false,
+      "require_exact_reservation_addr": true,
       "invalidate_on_same_hart_store": false
     },
     "clint": {
@@ -322,7 +348,9 @@
       "supported": true
     },
     "F": {
-      "supported": true
+      "supported": true,
+      // karu64 marks FS dirty on every legally issued FP instruction.
+      "fflags_dirty_policy": "Fflags_Dirty_Instruction"
     },
     "D": {
       "supported": true
@@ -339,10 +367,19 @@
       // For e.g. Zve32x and Zve32f require `elen_exp` >= 5,
       // Zve64x, Zve64f, and Zve64d require `elen_exp` >= 6,
       // and V requires `elen_exp` >= 6 and `vlen_exp` >= 7.
-      "support_level": "Float_double",
+      // "Full" = V proper (Zve64d + Zvl128b + the EEW=64 vmulh*/vsmul that
+      // Zve64* may omit). karu64 implements all of it.
+      "support_level": "Full",
       "vlen_exp": 8,
       "elen_exp": 6,
-      "vl_use_ceil": false
+      "vl_use_ceil": false,
+      // Reserved vtype -> vill (vsetvl); vstart >= vl completes with no
+      // elements for loads/stores; arithmetic and scalar moves trap unless
+      // vstart == 0 (karu64 v_vstart_ill).
+      "reserved_behavior": { "illegal_vtype": "IllegalVtype_SetVill",
+                             "vstart_out_of_bounds": "Vstart_Ignore" },
+      "max_index_eew_exp": 6,
+      "vstart": { "zero_required": { "arith": true, "scalar_move": true } }
     },
     "B": {
       "supported": false
@@ -441,7 +478,7 @@
       }
     },
     "Zfa": {
-      "supported": false
+      "supported": true
     },
     "Zfbfmin": {
       "supported": false
@@ -538,16 +575,16 @@
       "supported": false
     },
     "Zvfhmin": {
-      "supported": false
+      "supported": true
     },
     "Zvbb": {
-      "supported": false
+      "supported": true
     },
     "Zvbc": {
       "supported": false
     },
     "Zvkb": {
-      "supported": false
+      "supported": true
     },
     "Zvkg": {
       "supported": false
@@ -641,6 +678,15 @@
     },
     "Svvptc": {
       "supported": false
-    }
+    },
+    "Zama16b": {
+      "supported": false
+    },
+    // Pointer masking: karu64 implements Supm (Smnpm+Ssnpm, PMLEN 7/16), but
+    // this reference config is M-mode only (S/U unsupported above), so the
+    // envcfg.PMM machinery is left out of the model.
+    "Ssnpm": { "supported": false, "supported_pmlen_7": false, "supported_pmlen_16": false },
+    "Smnpm": { "supported": false, "supported_pmlen_7": false, "supported_pmlen_16": false },
+    "Smmpm": { "supported": false, "supported_pmlen_7": false, "supported_pmlen_16": false }
   }
 }

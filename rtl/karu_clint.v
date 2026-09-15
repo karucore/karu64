@@ -13,14 +13,15 @@
 //
 //  Outputs:
 //    mtip = (mtime >= mtimecmp)   -> core irq (MTIP, mcause 7)
-//    msip = msip_reg[0]           -> machine software interrupt (no core
-//                                    input wired today; exposed for SW that
-//                                    reads/writes the register and for a
-//                                    future MSIP core port).
+//    msip = msip_r               -> core irq_software (MSIP, mcause 3)
+//  All other MSIP register bits are read-only zero.
+//  MSIP is controlled through this MMIO register; the core's mip.MSIP is a
+//  read-only view of the interrupt input, not a CSR software-injection latch.
 //
-//  Bus contract matches karu_plic: 8-byte-aligned MMIO access (karu64's LSU
-//  forces awaddr/araddr[2:0]=0 and carries the byte position in wstrb), reads
-//  are combinational on the latched address, writes are byte-granular.
+//  AXI byte lanes name bytes of the naturally aligned 8-byte word even for
+//  narrow accesses whose address has a nonzero byte offset. Decode that word
+//  locally, retaining lane placement and write strobes. In particular an IO
+//  word access to mtimecmp+4 must select its upper half, not an unmapped CSR.
 
 `include "karu_ext.vh"
 
@@ -55,7 +56,7 @@ module karu_clint #(
     localparam [15:0] OFF_MTIMECMP = 16'h4000;
     localparam [15:0] OFF_MTIME    = 16'hBFF8;
 
-    reg  [31:0] msip_r;
+    reg         msip_r;
     reg  [63:0] mtimecmp;
     reg  [63:0] mtime;
 
@@ -65,24 +66,24 @@ module karu_clint #(
     wire        tick = (div_cnt == (TICK_DIV - 1));
 
     assign mtip = (mtime >= mtimecmp);
-    assign msip = msip_r[0];
+    assign msip = msip_r;
     assign mtime_o = mtime;
 
-    //  -------- reads (8-byte aligned) --------
-    wire [15:0] roff = raddr[15:0] - CLINT_BASE[15:0];
+    //  -------- reads (lane-aligned result, exact byte address accepted) ----
+    wire [15:0] roff = {raddr[15:3], 3'b0} - CLINT_BASE[15:0];
     assign rdata =
-        (roff == OFF_MSIP)     ? {32'b0, msip_r} :
+        (roff == OFF_MSIP)     ? {63'b0, msip_r} :
         (roff == OFF_MTIMECMP) ? mtimecmp        :
         (roff == OFF_MTIME)    ? mtime           :
         64'b0;
 
     //  -------- writes (byte-granular within the addressed 8-byte word) ------
-    wire [15:0] woff = waddr[15:0] - CLINT_BASE[15:0];
+    wire [15:0] woff = {waddr[15:3], 3'b0} - CLINT_BASE[15:0];
     integer b;
 
     always @(posedge clk) begin
         if (rst) begin
-            msip_r   <= 32'b0;
+            msip_r   <= 1'b0;
             mtimecmp <= 64'hFFFF_FFFF_FFFF_FFFF;    //  mtip starts deasserted
             mtime    <= 64'b0;
             div_cnt  <= {DIVW{1'b0}};
@@ -106,10 +107,8 @@ module karu_clint #(
                     if (wstrb[b]) mtimecmp[b*8 +: 8] <= wdata[b*8 +: 8];
             end
 
-            if (we && (woff == OFF_MSIP)) begin
-                for (b = 0; b < 4; b = b + 1)
-                    if (wstrb[b]) msip_r[b*8 +: 8] <= wdata[b*8 +: 8];
-            end
+            // Only bit zero is implemented; upper bytes cannot change it.
+            if (we && (woff == OFF_MSIP) && wstrb[0]) msip_r <= wdata[0];
         end
     end
 endmodule

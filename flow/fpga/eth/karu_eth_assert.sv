@@ -142,8 +142,10 @@ module karu_eth_assert #(
 			  "ETH6 wb_stb asserted outside a transfer state")
 		//	we matches read vs write transfer.
 		`ECHK(wb_we == (st == S_W0 || st == S_W1), "ETH7 wb_we != (write transfer)")
-		//	read beats use all four byte lanes; write beats drive the latched lane.
-		`ECHK(!((st == S_R0 || st == S_R1) && wb_sel != 4'hf), "ETH8 read wb_sel != 0xf")
+		//	Reads and writes drive the selected, latched byte lanes. Narrow IO
+		//	reads may use only one word; no adjacent word is accessed implicitly.
+		`ECHK(!(st == S_R0 && (wb_sel != sel_lo || sel_lo == 0)), "ETH8 bad read low byte lanes")
+		`ECHK(!(st == S_R1 && (wb_sel != sel_hi || sel_hi == 0)), "ETH8 bad read high byte lanes")
 		`ECHK(!(st == S_W0 && wb_sel != sel_lo), "ETH9 S_W0 wb_sel != sel_lo")
 		`ECHK(!(st == S_W1 && wb_sel != sel_hi), "ETH10 S_W1 wb_sel != sel_hi")
 		//	a write transfer state is only entered with a non-zero lane.
@@ -156,9 +158,9 @@ module karu_eth_assert #(
 			//	clear) must sit between beats, else a registered-ack slave's stale
 			//	ack/data can be captured.
 		case (st_q)
-			S_IDLE: `ECHK(st==S_IDLE || st==S_R0 || st==S_W0 || st==S_W1,
+			S_IDLE: `ECHK(st==S_IDLE || st==S_R0 || st==S_R1 || st==S_W0 || st==S_W1,
 						  "ETH-TRANS illegal IDLE successor")
-			S_R0:   `ECHK(st==S_R0  || st==S_R0G, "ETH-TRANS R0 must go to R0G (no direct R1)")
+			S_R0:   `ECHK(st==S_R0  || st==S_R0G || st==S_IDLE, "ETH-TRANS R0 must go to R0G/IDLE (no direct R1)")
 			S_R0G:  `ECHK(st==S_R0G || st==S_R1,  "ETH-TRANS illegal R0G successor")
 			S_R1:   `ECHK(st==S_R1  || st==S_IDLE, "ETH-TRANS illegal R1 successor")
 			S_W0:   `ECHK(st==S_W0  || st==S_W0G || st==S_IDLE,
@@ -169,10 +171,11 @@ module karu_eth_assert #(
 		endcase
 
 		//	================= done-pulse well-formedness =================
-		//	rd_done only the cycle after S_R1 captured (ack); wr_done only after
+		//	rd_done follows the final read beat (R0 alone or R1); wr_done only after
 		//	the final write beat (S_W0 with no high lane, or S_W1) captured.
-		`ECHK(!rd_done || (st_q == S_R1 && wb_ack_q),
-			  "ETH13 rd_done without a completing S_R1 ack")
+		`ECHK(!rd_done || ((st_q == S_R1 && wb_ack_q) ||
+						  (st_q == S_R0 && wb_ack_q && sel_hi_q == 0)),
+			  "ETH13 rd_done without a completing read ack")
 		`ECHK(!wr_done || ((st_q == S_W0 && wb_ack_q && sel_hi_q == 4'b0) ||
 						   (st_q == S_W1 && wb_ack_q)),
 			  "ETH14 wr_done without a completing write ack")
@@ -204,13 +207,15 @@ module karu_eth_assert #(
 	a_eth5_cyc:     assert property (wb_cyc == (st != S_IDLE));
 	a_eth6_stb:     assert property (wb_stb == (st==S_R0 || st==S_R1 || st==S_W0 || st==S_W1));
 	a_eth7_we:      assert property (wb_we == (st==S_W0 || st==S_W1));
-	a_eth8_rsel:    assert property ((st==S_R0 || st==S_R1) |-> wb_sel == 4'hf);
+	a_eth8_rsel0:   assert property (st==S_R0 |-> (wb_sel == sel_lo && sel_lo != 0));
+	a_eth8_rsel1:   assert property (st==S_R1 |-> (wb_sel == sel_hi && sel_hi != 0));
 	a_eth9_wsel0:   assert property (st==S_W0 |-> wb_sel == sel_lo);
 	a_eth10_wsel1:  assert property (st==S_W1 |-> wb_sel == sel_hi);
 	//	gap states are mandatory between beats (stale-ack guard).
-	a_eth_trans_r0: assert property (st==S_R0 |=> (st==S_R0 || st==S_R0G));
+	a_eth_trans_r0: assert property (st==S_R0 |=> (st==S_R0 || st==S_R0G || st==S_IDLE));
 	a_eth_trans_w0: assert property (st==S_W0 |=> (st==S_W0 || st==S_W0G || st==S_IDLE));
-	a_eth13_rdone:  assert property (rd_done |-> ($past(st)==S_R1 && $past(wb_ack)));
+	a_eth13_rdone:  assert property (rd_done |-> (($past(st)==S_R1 && $past(wb_ack)) ||
+		($past(st)==S_R0 && $past(wb_ack) && $past(sel_hi)==0)));
 	a_eth15_dexcl:  assert property (!(rd_done && wr_done));
 	//	liveness: a started transaction eventually completes.
 	a_eth_live:     assert property ((!busy && (rd_req || wr_req)) |-> s_eventually (rd_done || wr_done));

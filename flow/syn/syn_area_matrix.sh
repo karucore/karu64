@@ -30,6 +30,10 @@ if [ "$JOBS" -lt 1 ]; then
 	exit 1
 fi
 
+if [ -e "$matrix_dir" ]; then
+	echo "matrix output already exists; choose a fresh MATRIX_OUT_DIR: $matrix_dir" >&2
+	exit 1
+fi
 mkdir -p "$matrix_dir"
 echo "config,description,defines,status,area_um2,kGE,kGE_minus_karu_mem,kGE_minus_karu_mem_sv39,karu_mem_kGE,karu_sv39_kGE,karu_csr_kGE,karu_bitmanip_kGE,karu_m_kGE,karu_fpu_kGE,karu_fregfile_kGE,karu_fmul_kGE,karu_fmul_d_kGE,karu_ffma_kGE,karu_ffma_d_kGE,karu_fdiv_kGE,karu_fdiv_d_kGE,karu_varith_kGE,karu_vcrypto_kGE,keccak_kGE,wall_s,out_dir" > "$summary"
 
@@ -48,11 +52,12 @@ rv64gc_m16|RV64GC+B, isolate integer M 16-cycle multiply|KARU_M_MUL_CYCLES=16 KA
 rv64gc_m64|RV64GC+B, isolate integer M 64-cycle multiply|KARU_M_MUL_CYCLES=64 KARU_M_DIV_CYCLES=64 KARU_NO_V
 rv64gc_fp_serial|RV64GC+B, serial F/D multiply and FMA|KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64 KARU_F_MUL_CYCLES=24 KARU_F_FMA_CYCLES=24 KARU_D_MUL_CYCLES=53 KARU_D_FMA_CYCLES=53 KARU_NO_V
 rv64gc_m64_fp_serial|RV64GC+B, serial M plus serial F/D multiply and FMA|KARU_M_MUL_CYCLES=64 KARU_M_DIV_CYCLES=64 KARU_F_MUL_CYCLES=24 KARU_F_FMA_CYCLES=24 KARU_D_MUL_CYCLES=53 KARU_D_FMA_CYCLES=53 KARU_NO_V
-rv64gcv_default|RV64GCV, RTL ASIC defaults: M/F/D mul4 div64, V mul16|
+rv64gcv_default|RV64GCV+Zvbb, RTL ASIC defaults: M/F/D mul4 div64, V mul16|
+rv64gcv_no_zvbb|RV64GCV baseline with default Zvbb removed|KARU_NO_ZVBB
 rv64gcv_vmul1|RV64GCV, isolate 1-cycle vector multiply|KARU_V_MUL_CYCLES=1
 rv64gcv_vmul4|RV64GCV, isolate 4-cycle vector multiply|KARU_V_MUL_CYCLES=4
 rv64gcv_vmul64|RV64GCV, isolate 64-cycle vector multiply|KARU_V_MUL_CYCLES=64
-rv64gcv_zvkb|RV64GCV default plus Zvk bit-manip glue only|KARU_ZVKB
+rv64gcv_zvkb|RV64GCV with Zvkb subset only, full Zvbb removed|KARU_NO_ZVBB KARU_ZVKB
 rv64gcv_zvkned|RV64GCV default plus Zvkned AES only|KARU_ZVKNED
 rv64gcv_zvknha|RV64GCV default plus Zvknha SHA-256 only|KARU_ZVKNHA
 rv64gcv_zvknhb|RV64GCV default plus Zvknhb SHA-256/SHA-512 only|KARU_ZVKNHB
@@ -62,6 +67,8 @@ rv64gcv_zvkg|RV64GCV default plus Zvkg GHASH/GCM only|KARU_ZVKG
 rv64gcv_zvk|RV64GCV default plus all implemented standard Zvk leaves|KARU_ZVK
 rv64gcv_keccak|RV64GCV default plus Zvknhk vkeccak.vi|KARU_KECCAK
 rv64gcv_zvk_keccak|RV64GCV default plus Zvk and Zvknhk vkeccak.vi|KARU_ZVK KARU_KECCAK
+rva23s64_min|RVA23S64 mandatory profile, non-SIM defaults|KARU_RVA23S64
+rva23s64_ship|RVA23S64 shipping core with I-cache, Zvk and Keccak|KARU_RVA23S64 KARU_ICACHE KARU_ZVK KARU_KECCAK KARU_M_MUL_CYCLES=4 KARU_M_DIV_CYCLES=64 KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_SMCNTRPMF KARU_SSCOFPMF
 EOF
 }
 
@@ -127,7 +134,7 @@ run_row() {
 	rpt="$out/reports/area.rpt"
 	area="$(awk '/Chip area for top module/ { area=$NF } END { print area }' "$rpt" 2>/dev/null)"
 
-	if [ -n "$area" ]; then
+	if [ "$rc" -eq 0 ] && [ -n "$area" ]; then
 		status="ok"
 		top_kge="$(kge "$area")"
 		mem_area="$(hier_area "$rpt" karu_mem)"
@@ -171,6 +178,7 @@ run_row() {
 	append_locked "$summary" "$row"
 
 	printf '%-24s %-12s %-9s %-9s %-8s %ss\n' "$cfg" "$status" "${top_kge:--}" "${no_mem_kge:--}" "${no_sv39_kge:--}" "$wall"
+	[ "$status" = ok ]
 }
 
 rows_file="$matrix_dir/rows.txt"
@@ -182,6 +190,14 @@ else
 	default_matrix > "$rows_file"
 fi
 
+{
+	date -u '+UTC %Y-%m-%dT%H:%M:%SZ'
+	printf 'MATRIX_OUT_DIR=%s\nJOBS=%s\nPER_TIMEOUT=%s\nKARU_NOSHARE=%s\n' \
+		"$matrix_dir" "$JOBS" "$PER_TIMEOUT" "${KARU_NOSHARE:-}"
+	printf 'CONFIGS=%s\nNAND2_UM2=%s\n' "${CONFIGS:-}" "$NAND2_UM2"
+	sha256sum syn_area_matrix.sh syn_yosys.sh syn_setup.sh "$rows_file"
+} > "$matrix_dir/manifest.txt"
+
 echo "area matrix -> $matrix_dir"
 echo "  per-config timeout: ${PER_TIMEOUT}s"
 echo "  parallel jobs: ${JOBS}"
@@ -190,28 +206,30 @@ echo
 printf '%-24s %-12s %-9s %-9s %-8s %s\n' config status kGE no_mem no_sv39 wall
 
 active=0
+failed=0
 while IFS='|' read -r cfg desc defs; do
 	[ -n "${cfg:-}" ] || continue
 	case "$cfg" in \#*) continue ;; esac
 	want_config "$cfg" || continue
 
 	if [ "$JOBS" -le 1 ]; then
-		run_row "$cfg" "$desc" "${defs:-}"
+		run_row "$cfg" "$desc" "${defs:-}" || failed=1
 	else
 		run_row "$cfg" "$desc" "${defs:-}" &
 		active=$((active + 1))
 		if [ "$active" -ge "$JOBS" ]; then
-			wait -n || true
+			wait -n || failed=1
 			active=$((active - 1))
 		fi
 	fi
 done < "$rows_file"
 
 while [ "$active" -gt 0 ]; do
-	wait -n || true
+	wait -n || failed=1
 	active=$((active - 1))
 done
 
 echo
 echo "summary: $summary"
 echo "console logs: $matrix_dir/*.console.log"
+exit "$failed"

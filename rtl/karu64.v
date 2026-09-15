@@ -23,8 +23,9 @@ module karu64 #(
 ) (
     input  wire         clk,
     input  wire         rst,
-    output reg          trap    = 0,
+    output reg          trap,
     input  wire         irq,
+    input  wire         irq_software,
     input  wire         irq_external_m,
     input  wire         irq_external_s,
     input  wire [63:0]  time_in,    //  CLINT mtime for rdtime (used when EXT_TIME=1)
@@ -84,13 +85,46 @@ module karu64 #(
     input  wire                     dmem_bvalid,
     output wire                     dmem_bready
 );
+    // KARU_PROFILE_GEOMETRY_BEGIN
+    // This implementation's profile build fixes the validated two-granule
+    // geometry, above the architectural VLEN minimum. RV64 is structural;
+    // RESET_PC has the same fixed width as the integer/address datapaths.
+    // An invalid constant branch fails elaboration in simulators/synthesis;
+    // the valid profile and every non-profile build contain no added hardware.
+`ifdef KARU_RVA23S64
+    generate
+        if (`KARU_VLEN != 256 || `KARU_ELEN != 64 || `KARU_VBUS_W != 128) begin : g_rva23s64_geometry
+            KARU_RVA23S64_requires_RV64_VLEN256_ELEN64_VBUS128 _elab_error();
+        end
+    endgenerate
+`endif
+    // KARU_PROFILE_GEOMETRY_END
     wire _unused_irq = &{RESET_SP[0], 1'b0};
 
     //  ==================================================================
     //  IFU + RVC + DEC
     //  ==================================================================
     wire [1:0]  csr_priv;
+    wire [1:0]  csr_data_priv;
+    `include "karu_pma.vh"
     wire [63:0] csr_satp;
+    wire        csr_pbmte;
+    wire        csr_virt, csr_data_virt;
+    wire [63:0] csr_vsatp, csr_hgatp;
+    wire        csr_vs_sum, csr_vs_mxr, csr_hpbmte;
+    wire        csr_vtvm, csr_vtw, csr_vtsr, csr_hu, csr_spvp;
+    wire [1:0]  csr_mpmm, csr_hpmm, csr_spmm, csr_hupmm;
+    wire [1:0]  csr_exc, cbo_zero_exc, cbo_cf_exc, cbo_inval_exc;
+    wire [1:0]  csr_trap_target, csr_irq_target;
+    wire        trap_gva;
+    wire        trap_gpa_valid;
+    wire [63:0] trap_gpa, trap_tinst;
+    // Keep nominal fetch and MPRV-effective data contexts separate. These
+    // are stage-one roots; the walker independently selects the G stage.
+    wire [63:0] csr_data_satp = csr_data_virt ? csr_vsatp : csr_satp;
+    // This signal describes stage-one virtual pointer semantics, not whether
+    // G-stage translation is needed (VS Bare can still use G paging).
+    wire        csr_data_vm = (csr_data_priv != 2'd3) && (csr_data_satp[63:60] == 4'd8);
     wire        csr_status_sum, csr_status_mxr;
     wire [5:0]  csr_dpmlen;     //  Supm data-access pointer-mask length (0/7/16)
     wire        cbo_zero_en, cbo_cf_en, cbo_inval_en;   //  Zicbo per-class enable (priv+envcfg)
@@ -109,11 +143,17 @@ module karu64 #(
     wire            immu_fault;
     wire [63:0]     immu_fault_va;
     wire [63:0]     immu_fault_cause;
+    wire immu_fault_gva, immu_fault_gpa_valid, immu_fault_gpa_is_pte;
+    wire [63:0] immu_fault_gpa, immu_fault_tinst;
+    wire immu_pte_io_pending;
     wire [63:0]     immu_pa;
+    wire [1:0]      immu_pbmt;
     wire            immu_busy;
     wire            ifu_fault_valid;
     wire [63:0]     ifu_fault_va;
     wire [63:0]     ifu_fault_cause;
+    wire ifu_fault_gva, ifu_fault_gpa_valid, ifu_fault_gpa_is_pte;
+    wire [63:0] ifu_fault_gpa, ifu_fault_tinst;
 
     wire [`AXI_ID_W-1:0]        ifu_arid, immu_arid;
     wire [`AXI_ADDR_W-1:0]  ifu_araddr, immu_araddr;
@@ -122,6 +162,7 @@ module karu64 #(
     wire [`AXI_BURST_W-1:0] ifu_arburst, immu_arburst;
     wire [`AXI_PROT_W-1:0]  ifu_arprot, immu_arprot;
     wire                    ifu_arvalid, immu_arvalid;
+    wire [1:0]              ifu_ar_pbmt;
     wire                    ifu_arready, immu_arready;
     wire                    ifu_rready, immu_rready;
     wire                    immu_rvalid_w;
@@ -150,6 +191,7 @@ module karu64 #(
     //  Optional read-only instruction cache between the IFU and imem.
     karu_icache #(.KB(`KARU_ICACHE_KB)) icache (
         .clk(clk), .rst(rst), .flush(icache_flush), .owns(),
+        .s_ar_pbmt(ifu_ar_pbmt),
         //  slave: the IFU's AXI read master
         .s_arid(ifu_arid),  .s_araddr(ifu_araddr),  .s_arlen(ifu_arlen),
         .s_arsize(ifu_arsize), .s_arburst(ifu_arburst), .s_arprot(ifu_arprot),
@@ -234,13 +276,21 @@ module karu64 #(
         .redir(ifu_redir), .redir_pc(ifu_redir_pc),
         .ins_valid(ifu_valid), .ins_pc(ifu_pc), .ins_w(ifu_w),
         .take(ifu_take),
+        .fetch_safe(!ex_valid && !exec_busy && !irq_take),
         .xlate_req(ifu_xlate_req), .xlate_va(ifu_xlate_va),
         .xlate_busy(immu_busy),
         .xlate_done(immu_done), .xlate_fault(immu_fault),
         .xlate_fault_va(immu_fault_va), .xlate_fault_cause(immu_fault_cause),
+        .xlate_fault_gva(immu_fault_gva), .xlate_fault_gpa_valid(immu_fault_gpa_valid),
+        .xlate_fault_gpa(immu_fault_gpa), .xlate_fault_tinst(immu_fault_tinst),
+        .xlate_fault_gpa_is_pte(immu_fault_gpa_is_pte),
         .xlate_pa(immu_pa),
+        .xlate_pbmt(immu_pbmt), .ar_pbmt(ifu_ar_pbmt),
         .fault_valid(ifu_fault_valid), .fault_va(ifu_fault_va),
         .fault_cause(ifu_fault_cause),
+        .fault_gva(ifu_fault_gva), .fault_gpa_valid(ifu_fault_gpa_valid),
+        .fault_gpa(ifu_fault_gpa), .fault_tinst(ifu_fault_tinst),
+        .fault_gpa_is_pte(ifu_fault_gpa_is_pte),
         .arid(ifu_arid),      .araddr(ifu_araddr),
         .arlen(ifu_arlen),    .arsize(ifu_arsize),
         .arburst(ifu_arburst), .arprot(ifu_arprot),
@@ -269,12 +319,20 @@ module karu64 #(
     karu_sv39 immu (
         .clk(clk), .rst(rst),
         .req(ifu_xlate_req), .va(ifu_xlate_va), .access(2'd0),
-        .priv(csr_priv), .satp(csr_satp),
+        .priv(csr_priv), .satp(csr_satp), .pbmte(csr_pbmte),
         .status_sum(csr_status_sum), .status_mxr(csr_status_mxr),
+        .virt(csr_virt), .vsatp(csr_vsatp), .hgatp(csr_hgatp), .hlvx(1'b0),
+        .vsstatus_sum(csr_vs_sum), .vsstatus_mxr(csr_vs_mxr), .henvcfg_pbmte(csr_hpbmte),
+        .pte_read_safe(!ex_valid && !exec_busy && !irq_take && !ifu_redir),
+        .pte_io_pending(immu_pte_io_pending),
+        .cancel(ifu_redir),
         .flush(sys_sfencevma),
         .done(immu_done), .fault(immu_fault),
         .fault_va(immu_fault_va), .fault_cause(immu_fault_cause),
-        .pa(immu_pa), .busy(immu_busy),
+        .fault_gva(immu_fault_gva), .fault_gpa_valid(immu_fault_gpa_valid),
+        .fault_gpa(immu_fault_gpa), .fault_tinst(immu_fault_tinst),
+        .fault_gpa_is_pte(immu_fault_gpa_is_pte),
+        .pa(immu_pa), .pbmt(immu_pbmt), .busy(immu_busy),
         .arid(immu_arid), .araddr(immu_araddr), .arlen(immu_arlen),
         .arsize(immu_arsize), .arburst(immu_arburst), .arprot(immu_arprot),
         .arvalid(immu_arvalid), .arready(immu_arready),
@@ -289,10 +347,17 @@ module karu64 #(
     );
 `else
     assign immu_done        = ifu_xlate_req;
-    assign immu_fault       = 1'b0;
-    assign immu_fault_va    = 64'b0;
-    assign immu_fault_cause = 64'b0;
+    assign immu_fault       = !karu_pma_ok(ifu_xlate_va, 2'd0);
+    assign immu_fault_va    = ifu_xlate_va;
+    assign immu_fault_cause = 64'd1;
+    assign immu_fault_gva = 0;
+    assign immu_fault_gpa_valid = 0;
+    assign immu_fault_gpa = 0;
+    assign immu_fault_tinst = 0;
+    assign immu_fault_gpa_is_pte = 0;
+    assign immu_pte_io_pending = 0;
     assign immu_pa          = ifu_xlate_va;
+    assign immu_pbmt        = 2'b00;
     assign immu_busy        = 1'b0;
     assign immu_arid        = {`AXI_ID_W{1'b0}};
     assign immu_araddr      = {`AXI_ADDR_W{1'b0}};
@@ -480,6 +545,7 @@ module karu64 #(
     //  conservative dirty pulses back in (assigned with the issue_* wires
     //  below; declared early so the csr ports bind under iverilog).
     wire [1:0]  status_fs, status_vs;
+    wire [1:0]  guest_status_fs, guest_status_vs;
     wire        fp_dirty, v_dirty;
     wire [1:0]  v_vxrm;
     wire        varith_vxsat;   //  vector fixed-point op saturated (assigned below)
@@ -491,13 +557,27 @@ module karu64 #(
         .op_req(csr_req), .op_addr(csr_addr), .op_src(csr_src),
         .op_sub(csr_sub), .op_rs1(csr_rs1), .op_rd_v(csr_rd_v),
         .csr_illegal(csr_illegal),
+        .csr_exc_o(csr_exc),
         .trap_req(trap_req), .trap_epc(trap_epc), .trap_cause(trap_cause), .trap_tval(trap_tval),
+        .trap_gva(trap_gva), .trap_gpa_valid(trap_gpa_valid), .trap_gpa(trap_gpa), .trap_tinst(trap_tinst),
+        .trap_target_o(csr_trap_target), .irq_target_o(csr_irq_target),
         .trap_vec(trap_vec),
-        .irq_timer(irq), .irq_external_m(irq_external_m),
+        .irq_timer(irq), .irq_software(irq_software), .irq_external_m(irq_external_m),
         .irq_external_s(irq_external_s),
         .irq_pending(csr_irq_pending), .irq_cause(csr_irq_cause),
         .mret_req(mret_req), .sret_req(sret_req), .ret_pc(ret_pc), .priv_o(csr_priv),
-        .satp_o(csr_satp), .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
+        .data_priv_o(csr_data_priv),
+        .virt_o(csr_virt), .data_virt_o(csr_data_virt),
+        .vsatp_o(csr_vsatp), .hgatp_o(csr_hgatp),
+        .vsstatus_sum_o(csr_vs_sum), .vsstatus_mxr_o(csr_vs_mxr), .henvcfg_pbmte_o(csr_hpbmte),
+        .vsstatus_fs_o(guest_status_fs), .vsstatus_vs_o(guest_status_vs),
+        .hstatus_vtvm_o(csr_vtvm), .hstatus_vtw_o(csr_vtw), .hstatus_vtsr_o(csr_vtsr),
+        .hstatus_hu_o(csr_hu), .hstatus_spvp_o(csr_spvp),
+        .menvcfg_pmm_o(csr_mpmm), .henvcfg_pmm_o(csr_hpmm),
+        .senvcfg_pmm_o(csr_spmm), .hstatus_hupmm_o(csr_hupmm),
+        .cbo_zero_exc_o(cbo_zero_exc), .cbo_cf_exc_o(cbo_cf_exc), .cbo_inval_exc_o(cbo_inval_exc),
+        .satp_o(csr_satp), .pbmte_o(csr_pbmte),
+        .status_sum_o(csr_status_sum), .status_mxr_o(csr_status_mxr),
         .dpmlen_o(csr_dpmlen),
         .cbo_zero_en_o(cbo_zero_en), .cbo_cf_en_o(cbo_cf_en), .cbo_inval_en_o(cbo_inval_en),
         .status_tvm_o(csr_tvm), .status_tw_o(csr_tw), .status_tsr_o(csr_tsr),
@@ -505,6 +585,9 @@ module karu64 #(
         .retire(perf_retire), .cyc_in(perf_cyc), .time_in(csr_time_in), .hpm_events(hpm_events),
         .vset_req(vset_req), .vset_vtype(vset_vtype), .vset_vl(vset_vl),
         .v_retire(v_op_retire),
+        .v_fault_start_we(vlsu_fault_abort && vlsu_fault_bus),
+        .v_fault_start({32'b0, vlsu_fault_index} >>
+                      ((ex_sub == `VLSU_VLR || ex_sub == `VLSU_VSR) ? ex_size : 2'd0)),
         .vl_trim_req(vlsu_trim_req), .vl_trim_val({32'b0, vlsu_trim_vl}),
         .status_fs_o(status_fs), .status_vs_o(status_vs),
         .fp_dirty(fp_dirty), .v_dirty(v_dirty),
@@ -522,7 +605,10 @@ module karu64 #(
     wire [2:0]  v_vsew  = v_vtype_src[5:3];
     wire        v_vta_n = v_vtype_src[6];
     wire        v_vma_n = v_vtype_src[7];
+    // vsetvl must validate all XLEN bits, including vill, before truncating
+    // the register operand to the fields shared with the immediate forms.
     wire        v_vtype_resv = (v_vtype_src[10:8] != 3'b0)
+                           || ((ex_sub == `VCFG_SETVL) && (|ex_xrs2_v[63:11]))
                            || (v_vsew > 3'b011) || (v_vlmul == 3'b100);
     wire [6:0]  v_base = (`KARU_VLENB) >> v_vsew;   //  VLEN/SEW elements
     reg  [9:0]  v_vlmax;
@@ -581,10 +667,18 @@ module karu64 #(
     //  LSU and this 128-bit vector port share one coherent L1; karu_mem drives
     //  v_busy/v_done/v_rdata (instantiated below near the LSU).
     wire            vmem_req, vmem_busy, vmem_is_store, vmem_done;
+    wire            vmem_allow_post, vmem_fault;
+    wire [63:0]     vmem_va, vmem_fault_va;
+    wire            vlsu_fault_bus;
+    wire [63:0]     vlsu_fault_va;
+    wire [31:0]     vlsu_fault_index;
+    wire            mem_store_pending;
     wire [63:0]     vmem_addr;      //  64-bit VA from the VLSU (V1); bare/identity
                                     //  today, truncated at the karu_mem physical port
     wire [127:0]    vmem_wdata, vmem_rdata;
     wire [15:0]     vmem_wstrb;
+    wire [15:0]     vmem_rstrb;
+    wire [1:0]      vmem_pbmt, vmem_size;
 
     //  vlsu <-> VRF granule ports. The granule-index width scales with VGRAN so a
     //  wider VLEN/VBUS (e.g. VLEN=512 => VGRAN=4 => 2-bit) is not silently
@@ -593,6 +687,7 @@ module karu64 #(
     wire [4:0]  vg_rs, vg_wd;
     wire [VGW-1:0]  vg_rg, vg_wg;   //  granule index (1 bit at VGRAN=2)
     wire [127:0] vg_rdata, vg_wdata;
+    wire [15:0] vg_wbe;
     wire        vg_we;
 
     //  karu_varith granule write port (the canonical write): the hot integer/FP
@@ -605,7 +700,7 @@ module karu64 #(
     wire [127:0]    varith_g_wdata;
     wire [15:0]     varith_g_wbe;
     //  VRF6 qualifiers (6a): varith reports per-write whether the tail-byte
-    //  rule applies; vlsu granule writes stay unqualified (full-BE pre-merged)
+    //  rule applies; vlsu uses its own load byte enables (pelem is pre-merged).
     wire            varith_g_wb_vlgov, varith_g_wb_mdest;
     wire [2:0]      varith_g_wb_vsew;
     wire [15:0]     varith_g_wb_epr;
@@ -616,7 +711,7 @@ module karu64 #(
     wire [4:0]      gw_wd    = varith_g_we ? varith_g_wd    : vg_wd;
     wire [VGW-1:0]  gw_wg    = varith_g_we ? varith_g_wg    : vg_wg;
     wire [127:0]    gw_wdata = varith_g_we ? varith_g_wdata : vg_wdata;
-    wire [15:0]     gw_wbe   = varith_g_we ? varith_g_wbe   : 16'hFFFF; //  vlsu: full granule
+    wire [15:0]     gw_wbe   = varith_g_we ? varith_g_wbe   : vg_wbe;
     wire            gw_wlast = varith_g_we ? varith_g_wlast : 1'b1;     //  vlsu: every write final
     wire            gw_wb_vlgov = varith_g_we ? varith_g_wb_vlgov : 1'b0;
     wire            gw_wb_mdest = varith_g_we ? varith_g_wb_mdest : 1'b0;
@@ -767,7 +862,8 @@ module karu64 #(
     //  Indexed SEGMENT loads (nf > 1) allow no dest/index overlap at all
     //  (7.8.3). Matches spike (e.g. vluxei8 v4,(x),v4 at e32 is reserved:
     //  index EMUL = 1/4 < 1). Stores only read -> no overlap hazard.
-    wire [6:0]  v_d_span   = {3'b0, vlsu_nf} * {3'b0, vlsu_nreg};   //  segment dest span
+    wire [6:0]  v_d_span   = vlsu_whole ? {3'b0, vlsu_nreg} :
+                             {3'b0, vlsu_nf} * {3'b0, vlsu_nreg};   // segment dest span
     wire [6:0]  v_d_end    = {2'b0, ex_rd}  + v_d_span;
     wire [6:0]  v_i_end    = {2'b0, ex_rs2} + {3'b0, vlsu_idx_nreg};
     wire        v_idx_ovl  = ({2'b0, ex_rd} < v_i_end) && ({2'b0, ex_rs2} < v_d_end);
@@ -778,7 +874,150 @@ module karu64 #(
     wire        v_idxov_ill = (ex_unit == `UNIT_VLSU) && vlsu_indexed && !vlsu_st
                           && v_idx_ovl
                           && ((vlsu_nf != 4'd1) || !(v_ovl_eq || v_ovl_high || v_ovl_low));
-    wire        v_resv_ill  = v_vill_ill || v_idxov_ill;
+`ifdef KARU_EN_ZVBB
+    wire v_is_vwsll = (ex_unit == `UNIT_VARITH)
+                    && (ex_vfunct6 == 6'b110101)
+                    && (ex_vfunct3 == 3'b000 || ex_vfunct3 == 3'b100 || ex_vfunct3 == 3'b011);
+`else
+    wire v_is_vwsll = 1'b0;
+`endif
+    // Shared RVV integer widening/narrowing checks (Spike DSS/DDS/SDS).
+    // .w sources use wide alignment; narrowing permits only low-part overlap.
+    wire v_opiv = ex_vfunct3 == 3'b000 || ex_vfunct3 == 3'b100 || ex_vfunct3 == 3'b011;
+    wire v_opmv = ex_vfunct3 == 3'b010 || ex_vfunct3 == 3'b110;
+    wire v_fp_conv = ex_unit == `UNIT_VFPU && ex_vfunct3 == 3'b001 && ex_vfunct6 == 6'b010010;
+    wire v_fp_widen = ex_unit == `UNIT_VFPU &&
+                      ((ex_vfunct6[5:4] == 2'b11 &&
+                        ex_vfunct6 != 6'b110001 && ex_vfunct6 != 6'b110011) ||
+                       (v_fp_conv && ex_rs1[4:3] == 2'b01));
+    wire v_widen = v_is_vwsll || (v_opmv && ex_vfunct6[5:4] == 2'b11) || v_fp_widen;
+    wire v_wide_w = (v_opmv || ex_unit == `UNIT_VFPU) && ex_vfunct6[5:2] == 4'b1101;
+    wire v_narrow = (v_opiv && ex_vfunct6[5:2] == 4'b1011) ||
+                    (v_fp_conv && ex_rs1[4:3] == 2'b10);
+    wire v_width_vv = ex_vfunct3 == 3'b000 || ex_vfunct3 == 3'b010 ||
+                     (ex_vfunct3 == 3'b001 && !v_fp_conv);
+    wire [5:0] v_width_src_span = v_vtype[2] ? 6'd1 : (6'd1 << v_vtype[1:0]);
+    wire [5:0] v_width_dst_span = v_vtype[2] ? 6'd1 : (v_width_src_span << 1);
+    wire [4:0] v_width_src_amask = v_width_src_span[4:0] - 5'd1;
+    wire [4:0] v_width_dst_amask = v_width_dst_span[4:0] - 5'd1;
+    wire [5:0] v_width_d0 = {1'b0, ex_rd};
+    wire [5:0] v_width_d1 = v_width_d0 + (v_narrow ? v_width_src_span : v_width_dst_span);
+    wire [5:0] v_width_s20 = {1'b0, ex_rs2};
+    wire [5:0] v_width_s21 = v_width_s20 + ((v_narrow || v_wide_w) ? v_width_dst_span : v_width_src_span);
+    wire [5:0] v_width_s10 = {1'b0, ex_rs1};
+    wire [5:0] v_width_s11 = v_width_s10 + v_width_src_span;
+    wire v_width_s2_ov = (v_width_d0 < v_width_s21) && (v_width_s20 < v_width_d1);
+    wire v_width_s1_ov = (v_width_d0 < v_width_s11) && (v_width_s10 < v_width_d1);
+    wire v_width_s2_high = !v_vtype[2] && (v_width_s20 == (v_width_d0 + v_width_src_span));
+    wire v_width_s1_high = !v_vtype[2] && (v_width_s10 == (v_width_d0 + v_width_src_span));
+    wire v_width_resv_ill = (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU) && (v_widen || v_narrow) && (
+            (v_vtype[5:3] >= 3'd3) || (v_vtype[2:0] == 3'b011) ||
+            ((ex_rd & (v_narrow ? v_width_src_amask : v_width_dst_amask)) != 5'd0) ||
+            ((ex_rs2 & ((v_narrow || v_wide_w) ? v_width_dst_amask : v_width_src_amask)) != 5'd0) ||
+            (v_width_vv && ((ex_rs1 & v_width_src_amask) != 5'd0)) ||
+            (v_width_d1 > 6'd32) || (v_width_s21 > 6'd32) ||
+            (v_width_vv && v_width_s11 > 6'd32) ||
+            (v_width_s2_ov && (v_narrow ? (ex_rd != ex_rs2) : (!v_wide_w && !v_width_s2_high))) ||
+            (v_widen && v_width_vv && v_width_s1_ov && !v_width_s1_high) ||
+            ((v_wide_w || v_narrow) && v_width_vv &&
+             v_width_s10 < v_width_s21 && v_width_s20 < v_width_s11));
+    // Mask-result operations and scalar reductions are the RVV destination-v0
+    // exceptions. Source operands obey the separate mixed-EEW rule below.
+    wire v_mask_result = (v_opiv && ((ex_vfunct6[5:3] == 3'b011) ||
+                          ex_vfunct6 == 6'b010001 || ex_vfunct6 == 6'b010011)) ||
+                        (ex_vfunct3 == 3'b010 && ex_vfunct6[5:3] == 3'b011);
+    // VMUNARY0 prefix masks (vmsbf/vmsif/vmsof) are NOT exceptions: when
+    // masked they may not write v0, despite producing a mask result.
+    wire v_scalar_result = (ex_vfunct3 == 3'b010 &&
+                          (ex_vfunct6[5:3] == 3'b000 || ex_vfunct6 == 6'b010000)) ||
+                          (ex_vfunct3 == 3'b000 && ex_vfunct6[5:1] == 5'b11000);
+    wire v_maskvd_ill = (ex_unit == `UNIT_VARITH) && !ex_vm && ex_rd == 0 &&
+                        !v_mask_result && !v_scalar_result;
+    wire v_fp_scalar_result = ex_vfunct6 == 6'b000001 || ex_vfunct6 == 6'b000011 ||
+                              ex_vfunct6 == 6'b000101 || ex_vfunct6 == 6'b000111 ||
+                              ex_vfunct6 == 6'b110001 || ex_vfunct6 == 6'b110011 ||
+                              (ex_vfunct6 == 6'b010000 && ex_vfunct3 == 3'b001);
+    wire v_fp_maskvd_ill = (ex_unit == `UNIT_VFPU) && !ex_vm && ex_rd == 0 &&
+                           ex_vfunct6[5:3] != 3'b011 && !v_fp_scalar_result;
+    wire v_load_maskvd_ill = (ex_unit == `UNIT_VLSU) && !vlsu_st && !ex_vm && ex_rd == 0;
+    // Mask operands have EEW=1. Only real element-data sources conflict with
+    // v0: unary selector fields, scalar operands and mask sources do not.
+    wire v_mask_logic = ex_vfunct3 == 3'b010 && ex_vfunct6[5:3] == 3'b011;
+    wire v_mask_unary = ex_vfunct3 == 3'b010 &&
+                       (ex_vfunct6 == 6'b010100 ||
+                        (ex_vfunct6 == 6'b010000 && ex_rs1[4]));
+    wire v_int_unary = ex_vfunct3 == 3'b010 && ex_vfunct6[5:3] == 3'b010 &&
+                      ex_vfunct6 != 6'b010111;
+    wire v_fp_unary = ex_vfunct3 == 3'b001 && ex_vfunct6[5:2] == 4'b0100;
+    wire v_compress = ex_vfunct3 == 3'b010 && ex_vfunct6 == 6'b010111;
+    wire v_s1_data = (ex_vfunct3 == 3'b000) ||
+                    (ex_vfunct3 == 3'b010 && !v_int_unary && !v_mask_logic && !v_compress) ||
+                    (ex_vfunct3 == 3'b001 && !v_fp_unary);
+    wire v_s2_data = !v_mask_logic && !v_mask_unary &&
+                    !(ex_vfunct6 == 6'b010000 &&
+                      (ex_vfunct3 == 3'b110 || ex_vfunct3 == 3'b101));
+    wire v_masksrc_ill = !ex_vm &&
+                       (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU) &&
+                       ((v_s1_data && ex_rs1 == 0) || (v_s2_data && ex_rs2 == 0));
+    wire v_lsmasksrc_ill = ex_unit == `UNIT_VLSU && !ex_vm &&
+                          ((vlsu_st && ex_rd == 0) || (vlsu_indexed && ex_rs2 == 0));
+    wire v_lsgeom_ill = ex_unit == `UNIT_VLSU && (
+            ((ex_rd & (vlsu_nreg - 4'd1)) != 0) || (v_d_end > 7'd32) ||
+            (v_d_span > 7'd8) ||
+            (!vlsu_mask && !vlsu_whole && (vlsu_emul_s < -3 || vlsu_emul_s > 3)) ||
+            (vlsu_indexed && (vlsu_iemul_s < -3 || vlsu_iemul_s > 3 ||
+                             ((ex_rs2 & (vlsu_idx_nreg - 4'd1)) != 0) || v_i_end > 7'd32)) ||
+            (vlsu_indexed && vlsu_st && !v_ovl_eq && v_idx_ovl));
+    // Effective source geometry for extensions and 16-bit gather indexes.
+    wire v_ext = ex_unit == `UNIT_VARITH && ex_vfunct3 == 3'b010 &&
+                 ex_vfunct6 == 6'b010010 && ex_rs1[4:3] == 0;
+    wire [2:0] v_ext_log = 3'd4 - {1'b0, ex_rs1[2:1]}; // vf8/vf4/vf2
+    wire signed [4:0] v_ext_emul = vlsu_lmul_s - $signed({2'b0, v_ext_log});
+    wire v_gather16 = ex_vfunct3 == 3'b000 && ex_vfunct6 == 6'b001110;
+    wire v_gather = (v_opiv && ex_vfunct6 == 6'b001100) || v_gather16;
+    wire signed [4:0] v_gather_emul = vlsu_lmul_s + 5'sd1 - $signed({2'b0, v_vtype[5:3]});
+    wire [5:0] v_s2_span = v_ext ? ((v_ext_emul <= 0) ? 6'd1 : (6'd1 << v_ext_emul[1:0])) : v_width_src_span;
+    wire [5:0] v_s1_span = v_gather16 ? ((v_gather_emul <= 0) ? 6'd1 : (6'd1 << v_gather_emul[1:0])) : v_width_src_span;
+    wire [5:0] v_base_dend = {1'b0, ex_rd} + v_width_src_span;
+    wire [5:0] v_base_s2end = {1'b0, ex_rs2} + v_s2_span;
+    wire [5:0] v_base_s1end = {1'b0, ex_rs1} + v_s1_span;
+    wire v_base_s2ov = {1'b0, ex_rd} < v_base_s2end && {1'b0, ex_rs2} < v_base_dend;
+    wire v_base_s1ov = {1'b0, ex_rd} < v_base_s1end && {1'b0, ex_rs1} < v_base_dend;
+    wire v_slideup = ex_vfunct6 == 6'b001110 &&
+                     (ex_vfunct3[2] || ex_vfunct3 == 3'b011);
+    wire v_prefix = ex_vfunct3 == 3'b010 && ex_vfunct6 == 6'b010100 && !ex_rs1[4];
+    wire v_iota = ex_vfunct3 == 3'b010 && ex_vfunct6 == 6'b010100 && ex_rs1 == 16;
+    wire v_scalar_move = ex_vfunct6 == 6'b010000 &&
+                        (ex_unit == `UNIT_VFPU || ex_vfunct3 == 3'b110 ||
+                         (ex_vfunct3 == 3'b010 && ex_rs1 == 0));
+    wire v_nr_move = ex_vfunct3 == 3'b011 && ex_vfunct6 == 6'b100111;
+    wire v_reduce = (ex_unit == `UNIT_VARITH && v_scalar_result && !v_scalar_move) ||
+                    (ex_unit == `UNIT_VFPU && v_fp_scalar_result && !v_scalar_move);
+    wire v_dest_single = v_scalar_move || v_reduce || v_mask_result || v_prefix ||
+                         (ex_unit == `UNIT_VFPU && ex_vfunct6[5:3] == 3'b011);
+    wire v_arithgeom_ill = (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU) && !v_nr_move && (
+            (!v_widen && !v_narrow && !v_dest_single &&
+             ((ex_rd & v_width_src_amask) != 0)) ||
+            (!v_widen && !v_narrow && v_s2_data && !v_scalar_move &&
+             (({1'b0, ex_rs2} & (v_s2_span - 6'd1)) != 0)) ||
+            (!v_widen && !v_narrow && v_s1_data && !v_reduce &&
+             (({1'b0, ex_rs1} & (v_s1_span - 6'd1)) != 0)) ||
+            (v_ext && (v_vtype[5:3] < v_ext_log || v_ext_emul < -3 ||
+              (v_base_s2ov && (v_ext_emul < 0 || v_base_s2end != v_base_dend)))) ||
+            (v_gather16 && (v_gather_emul < -3 || v_gather_emul > 3 ||
+              (v_vtype[5:3] != 1 && {1'b0, ex_rs1} < v_base_s2end && {1'b0, ex_rs2} < v_base_s1end))) ||
+            (v_gather && (v_base_s2ov || (v_s1_data && v_base_s1ov))) ||
+            (v_slideup && v_base_s2ov) ||
+            (v_compress && (v_base_s2ov ||
+              ({1'b0, ex_rs1} >= {1'b0, ex_rd} && {1'b0, ex_rs1} < v_base_dend) ||
+              ({1'b0, ex_rs1} >= {1'b0, ex_rs2} && {1'b0, ex_rs1} < v_base_s2end))) ||
+            ((v_prefix || v_iota) && ex_rd == ex_rs2) ||
+            (v_reduce && ex_vfunct6[5:4] == 2'b11 &&
+             (v_vtype[5:3] == 3'd3 ||
+              ({1'b0, ex_rs1} >= {1'b0, ex_rs2} && {1'b0, ex_rs1} < v_base_s2end))));
+    wire        v_resv_ill  = v_vill_ill || v_idxov_ill || v_width_resv_ill ||
+                              v_maskvd_ill || v_fp_maskvd_ill || v_load_maskvd_ill ||
+                              v_masksrc_ill || v_lsmasksrc_ill || v_lsgeom_ill || v_arithgeom_ill;
     //  ---- vector-FP SEW legality (Zvfhmin scope) ----
     //  The FP datapath supports SEW=32 (F) and SEW=64 (D). e8 is never legal.
     //  e16 is legal ONLY for the two Zvfhmin conversions (vfwcvt.f.f.v /
@@ -812,18 +1051,13 @@ module karu64 #(
     wire        vlsu_ff = (ex_ins[6:0] == 7'b0000111) && (ex_ins[27:26] == 2'b00)
                         && (ex_ins[24:20] == 5'b10000);
 `ifdef KARU_EN_V
-    //  Supm pointer masking of the vector base (same transform as the scalar EA).
-    wire [63:0] vlsu_base_pm =
-        (csr_dpmlen == 6'd16) ? {{16{ex_xrs1_v[47]}}, ex_xrs1_v[47:0]} :
-        (csr_dpmlen == 6'd7)  ? {{7{ex_xrs1_v[56]}}, ex_xrs1_v[56:0]} :
-                                ex_xrs1_v;
     karu_vlsu vlsu (
         .clk(clk), .rst(rst),
         .req(vlsu_req), .busy(vlsu_busy),
         .is_store(vlsu_st),
-        //  Supm: the vector base pointer is pointer-masked like a scalar data
-        //  address (per-element offsets are then added to the masked base).
-        .base(vlsu_base_pm), .vd(ex_rd), .eew(vlsu_eew),
+        // PM follows the VLSU's final base+stride/index/field arithmetic.
+        .base(ex_xrs1_v), .dpmlen(csr_dpmlen), .pm_virtual(csr_data_vm),
+        .vd(ex_rd), .eew(vlsu_eew),
         .vl(vlsu_vl), .vstart(vlsu_vstart), .vta(vlsu_vta),
         .vm(ex_vm), .vma(v_vtype[7]), .nreg(vlsu_nreg), .v0mask(vrf_v0), .done(vlsu_done),
         .pelem(vlsu_pelem), .indexed(vlsu_indexed), .stride(vlsu_stride), .nf(vlsu_nf),
@@ -831,13 +1065,18 @@ module karu64 #(
         .ff(vlsu_ff),
         .xlate_req(vxlate_req), .xlate_va(vxlate_va), .xlate_st(vxlate_st),
         .xlate_done(vxlate_done), .xlate_fault(vxlate_fault), .xlate_pa(vxlate_pa),
+        .xlate_pbmt(dmmu_pbmt),
         .fault_abort(vlsu_fault_abort),
+        .fault_bus(vlsu_fault_bus), .fault_va(vlsu_fault_va), .fault_index(vlsu_fault_index),
         .trim_req(vlsu_trim_req), .trim_vl(vlsu_trim_vl),
         .vmem_req(vmem_req), .vmem_busy(vmem_busy), .vmem_is_store(vmem_is_store),
         .vmem_addr(vmem_addr), .vmem_wdata(vmem_wdata), .vmem_wstrb(vmem_wstrb),
+        .vmem_rstrb(vmem_rstrb), .vmem_pbmt(vmem_pbmt), .vmem_size(vmem_size),
         .vmem_done(vmem_done), .vmem_rdata(vmem_rdata),
+        .vmem_allow_post(vmem_allow_post), .vmem_va(vmem_va),
+        .vmem_fault(vmem_fault), .vmem_fault_va(vmem_fault_va), .store_pending(mem_store_pending),
         .vg_rs(vg_rs), .vg_rg(vg_rg), .vg_rdata(vg_rdata),
-        .vg_we(vg_we), .vg_wd(vg_wd), .vg_wg(vg_wg), .vg_wdata(vg_wdata)
+        .vg_we(vg_we), .vg_wd(vg_wd), .vg_wg(vg_wg), .vg_wdata(vg_wdata), .vg_wbe(vg_wbe)
     );
 `else
     //  V disabled: vlsu absent. issue_vlsu is permanently 0, so vlsu_active
@@ -845,10 +1084,14 @@ module karu64 #(
     //  backend, VRF granule write port, DMMU share, trim/fault paths).
     assign vlsu_busy = 1'b0;
     assign vlsu_done = 1'b0;
+    assign vmem_allow_post=0; assign vmem_va=0;
+    assign vmem_rstrb=0; assign vmem_pbmt=0; assign vmem_size=0;
+    assign vlsu_fault_bus=0; assign vlsu_fault_va=0; assign vlsu_fault_index=0;
     assign vmem_req = 1'b0; assign vmem_is_store = 1'b0;
     assign vmem_addr = 64'b0; assign vmem_wdata = 128'b0; assign vmem_wstrb = 16'b0;
     assign vg_rs = 5'b0; assign vg_rg = {VGW{1'b0}};
     assign vg_we = 1'b0; assign vg_wd = 5'b0; assign vg_wg = {VGW{1'b0}}; assign vg_wdata = 128'b0;
+    assign vg_wbe = 16'b0;
     assign vxlate_req = 1'b0; assign vxlate_st = 1'b0; assign vxlate_va = 64'b0;
     assign vlsu_fault_abort = 1'b0;
     assign vlsu_trim_req = 1'b0; assign vlsu_trim_vl = 32'b0;
@@ -968,15 +1211,21 @@ module karu64 #(
     wire        lsu_req_pa;
     wire        lsu_busy;
     wire        lsu_done;
+    wire        lsu_fault, lsu_fault_second;
     wire [63:0] lsu_rd_v;
     wire        dmmu_req;
     wire        dmmu_done;
     wire        dmmu_fault;
     wire [63:0] dmmu_fault_va;
     wire [63:0] dmmu_fault_cause;
+    wire dmmu_fault_gva, dmmu_fault_gpa_valid, dmmu_fault_gpa_is_pte;
+    wire [63:0] dmmu_fault_gpa, dmmu_fault_tinst;
+    wire dmmu_pte_io_pending;
     wire [63:0] dmmu_pa;
+    wire [1:0]  dmmu_pbmt;
     wire        dmmu_busy;
     reg [63:0]  lsu_pa_q;
+    reg [1:0]   lsu_pbmt_q;
     reg         lsu_xlate_active;
     //  --- cross-page misaligned: second-page (beat-2) translation ---
     //  A misaligned access whose two 64-bit beats straddle a 4 KiB page must
@@ -989,10 +1238,29 @@ module karu64 #(
     reg [1:0]   lsu_acc2_q;         //  latched: DMMU access type for the beat-2 walk
     wire [63:0] lsu_pa_w;   //  assigned after lsu_addr (bare-mode uses VA directly)
 
+`ifdef KARU_EN_H
+    // The exact H encodings have already passed the decoder whitelist.
+    // Hold this context in the EX record throughout both split-page walks.
+    wire ex_hmem = ex_unit == `UNIT_LSU && ex_ins[6:0] == 7'h73 && ex_ins[14:12] == 3'b100;
+    wire ex_hlvx = ex_hmem && ex_sub == `LSU_LOAD && ex_ins[24:20] == 5'd3;
+`else
+    wire ex_hmem = 1'b0, ex_hlvx = 1'b0;
+`endif
+    wire lsu_data_virt = ex_hmem || csr_data_virt;
+    wire [1:0] lsu_data_priv = ex_hmem ? {1'b0, csr_spvp} : csr_data_priv;
+    wire [63:0] lsu_data_satp = lsu_data_virt ? csr_vsatp : csr_satp;
+    wire lsu_data_vm = lsu_data_priv != 2'd3 && lsu_data_satp[63:60] == 4'd8;
+    // Forced-guest accesses ignore MPRV. SPVP selects VS/VU. U-issued VU
+    // accesses use HUPMM, not the ordinary VU senvcfg.PMM. HLVX is unmasked.
+    wire [1:0] hmem_pmm = csr_spvp ? csr_hpmm : (csr_priv == 0 ? csr_hupmm : csr_spmm);
+    wire [5:0] hmem_pmlen = (ex_hlvx || csr_status_mxr || csr_vs_mxr) ? 6'd0 :
+                            hmem_pmm == 2'b10 ? 6'd7 : hmem_pmm == 2'b11 ? 6'd16 : 6'd0;
+    wire [5:0] lsu_pmlen = ex_hmem ? hmem_pmlen : csr_dpmlen;
+
     wire        lsu_is_store = (ex_sub == `LSU_STORE) || (ex_sub == `LSU_FSTORE);
     wire        lsu_is_cboz  = (ex_sub == `LSU_CBOZERO);    //  cbo.zero (store-class)
-    wire        lsu_is_cbocf    = (ex_sub == `LSU_CBOCF);   //  cbo.clean/flush (R|W)
-    wire        lsu_is_cboinval = (ex_sub == `LSU_CBOINVAL);    //  cbo.inval (store-class)
+    wire        lsu_is_cbocf    = (ex_sub == `LSU_CBOCF);   //  cbo.clean/flush
+    wire        lsu_is_cboinval = (ex_sub == `LSU_CBOINVAL); //  cbo.inval
     wire        lsu_is_cbo   = lsu_is_cboz || lsu_is_cbocf || lsu_is_cboinval;
     wire        lsu_is_fload = (ex_sub == `LSU_FLOAD);
     //  For A-extension: address is just rs1 (no displacement). All other
@@ -1002,19 +1270,21 @@ module karu64 #(
     wire [63:0] lsu_addr_raw = lsu_is_atomic ? ex_xrs1_v : (ex_xrs1_v + ex_imm);
     //  Supm pointer masking: for explicit data accesses (loads/stores/AMO/cbo),
     //  the top PMLEN bits of the effective address are replaced with bit
-    //  (XLEN-1-PMLEN) -- a canonical sign-extension that lets software tag the
-    //  high bits. Applied here, before translation; never to instruction fetch.
+    //  (XLEN-1-PMLEN) for virtual addresses, zero for physical/Bare addresses.
+    //  Applied to the final effective address before translation, never fetch.
     wire [63:0] lsu_addr =
-        (csr_dpmlen == 6'd16) ? {{16{lsu_addr_raw[47]}}, lsu_addr_raw[47:0]} :
-        (csr_dpmlen == 6'd7)  ? {{7{lsu_addr_raw[56]}}, lsu_addr_raw[56:0]} :
+        (lsu_pmlen == 6'd16) ? {{16{lsu_data_vm && lsu_addr_raw[47]}}, lsu_addr_raw[47:0]} :
+        (lsu_pmlen == 6'd7)  ? {{7{lsu_data_vm && lsu_addr_raw[56]}}, lsu_addr_raw[56:0]} :
                                 lsu_addr_raw;
     //  Bare-mode data access: no translation, PA=VA. When S-mode/Sv39 is
     //  compiled out this is always true, letting hierarchy prune the DMMU.
 `ifdef KARU_EN_S
     //  Bypass the registered DMMU handshake so the LSU starts in the issue cycle
     //  (~1 cycle/op saved -- the common case for M-mode firmware/CoreMark).
-    //  Condition matches karu_sv39's bare_mode exactly.
-    wire        lsu_bare = (csr_priv == 2'd3) || (csr_satp[63:60] != 4'd8);
+    // HLVX also needs the walker's read+execute PMA check in Bare mode.
+    // VS Bare does not bypass a non-Bare G stage.
+    wire        lsu_bare = !lsu_data_vm && !ex_hlvx &&
+                           !(lsu_data_virt && csr_hgatp[63:60] != 0);
 `else
     wire        lsu_bare = 1'b1;
 `endif
@@ -1023,13 +1293,20 @@ module karu64 #(
     assign      lsu_pa_w = lsu_bare    ? lsu_addr :
                            lsu_xpage_q ? lsu_pa_q  :
                                          (dmmu_done ? dmmu_pa : lsu_pa_q);
+    // Memory type follows its own page's PA, including split-page accesses.
+    wire [1:0] lsu_pbmt = lsu_bare ? 2'b00 :
+                         lsu_xpage_q ? lsu_pbmt_q :
+                         (dmmu_done ? dmmu_pbmt : lsu_pbmt_q);
+    // Bare requests issue immediately, before the previous request's latched
+    // cross-page flag is replaced. Never reuse its translated second beat.
+    wire [1:0] lsu_pbmt2 = (!lsu_bare && lsu_xpage_q) ? dmmu_pbmt : lsu_pbmt;
     //  Beat-2 base PA for a misaligned access whose two halves straddle an
     //  8-byte boundary. Within one 4 KiB page (or bare) this is just the next
     //  aligned 8-byte block, (PA & ~7) + 8; a page-crossing access uses the
     //  SECOND page's translation (PA2 = dmmu_pa at walk-2 done, when the LSU
     //  latches addr2 via lsu_req_pa).
     wire [63:0] lsu_pa2_samepage = {lsu_pa_w[63:3], 3'b000} + 64'd8;
-    wire [63:0] lsu_addr2 = lsu_xpage_q ? dmmu_pa : lsu_pa2_samepage;
+    wire [63:0] lsu_addr2 = (!lsu_bare && lsu_xpage_q) ? dmmu_pa : lsu_pa2_samepage;
     //  FSW writes the low 32 bits of the f-reg; FSD writes all 64.
     wire [63:0] lsu_wdata    = (ex_sub == `LSU_FSTORE)
         ? (ex_fp_is_d ? ex_frs2_v : {32'b0, ex_frs2_v[31:0]})
@@ -1037,16 +1314,20 @@ module karu64 #(
     wire [1:0]  lsu_size     = ex_size;
     wire        lsu_sign     = ex_sign_l;
 
-    //  DMMU access type for this op (load=1 / store=2 / R|W cbo.clean-flush=3),
-    //  matching the inline mux at the dmmu instance; latched for the beat-2 walk.
-    wire [1:0]  lsu_acc = lsu_is_cbocf ? 2'd3 :
-                (lsu_is_store || lsu_is_atomic || lsu_is_cboz || lsu_is_cboinval)
+    //  Zicbom management operations share load-or-store permission and A-only
+    //  checks, with store-class faults. ZERO instead needs store permission/D.
+    //  Access types match the DMMU and are latched for ordinary beat-2 walks.
+    wire [1:0]  lsu_acc = (lsu_is_cbocf || lsu_is_cboinval) ? 2'd3 :
+                (lsu_is_store || (lsu_is_atomic && ex_sub != `LSU_LR) || lsu_is_cboz)
                     ? 2'd2 : 2'd1;
     //  The access straddles a 4 KiB page iff offset + size > 0x1000 (translated
     //  mode only). size = 1<<lsu_size bytes. A page cross is always also an
     //  8-byte-beat cross, so karu_lsu takes its two-beat path and needs PA2.
+    //  A CBO addresses the aligned 64-byte block containing rs1, never an
+    //  eight-byte access starting at rs1. That block cannot cross a page.
+    //  Keep the unaligned effective address unchanged for fault reporting.
     wire [12:0] lsu_acc_end = {1'b0, lsu_addr[11:0]} + (13'd1 << lsu_size);
-    wire        lsu_xpage   = !lsu_bare && (lsu_acc_end > 13'h1000);
+    wire        lsu_xpage   = !lsu_bare && !lsu_is_cbo && (lsu_acc_end > 13'h1000);
 
     //  Pulse a SECOND scalar walk for the beat-2 page of a cross-page access:
     //  the first idle cycle after walk-1 completed (armed, region active).
@@ -1066,6 +1347,7 @@ module karu64 #(
     reg         lsu_was_fload_h;    //  1 if FLH (Zfhmin: NaN-box upper 48)
 
     wire [`AXI_ID_W-1:0]        lsu_arid, dmmu_arid;
+    wire [1:0] lsu_ar_pbmt, lsu_aw_pbmt;
     wire [`AXI_ADDR_W-1:0]  lsu_araddr, dmmu_araddr;
     wire [`AXI_LEN_W-1:0]   lsu_arlen, dmmu_arlen;
     wire [`AXI_SIZE_W-1:0]  lsu_arsize, dmmu_arsize;
@@ -1117,9 +1399,10 @@ module karu64 #(
     wire                    km_s_awready, km_s_wready, km_s_bvalid;
 
     //  -------- dmem arbiter with latched per-channel ownership --------
-    //  Read masters: dmmu (PTW line reads) and km (L1). Write masters: dmmu and
-    //  immu (PTE A/D writeback) and km (write-through). immu never READS on dmem
-    //  (it reads PTEs via the imem master). Ownership is latched when a request
+    //  Read masters: dmmu (PTW line reads) and km (L1). Svade walkers never
+    //  write PTEs: their retained AXI write outputs are tied inactive, leaving
+    //  km (write-through) as the only write producer. immu reads PTEs via imem.
+    //  Ownership is latched when a request
     //  first asserts, not when AR/AW is accepted, so a higher-priority PTW cannot
     //  change the AXI payload while VALID is held against downstream backpressure.
     //  The grant is then held until RLAST / B for response routing. Grant priority:
@@ -1241,19 +1524,27 @@ module karu64 #(
         //  walk-1 and the VLSU path are unchanged.
         .req(dmmu_req),
         .va(lsu_walk2_start ? lsu_va2_q : (dmmu_req_lsu ? lsu_addr : vxlate_va)),
-        //  cbo.clean/flush translate as R|W (access 3); zero/inval as store;
-        //  other CBO and plain stores/atomics as store; loads as load.
+        // Management CBOs translate as load-or-store permission (access 3,
+        // including MXR, with no D check); zero and stores/atomics as store.
         .access(lsu_walk2_start ? lsu_acc2_q :
             dmmu_req_lsu
-            ? (lsu_is_cbocf ? 2'd3 :
-               (lsu_is_store || lsu_is_atomic || lsu_is_cboz || lsu_is_cboinval) ? 2'd2 : 2'd1)
+            ? lsu_acc
             : (vxlate_st ? 2'd2 : 2'd1)),
-        .priv(csr_priv), .satp(csr_satp),
+        .priv(lsu_data_priv), .satp(csr_satp), .pbmte(csr_pbmte),
         .status_sum(csr_status_sum), .status_mxr(csr_status_mxr),
+        .virt(lsu_data_virt), .vsatp(csr_vsatp), .hgatp(csr_hgatp), .hlvx(ex_hlvx),
+        .vsstatus_sum(csr_vs_sum), .vsstatus_mxr(csr_vs_mxr), .henvcfg_pbmte(csr_hpbmte),
+        // Scalar/vector issue has already drained every older operation and
+        // posted store; the active LSU/VLSU prevents younger issue throughout.
+        .pte_read_safe(1'b1), .pte_io_pending(dmmu_pte_io_pending),
+        .cancel(1'b0),
         .flush(sys_sfencevma),
         .done(dmmu_done), .fault(dmmu_fault),
         .fault_va(dmmu_fault_va), .fault_cause(dmmu_fault_cause),
-        .pa(dmmu_pa), .busy(dmmu_busy),
+        .fault_gva(dmmu_fault_gva), .fault_gpa_valid(dmmu_fault_gpa_valid),
+        .fault_gpa(dmmu_fault_gpa), .fault_tinst(dmmu_fault_tinst),
+        .fault_gpa_is_pte(dmmu_fault_gpa_is_pte),
+        .pa(dmmu_pa), .pbmt(dmmu_pbmt), .busy(dmmu_busy),
         .arid(dmmu_arid), .araddr(dmmu_araddr), .arlen(dmmu_arlen),
         .arsize(dmmu_arsize), .arburst(dmmu_arburst), .arprot(dmmu_arprot),
         .arvalid(dmmu_arvalid), .arready(dmmu_arready),
@@ -1269,13 +1560,20 @@ module karu64 #(
 `else
     wire        dmmu_own_v = 1'b0;
     assign      vxlate_done  = vxlate_req;
-    assign      vxlate_fault = 1'b0;
+    assign      vxlate_fault = vxlate_req && !karu_pma_ok(vxlate_va, vxlate_st ? 2'd2 : 2'd1);
     assign      vxlate_pa    = vxlate_va;
     assign dmmu_done        = 1'b0;
     assign dmmu_fault       = 1'b0;
-    assign dmmu_fault_va    = 64'b0;
-    assign dmmu_fault_cause = 64'b0;
+    assign dmmu_fault_va    = vxlate_va;
+    assign dmmu_fault_cause = vxlate_st ? 64'd7 : 64'd5;
+    assign dmmu_fault_gva = 0;
+    assign dmmu_fault_gpa_valid = 0;
+    assign dmmu_fault_gpa = 0;
+    assign dmmu_fault_tinst = 0;
+    assign dmmu_fault_gpa_is_pte = 0;
+    assign dmmu_pte_io_pending = 0;
     assign dmmu_pa          = 64'b0;
+    assign dmmu_pbmt        = 2'b00;
     assign dmmu_busy        = 1'b0;
     assign dmmu_arid        = {`AXI_ID_W{1'b0}};
     assign dmmu_araddr      = {`AXI_ADDR_W{1'b0}};
@@ -1310,8 +1608,11 @@ module karu64 #(
         .req(lsu_req_pa), .busy(lsu_busy),
         .is_store(lsu_is_store), .sub_in(ex_sub),
         .addr(lsu_pa_w), .addr2(lsu_addr2), .wdata(lsu_wdata),
+        .pbmt(lsu_pbmt), .pbmt2(lsu_pbmt2),
+        .ar_pbmt(lsu_ar_pbmt), .aw_pbmt(lsu_aw_pbmt),
         .size(lsu_size), .sign_l(lsu_sign),
         .done(lsu_done), .rd_v(lsu_rd_v),
+        .fault(lsu_fault), .fault_second(lsu_fault_second),
         .arid(lsu_arid),      .araddr(lsu_araddr),
         .arlen(lsu_arlen),    .arsize(lsu_arsize),
         .arburst(lsu_arburst), .arprot(lsu_arprot),
@@ -1335,10 +1636,15 @@ module karu64 #(
     //  (v_*) share one coherent cache and one dmem master (m_* -> arbitrated
     //  km_* above). uncache_page bypasses the HTIF/MMIO page.
     karu_mem dmem_l1 (
+        // The write-through L1 has no dirty data. Invalidate on each legal
+        // CBO management request, including NC/IO aliases of cached lines.
+        .flush(lsu_req_pa && (lsu_is_cbocf || lsu_is_cboinval)),
+        .store_pending(mem_store_pending),
         .clk(clk), .rst(rst), .uncache_page(uncache_page),
         .s_arid(lsu_arid),      .s_araddr(lsu_araddr),
         .s_arlen(lsu_arlen),    .s_arsize(lsu_arsize),
         .s_arburst(lsu_arburst), .s_arprot(lsu_arprot),
+        .s_ar_pbmt(lsu_ar_pbmt), .s_aw_pbmt(lsu_aw_pbmt),
         .s_arvalid(lsu_arvalid), .s_arready(km_s_arready),
         .s_rid(km_s_rid),       .s_rdata(km_s_rdata),
         .s_rresp(km_s_rresp),   .s_rlast(km_s_rlast),
@@ -1352,6 +1658,9 @@ module karu64 #(
         .s_bid(km_s_bid),       .s_bresp(km_s_bresp),
         .s_bvalid(km_s_bvalid), .s_bready(lsu_bready),
         .v_req(vmem_req),       .v_busy(vmem_busy), .v_is_store(vmem_is_store),
+        .v_allow_post(vmem_allow_post), .v_va(vmem_va),
+        .v_pbmt(vmem_pbmt), .v_size(vmem_size), .v_rstrb(vmem_rstrb),
+        .v_fault(vmem_fault), .v_fault_va(vmem_fault_va),
         //  the L1/dmem fabric is 32-bit physical (RAM in the low 4 GiB, like
         //  the scalar path); the vector port carries a PA there -- bare today,
         //  the V2 preflight translation later -- so truncation is exact.
@@ -1412,7 +1721,9 @@ module karu64 #(
     assign km_bready    = lsu_bready;
 
     assign vmem_busy    = 1'b0;
+    assign mem_store_pending = 1'b0;
     assign vmem_done    = 1'b0;
+    assign vmem_fault=0; assign vmem_fault_va=0;
     assign vmem_rdata   = 128'b0;
     wire _unused_no_mem = &{uncache_page[0], vmem_req, vmem_is_store,
                             vmem_addr[0], vmem_wdata[0], vmem_wstrb[0], 1'b0};
@@ -1490,8 +1801,13 @@ module karu64 #(
     reg         cacheop_active;
     reg         cacheop_fencei;
 
+    // Store posting overlaps granules within a VLSU instruction. Drain before
+    // the next instruction or interrupt: this also orders FENCE, AMO, cache
+    // maintenance and device accesses without adding instruction exceptions.
+    // Svinval uses this same drain: SINVAL.VMA performs a complete SFENCE.VMA,
+    // so SFENCE.W.INVAL / SFENCE.INVAL.IR need no additional ordering state.
     wire exec_busy = lsu_active || m_active || fpu_active || vlsu_active ||
-                     varith_active || cacheop_active;
+                     varith_active || cacheop_active || mem_store_pending;
 
     //  A completed vector instruction zeroes vstart (RVV 3.7). vset* clears it
     //  inside karu_csr already; this pulse covers every other vector op (arith
@@ -1514,9 +1830,10 @@ module karu64 #(
                          (ex_csr_addr >= 12'hC20 && ex_csr_addr <= 12'hC22));   //  vl/vtype/vlenb
     wire ex_is_fp_lsu = (ex_unit == `UNIT_LSU) &&
                         (ex_sub == `LSU_FLOAD || ex_sub == `LSU_FSTORE);
-    wire fs_off_ill   = (status_fs == 2'b00) &&
-                        ((ex_unit == `UNIT_FPU) || ex_is_fp_lsu || ex_is_fpcsr);
-    wire vs_off_ill   = (status_vs == 2'b00) &&
+    wire fs_off_ill   = ((status_fs == 2'b00) || (csr_virt && guest_status_fs == 0)) &&
+                        ((ex_unit == `UNIT_FPU) || (ex_unit == `UNIT_VFPU) ||
+                         ex_is_fp_lsu || ex_is_fpcsr);
+    wire vs_off_ill   = ((status_vs == 2'b00) || (csr_virt && guest_status_vs == 0)) &&
                         ((ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU ||
                           ex_unit == `UNIT_VKECCAK || ex_unit == `UNIT_VCRYPTO ||
                           ex_unit == `UNIT_VLSU || ex_unit == `UNIT_VCFG) || ex_is_vcsr);
@@ -1526,10 +1843,13 @@ module karu64 #(
     //  Zicbom/Zicboz privilege+envcfg gating: a CBO whose class is not enabled
     //  in the current privilege raises illegal-instruction (cause 2) instead of
     //  executing/translating.
-    wire cbo_ill = issuing && (ex_unit == `UNIT_LSU) &&
-        ( (lsu_is_cboz     && !cbo_zero_en) ||
-          (lsu_is_cbocf    && !cbo_cf_en)   ||
-          (lsu_is_cboinval && !cbo_inval_en) );
+    wire [1:0] cbo_exc = lsu_is_cboz ? cbo_zero_exc :
+                         lsu_is_cbocf ? cbo_cf_exc :
+                         lsu_is_cboinval ? cbo_inval_exc : 2'b00;
+    wire cbo_ill = issuing && (ex_unit == `UNIT_LSU) && cbo_exc == 2'b01;
+    wire cbo_virtual_trap = issuing && (ex_unit == `UNIT_LSU) && cbo_exc == 2'b10;
+    wire hmem_ill = issuing && ex_hmem && !csr_virt && csr_priv == 0 && !csr_hu;
+    wire hmem_virtual_trap = issuing && ex_hmem && csr_virt;
 
     wire issue_alu  = issuing && ex_unit == `UNIT_ALU;
 `ifdef KARU_EN_B
@@ -1538,7 +1858,8 @@ module karu64 #(
     wire issue_bm   = 1'b0;
 `endif
     wire issue_bru  = issuing && ex_unit == `UNIT_BRU;
-    wire issue_lsu  = issuing && ex_unit == `UNIT_LSU && !fs_off_ill && !cbo_ill;
+    wire issue_lsu  = issuing && ex_unit == `UNIT_LSU && !fs_off_ill && cbo_exc == 0 &&
+                     !hmem_ill && !hmem_virtual_trap;
     wire issue_csr  = issuing && ex_unit == `UNIT_CSR && !fsvs_ill;
     wire issue_sys  = issuing && ex_unit == `UNIT_SYS;
     wire issue_m    = issuing && ex_unit == `UNIT_M;
@@ -1603,7 +1924,7 @@ module karu64 #(
                                 !vkeccak_resv_illegal && !v_vstart_ill && !vs_off_ill;
     assign issue_vcrypto_mode = issuing && ex_unit == `UNIT_VCRYPTO &&
                               !vcrypto_sew_illegal && !v_vstart_ill && !vs_off_ill;
-    wire issue_varith = issuing && !v_vstart_ill && !v_resv_ill && !vs_off_ill && !v_fpsew_ill &&
+    wire issue_varith = issuing && !v_vstart_ill && !v_resv_ill && !fsvs_ill && !v_fpsew_ill &&
                                    (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU
                                    || (ex_unit == `UNIT_VKECCAK && !vkeccak_resv_illegal) ||
                                    (ex_unit == `UNIT_VCRYPTO && !vcrypto_sew_illegal));
@@ -1617,9 +1938,10 @@ module karu64 #(
     //  CSR terms exclude csr_illegal. An op that issues and faults LATER
     //  (page fault) still dirties -- a legal over-approximation.
     assign fp_dirty = issue_fpu || (issue_lsu && ex_is_fp_lsu)
-                    || (issue_csr && ex_is_fpcsr && !csr_illegal);
+                    || (issue_varith && ex_unit == `UNIT_VFPU)
+                    || (issue_csr && ex_is_fpcsr && csr_exc == 0);
     assign v_dirty  = issue_vcfg || issue_varith || issue_vlsu
-                    || (issue_csr && ex_is_vcsr && !csr_illegal);
+                    || (issue_csr && ex_is_vcsr && csr_exc == 0);
     wire issue_cacheop = issue_sys &&
         (ex_sub == `SYS_FENCE || ex_sub == `SYS_FENCEI);
     assign vlsu_req = issue_vlsu;
@@ -1634,14 +1956,19 @@ module karu64 #(
 
     wire issue_long = issue_lsu || issue_m || issue_fpu || issue_vlsu ||
                       issue_varith || issue_cacheop;
-    wire ifu_page_fault = ifu_fault_valid;
+    // Fetch may discover a fault in a younger instruction while the current
+    // EX/FU is still active. Retain it in the IFU until all older work drains;
+    // an older branch/trap/xRET instead discards it through the redirect path.
+    // In particular, do not change privilege/roots during a split data walk.
+    wire ifu_page_fault = ifu_fault_valid && !exec_busy && !ex_valid;
     //  !dmmu_own_v: single-issue already prevents a scalar walk overlapping a
     //  vector walk, but the owner qualifier keeps the response routing
     //  correct-by-construction rather than correct-by-schedule.
     //  A fault on EITHER the beat-1 walk or the beat-2 (cross-page) walk traps as
     //  a load/store page fault. The DMMU's fault_va/cause hold the faulting walk's
     //  VA (beat-2 walk -> lsu_va2_q) and kind, so stval/cause are correct for both.
-    wire lsu_page_fault = (lsu_xlate_active  && !dmmu_own_v && dmmu_done && dmmu_fault)
+    wire lsu_page_fault = (lsu_active && lsu_fault) ||
+                          (lsu_xlate_active  && !dmmu_own_v && dmmu_done && dmmu_fault)
                        || (lsu_xlate2_active && !lsu_walk2_armed && !dmmu_own_v
                            && dmmu_done && dmmu_fault);
     //  V2/V3: the VLSU preflight hit a translation fault and aborted with no
@@ -1650,12 +1977,14 @@ module karu64 #(
     //  (its fault_va/fault_cause regs hold until the next walk, which cannot
     //  start before the trap -- the VLSU still owns the FU this cycle).
     wire vlsu_page_fault = vlsu_active && vlsu_fault_abort;
-    wire irq_take = csr_irq_pending && !exec_busy && !ex_valid && !ifu_page_fault;
+    wire irq_take = csr_irq_pending && !exec_busy && !ex_valid && !ifu_page_fault && !immu_pte_io_pending;
 
     //  IFU/ID: advance one instruction when the ID/EX slot can accept it.
     //  Do not predecode behind a just-issued long-latency instruction; that
     //  would latch stale operands for load/M/F/V dependencies.
-    wire id_accept = ifu_valid && !ifu_redir && !irq_take && !exec_busy
+    // An IO page-table read is non-speculative. Let the current EX operation
+    // drain, but do not admit a new one or take an interrupt until it finishes.
+    wire id_accept = ifu_valid && !ifu_fault_valid && !ifu_redir && !irq_take && !exec_busy && !immu_pte_io_pending
         && (!ex_valid || (issuing && !issue_long));
     assign ifu_take   = id_accept;
 
@@ -1673,46 +2002,79 @@ module karu64 #(
     //  extension probes). Like the SYS_TRAP illegal opcode above, this vectors as
     //  cause-2 (neither halts the core; both carry the faulting insn in tval).
     wire csr_ill_trap = issue_csr && csr_illegal;
+    wire csr_virtual_trap = issue_csr && csr_exc == 2'b10;
     //  Privileged SYSTEM ops are privilege-checked: executing them with too
     //  little privilege raises an illegal-instruction exception (cause 2)
     //  instead of the privileged effect. Required for U/S isolation -- a
     //  U-mode mret must not escalate. csr_priv: 3=M, 1=S, 0=U.
     //  TSR/TVM/TW (mstatus trap-virtualization), exposed from karu_csr:
-    //    TSR -> sret traps in S; TVM -> sfence.vma (and satp, in karu_csr) trap
+    //    TSR -> sret traps in S; TVM -> sfence.vma/sinval.vma (and satp) trap
     //    in S; TW -> wfi traps below M.
     wire sys_mret_raw    = issue_sys && ex_sub == `SYS_MRET;
     wire sys_sret_raw    = issue_sys && ex_sub == `SYS_SRET;
     wire sys_sfence_raw  = issue_sys && ex_sub == `SYS_SFENCEVMA;
+    wire sys_sfinval_raw = issue_sys && ex_sub == `SYS_SFENCEINVAL;
+    wire sys_hfencevv_raw = issue_sys && ex_sub == `SYS_HFENCEVVMA;
+    wire sys_hfencegv_raw = issue_sys && ex_sub == `SYS_HFENCEGVMA;
+    wire sys_hfence_raw = sys_hfencevv_raw || sys_hfencegv_raw;
     wire sys_wfi_raw     = issue_sys && ex_sub == `SYS_WFI;
     wire mret_ill   = sys_mret_raw   && (csr_priv != 2'd3); //  mret: M only
 `ifdef KARU_EN_S
-    wire sret_ill   = sys_sret_raw   && ((csr_priv == 2'd0) //  sret: traps in U
+    wire sret_ill   = sys_sret_raw   && !csr_virt && ((csr_priv == 2'd0) // host U
                                       || (csr_priv == 2'd1 && csr_tsr));    //  or S with TSR
-    wire sfence_ill = sys_sfence_raw && ((csr_priv == 2'd0) //  sfence.vma: traps in U
+    wire sfence_ill = sys_sfence_raw && !csr_virt && ((csr_priv == 2'd0) // host U
                                       || (csr_priv == 2'd1 && csr_tvm));    //  or S with TVM
+    // The ordering-only Svinval fences are permitted in S even with TVM=1.
+    wire sfinval_ill = sys_sfinval_raw && !csr_virt && (csr_priv == 2'd0);
 `else
     wire sret_ill   = sys_sret_raw;
     wire sfence_ill = sys_sfence_raw;
+    wire sfinval_ill = sys_sfinval_raw;
 `endif
-    wire wfi_ill    = sys_wfi_raw    && (csr_priv != 2'd3) && csr_tw;   //  wfi below M with TW
-    wire sys_priv_ill = mret_ill || sret_ill || sfence_ill || wfi_ill;
+    wire wfi_ill    = sys_wfi_raw && (csr_priv != 2'd3) && (csr_tw
+`ifdef KARU_EN_S
+        || (!csr_virt && csr_priv == 2'd0)
+`endif
+        );
+    // Machine denials keep cause 2 priority. Host TVM/TSR never restrict VS;
+    // guest VTVM/VTSR do, and VU cannot execute supervisor instructions.
+    // Ordering-only Svinval fences remain legal in VS even with VTVM set.
+    wire sret_virtual = sys_sret_raw && csr_virt && (csr_priv == 0 || csr_vtsr);
+    wire sfence_virtual = sys_sfence_raw && csr_virt && (csr_priv == 0 || csr_vtvm);
+    wire sfinval_virtual = sys_sfinval_raw && csr_virt && csr_priv == 0;
+    wire wfi_virtual = sys_wfi_raw && csr_virt && !csr_tw && (csr_priv == 0 || csr_vtw);
+    // Both guest modes get cause 22, even when host TVM is set. Only the
+    // G-stage fence checks TVM in HS; VVMA ignores both TVM and VTVM.
+    wire hfence_virtual = sys_hfence_raw && csr_virt;
+    wire hfence_ill = sys_hfence_raw && !csr_virt &&
+        (csr_priv == 0 || (sys_hfencegv_raw && csr_priv == 1 && csr_tvm));
+    wire sys_virtual_trap = sret_virtual || sfence_virtual || sfinval_virtual || wfi_virtual || hfence_virtual;
+    wire virtual_trap = csr_virtual_trap || sys_virtual_trap || cbo_virtual_trap || hmem_virtual_trap;
+    // SYSTEM-opcode H memory denials share the precise privilege-trap path,
+    // although their legal execution unit is the LSU rather than UNIT_SYS.
+    wire sys_priv_ill = mret_ill || sret_ill || sfence_ill || sfinval_ill || wfi_ill || hfence_ill || hmem_ill;
     //  effective (gated) -- the privileged effect fires only when legal:
     wire sys_mret     = sys_mret_raw && !mret_ill;
-    wire sys_sret     = sys_sret_raw && !sret_ill;
+    wire sys_sret     = sys_sret_raw && !sret_ill && !sret_virtual;
     wire sys_fence    = issue_sys && ex_sub == `SYS_FENCE;
     //  FENCE.I: refetch from the next PC so the IFU prefetch buffers (which may
     //  hold pre-store, stale instructions) are flushed -- self-modifying code.
     wire sys_fencei   = issue_sys && ex_sub == `SYS_FENCEI;
     assign icache_flush = sys_fencei;   //  FENCE.I invalidates the I-cache (Zifencei)
-    assign sys_sfencevma = sys_sfence_raw && !sfence_ill;
+    // All translation fences conservatively invalidate every TLB/PWC and
+    // cancel prefetched instructions. Single issue drains older stores before
+    // this point, including posted vector stores. Guest translations will
+    // share this full-flush contract with the two-stage controller.
+    assign sys_sfencevma = (sys_sfence_raw && !sfence_ill && !sfence_virtual) ||
+                          (sys_hfence_raw && !hfence_ill && !hfence_virtual);
     wire _unused_sv39 = &{csr_satp[0], csr_status_sum, csr_status_mxr, 1'b0};
-    //  sfence.vma redirects the IFU to the next PC: it flushes the prefetch
-    //  buffers and drops any in-flight IMMU walk via the IFU discard path, so
+    //  SFENCE.VMA and SINVAL.VMA redirect the IFU to the next PC: flush prefetch
+    //  buffers and drop any in-flight IMMU walk via the IFU discard path, so
     //  the post-sfence stream is translated after the TLB/PWC flush.
-    assign ifu_redir  = (issue_bru && bru_taken) || sys_trap_ent || csr_ill_trap || sys_priv_ill || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take
+    assign ifu_redir  = (issue_bru && bru_taken) || sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take
                      || sys_mret || sys_sret || sys_sfencevma || (cacheop_active && cacheop_fencei && cache_flush_done);
     assign ifu_redir_pc = (sys_mret || sys_sret) ? ret_pc  :
-                           (sys_trap_ent || csr_ill_trap || sys_priv_ill || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take) ? trap_vec :
+                           (sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take) ? trap_vec :
                            (sys_sfencevma || (cacheop_active && cacheop_fencei && cache_flush_done)) ? pc_next :
                                           bru_target;
 
@@ -1724,22 +2086,23 @@ module karu64 #(
     assign csr_rs1  = ex_rs1;
 
     //  Trap / mret
-    assign trap_req = sys_trap_ent || csr_ill_trap || sys_priv_ill || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take;
-    //  Instruction page-fault EPC must be the *instruction* VA (ifu_pc), so the
-    //  OS sret resumes at the faulting instruction. The IFU translates the
-    //  8-byte-aligned fetch quad (e.g. 0x22aa0 while fetching the instruction at
-    //  0x22aa4), so ifu_fault_va is the aligned quad address -- correct for tval
-    //  but 4 bytes too low for EPC. Using it as EPC made Linux resume 4 bytes
-    //  early after demand-paging a code page on the first cross-page jump.
+    assign trap_req = sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take;
+    //  Instruction-fault EPC is the instruction's start VA (ifu_pc). The IFU
+    //  reports the exact faulting instruction byte in ifu_fault_va for tval,
+    //  not the aligned fetch-quad address. For a split instruction, tval may
+    //  identify its second halfword while EPC still identifies its start.
     assign trap_epc = irq_take ? ifu_pc :
         ifu_page_fault ? ifu_pc : ex_pc;
     assign trap_cause = irq_take ? csr_irq_cause :
         ifu_page_fault ? ifu_fault_cause :
+        (lsu_active && lsu_fault) ? ((lsu_acc == 2'd1) ? 64'd5 : 64'd7) :
+        (vlsu_page_fault && vlsu_fault_bus) ? (vmem_is_store ? 64'd7 : 64'd5) :
         (lsu_page_fault || vlsu_page_fault) ? dmmu_fault_cause :    //  13/15 by access kind
         (csr_ill_trap || sys_priv_ill || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap
          || cbo_ill || sys_ill_trap || issue_vcrypto_trap) ? 64'd2 :    //  illegal instruction
+        virtual_trap ? 64'd22 :
         (ex_sub == `SYS_ECALL) ?
-        (csr_priv == 2'd3 ? 64'd11 : csr_priv == 2'd1 ? 64'd9 : 64'd8) : 64'd3;
+        (csr_priv == 2'd3 ? 64'd11 : csr_priv == 2'd1 ? (csr_virt ? 64'd10 : 64'd9) : 64'd8) : 64'd3;
     //  Illegal-instruction (cause-2) traps: write the FAULTING INSTRUCTION WORD to
     //  mtval/stval (RVC -> zero-extended 16-bit raw word), matching spike. Linux's
     //  lazy RVV first-use handler (riscv_v_first_use_handler) reads regs->badaddr
@@ -1751,10 +2114,29 @@ module karu64 #(
     wire [63:0] ill_insn_tval = ex_is_c ? {48'b0, ex_w[15:0]} : {32'b0, ex_w};
     assign trap_tval = irq_take ? 64'b0 :
                        ifu_page_fault ? ifu_fault_va :
+                       (lsu_active && lsu_fault) ? (lsu_fault_second ? lsu_va2_q : lsu_addr) :
+                       (vlsu_page_fault && vlsu_fault_bus) ? vlsu_fault_va :
                        (lsu_page_fault || vlsu_page_fault) ? dmmu_fault_va :
                        (csr_ill_trap || sys_priv_ill || v_vstart_trap || v_resv_trap
                         || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap
-                        || issue_vcrypto_trap) ? ill_insn_tval : 64'b0;
+                        || issue_vcrypto_trap || virtual_trap) ? ill_insn_tval :
+                       (sys_trap_ent && ex_sub == `SYS_EBREAK) ? ex_pc : 64'b0;
+    // Metadata belongs to the faulting translation, not the final physical
+    // data access. A later AXI error must not reuse the preceding walk's GPA.
+    wire data_walk_fault = (lsu_page_fault && !(lsu_active && lsu_fault)) ||
+                           (vlsu_page_fault && !vlsu_fault_bus);
+    assign trap_gpa_valid = !irq_take && (ifu_page_fault ? ifu_fault_gpa_valid :
+                                              data_walk_fault && dmmu_fault_gpa_valid);
+    assign trap_gpa = !trap_gpa_valid ? 64'b0 : ifu_page_fault ? ifu_fault_gpa : dmmu_fault_gpa;
+    assign trap_tinst = irq_take ? 64'b0 : ifu_page_fault ? ifu_fault_tinst :
+                                    data_walk_fault ? dmmu_fault_tinst : 64'b0;
+    // Physical bus errors have no GPA payload but retain effective guest V.
+    // IFU has already repaired final-access GPA to the exact instruction byte.
+    assign trap_gva = !irq_take &&
+        (((csr_virt || ifu_fault_gva) && ifu_page_fault) ||
+         (csr_virt && sys_trap_ent && ex_sub == `SYS_EBREAK) ||
+         (data_walk_fault && dmmu_fault_gva) ||
+         (lsu_data_virt && lsu_page_fault) || (csr_data_virt && vlsu_page_fault));
     assign mret_req = sys_mret;
     assign sret_req = sys_sret;
 `ifdef KARU_DBG_TRAP
@@ -1795,7 +2177,7 @@ module karu64 #(
     wire wb_alu   = issue_alu && ex_rd != 5'd0;
     wire wb_bm    = issue_bm  && ex_rd != 5'd0;
     wire wb_bru   = issue_bru && (ex_sub == `BRU_JAL || ex_sub == `BRU_JALR) && ex_rd != 5'd0;
-    wire wb_csr_  = issue_csr && ex_rd != 5'd0 && !csr_ill_trap;
+    wire wb_csr_  = issue_csr && ex_rd != 5'd0 && csr_exc == 0;
     wire wb_load  = lsu_active && lsu_done && !lsu_was_store
                  && !lsu_was_fload && lsu_rd_pending != 5'd0;
     wire wb_m     = m_active   && m_done   && m_rd_pending  != 5'd0;
@@ -1849,9 +2231,10 @@ module karu64 #(
     //  is exact.
     wire retire_issue = issuing &&
         (ex_unit == `UNIT_ALU  || issue_bm || ex_unit == `UNIT_BRU ||
-         (ex_unit == `UNIT_CSR && !csr_ill_trap && !fsvs_ill) ||
+         (ex_unit == `UNIT_CSR && csr_exc == 0 && !fsvs_ill) ||
          (ex_unit == `UNIT_VCFG && !vs_off_ill) ||
          (ex_unit == `UNIT_SYS && ex_sub != `SYS_TRAP && !sys_priv_ill &&
+          !sys_virtual_trap && !sys_trap_ent &&
           ex_sub != `SYS_FENCE && ex_sub != `SYS_FENCEI));
     assign perf_retire = retire_issue
         || (lsu_active    && lsu_done)          //  loads, stores, AMOs
@@ -1890,6 +2273,7 @@ module karu64 #(
             lsu_walk2_armed <= 0;
             lsu_xpage_q     <= 0;
             lsu_pa_q        <= 0;
+            lsu_pbmt_q      <= 0;
             lsu_rd_pending  <= 0;
             lsu_was_store   <= 0;
             lsu_was_fload   <= 0;
@@ -1965,6 +2349,7 @@ module karu64 #(
                 //  walk-1 done (no fault: a fault would have hit lsu_page_fault).
                 lsu_xlate_active <= 1'b0;
                 lsu_pa_q        <= dmmu_pa;     //  PA1 (beat-1)
+                lsu_pbmt_q      <= dmmu_pbmt;
                 if (lsu_xpage_q) begin          //  arm the beat-2 page walk
                     lsu_xlate2_active <= 1'b1;
                     lsu_walk2_armed <= 1'b1;

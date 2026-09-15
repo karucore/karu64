@@ -51,6 +51,50 @@ static uint64_t rd_sstatus(void){uint64_t x;asm volatile("csrr %0,sstatus":"=r"(
 
 static uint64_t mem64[8];
 
+static void vector_fp_context(void)
+{
+    // Check status before any fflags read: reading an FP CSR may itself dirty FS.
+    for (unsigned state=1; state<=2; ++state) {
+        for (unsigned sew=32; sew<=64; sew+=32) {
+            uint64_t ms, flags, scalar;
+            uint32_t before;
+            asm volatile("csrs mstatus,%0\n csrw fflags,zero\n"
+                         "fmv.d.x f8,%1" :: "r"(FS_MASK|VS_MASK),
+                         "r"(0x402e000000000000ull) : "f8", "memory");
+            if (sew == 32) asm volatile("vsetivli zero,2,e32,m1,tu,mu");
+            else asm volatile("vsetivli zero,2,e64,m1,tu,mu");
+            asm volatile("vmv.v.i v8,7\n vmv.v.i v9,0\n csrw vstart,zero\n"
+                         "csrc mstatus,%0\n csrs mstatus,%1"
+                         :: "r"(FS_MASK|VS_MASK), "r"((uint64_t)state<<9) : "memory");
+            before = g_traps;
+            asm volatile("vfadd.vv v8,v9,v9\n vfmv.f.s f8,v9\n vfmv.s.f v8,f8"
+                         ::: "t0", "t1", "memory");
+            ms = rd_mstatus();
+            asm volatile("csrs mstatus,%0" :: "r"(FS_MASK) : "memory");
+            asm volatile("csrr %0,fflags\n fmv.x.d %1,f8"
+                         : "=r"(flags), "=r"(scalar));
+            if (sew == 32) asm volatile("vse32.v v8,(%0)" :: "r"(mem64) : "memory");
+            else asm volatile("vse64.v v8,(%0)" :: "r"(mem64) : "memory");
+            verdict("vector FP FS off: traps without state changes",
+                    g_traps != before+3 || g_mcause != 2 || (ms & FS_MASK) ||
+                    (ms & VS_MASK) != ((uint64_t)state<<9) || flags != 0 ||
+                    scalar != 0x402e000000000000ull ||
+                    (sew == 32 ? mem64[0] != 0x0000000700000007ull :
+                                 mem64[0] != 7 || mem64[1] != 7), ms, g_traps-before);
+            // 0/0 sets NV; vector-to-scalar move writes an f-register.
+            // Both must mark FS Dirty from either Initial or Clean.
+            asm volatile("csrc mstatus,%0\n csrs mstatus,%1\n vfdiv.vv v8,v9,v9"
+                         :: "r"(FS_MASK), "r"((uint64_t)state<<13) : "memory");
+            ms = rd_mstatus();
+            verdict("vector fflags write dirties FS", (ms & FS_MASK) != FS_MASK, ms, sew);
+            asm volatile("csrc mstatus,%0\n csrs mstatus,%1\n vfmv.f.s f8,v9"
+                         :: "r"(FS_MASK), "r"((uint64_t)state<<13) : "f8", "memory");
+            ms = rd_mstatus();
+            verdict("vector scalar-FP write dirties FS", (ms & FS_MASK) != FS_MASK, ms, sew);
+        }
+    }
+}
+
 int main(void){
     uint64_t ms; uint32_t t0n;
     asm volatile("la t0, fsvs_tvec\ncsrw mtvec, t0":::"t0");
@@ -187,6 +231,7 @@ int main(void){
         verdict("trapped vector op does not dirty VS", bad, ms, g_traps-t0n);
     }
 
+    vector_fp_context();
     if(fails){ sio_puts("[FSVS] FAILURES: "); put_dec(fails); sio_putc('\n'); }
     else       sio_puts("[FSVS] ALL PASS\n");
     sio_putc(4);

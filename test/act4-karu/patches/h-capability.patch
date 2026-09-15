@@ -1,0 +1,264 @@
+ACT4 H capability and conditional mstatus/mstatush GVA/MPV test masks.
+Base: riscv-arch-test 80d563374ffb2eba59aae5c7a575ad5e92e78a1d.
+Apply after sm-counter-wrap.patch; no non-H expectation changes.
+
+diff --git a/framework/src/act/fcov/riscv_arch_test.sv b/framework/src/act/fcov/riscv_arch_test.sv
+index a9a86a25..ae9114a7 100644
+--- a/framework/src/act/fcov/riscv_arch_test.sv
++++ b/framework/src/act/fcov/riscv_arch_test.sv
+@@ -11,10 +11,6 @@
+ 
+ // Load configuration parameters
+ `include "rvtest_config.svh"
+-// Mirror the same undef in tests/env/riscv_arch_test.h: the tests are compiled without
+-// H_SUPPORTED, so any H-gated coverpoint bin is unreachable by construction.  Keep these two
+-// files in sync. TODO: Remove this once Sail supports Hypervisor
+-`undef H_SUPPORTED
+ `include "rvmodel_macros.svh"
+ `include "derived_config.svh"
+ 
+diff --git a/generators/testgen/src/testgen/asm/csr.py b/generators/testgen/src/testgen/asm/csr.py
+index 289bf3aa..cef4e2c6 100644
+--- a/generators/testgen/src/testgen/asm/csr.py
++++ b/generators/testgen/src/testgen/asm/csr.py
+@@ -8,11 +8,21 @@
+ 
+ """CSR test utilities for privileged test generation."""
+ 
++from collections.abc import Callable
++
+ from testgen.asm.helpers import write_sigupd
+ from testgen.constants import INDENT
+ from testgen.data.state import TestData
+ 
+ 
++def _gated_mask_load(mask: int, mask_gate: tuple[str, int] | None, emit: Callable[[int], list[str]]) -> list[str]:
++    """Load optional additional mask bits only under the given preprocessor condition."""
++    if mask_gate is None:
++        return emit(mask)
++    condition, bits = mask_gate
++    return [f"#if {condition}", *emit(mask | bits), "#else", *emit(mask), "#endif"]
++
++
+ def gen_csr_read_sigupd(check_reg: int, csr: tuple, test_data: TestData, mask_reg: int | None = None) -> str:
+     """
+     Generate assembly for CSR read SIGUPD and increment sigupd_count.
+@@ -73,7 +83,13 @@ def gen_csr_write_sigupd(check_reg: int, csr_name: str, test_data: TestData) ->
+ 
+ 
+ def csr_access_test(
+-    test_data: TestData, csr: tuple, covergroup: str, coverpoint: str, maskedwrites: bool = False
++    test_data: TestData,
++    csr: tuple,
++    covergroup: str,
++    coverpoint: str,
++    maskedwrites: bool = False,
++    *,
++    mask_gate: tuple[str, int] | None = None,
+ ) -> list[str]:
+     """
+     Generate a CSR access test: write all 1s, write all 0s, set all, clear all.
+@@ -85,6 +101,7 @@ def csr_access_test(
+         covergroup: Covergroup name for testcase strings
+         coverpoint: Coverpoint name for testcase strings
+         maskedwrites: If True, the CSR is written with a mask applied to the value being written.
++        mask_gate: Optional (preprocessor condition, additional mask bits).
+ 
+     Returns:
+         List of assembly lines for the access test
+@@ -103,20 +120,21 @@ def csr_access_test(
+         f"# CSR Access Tests for {csr_name}",
+         f"csrr x{save_reg}, {csr_name}    # Save CSR",
+     ]
++
++    def load_mask(value: int) -> list[str]:
++        mask32 = value & 0xFFFFFFFF
++        if mask32 != value:
++            return [
++                "#if __riscv_xlen == 64",
++                f"LI(x{mask_reg}, {value:#x})    # Load 64-bit mask",
++                "#else",
++                f"LI(x{mask_reg}, {mask32:#x})   # Load 32-bit mask (upper bits of {value:#x} are ignored)",
++                "#endif",
++            ]
++        return [f"LI(x{mask_reg}, {value})    # Load mask ({value:#x})"]
++
+     if mask is not None:
+-        mask32 = mask & 0xFFFFFFFF
+-        if mask32 != mask:
+-            lines.extend(
+-                [
+-                    "#if __riscv_xlen == 64",
+-                    f"LI(x{mask_reg}, {mask:#x})    # Load 64-bit mask",
+-                    "#else",
+-                    f"LI(x{mask_reg}, {mask32:#x})   # Load 32-bit mask (upper bits of {mask:#x} are ignored)",
+-                    "#endif",
+-                ]
+-            )
+-        else:
+-            lines.append(f"LI(x{mask_reg}, {mask})    # Load mask ({mask:#x})")
++        lines.extend(_gated_mask_load(mask, mask_gate, load_mask))
+     if maskedwrites:
+         valstr = "mask"
+         lines.append(f"mv x{temp_reg}, x{mask_reg}    # Apply {valstr} to value being written")
+@@ -160,6 +178,7 @@ def _warl_reserved_check(
+     check_reg: int,
+     warl_mask_reg: int,
+     warl_mask: int,
++    mask_gate: tuple[str, int] | None = None,
+ ) -> list[str]:
+     """
+     Generate the readback for a walk iteration that wrote reserved values to WARL fields.
+@@ -182,12 +201,17 @@ def _warl_reserved_check(
+         check_reg: Scratch register for the readback
+         warl_mask_reg: Scratch register for the mask
+         warl_mask: CSR mask with the reserved fields' bits excluded
++        mask_gate: Optional additional mask bits, excluding any reserved fields.
+     """
+     field_list = ", ".join(f[0].upper() for f in reserved_fields)
+     lines = [
+         f"{INDENT}# {field_list} written with a reserved value; legalization is implementation-defined,",
+         f"{INDENT}# so check the other bits exactly and only check {field_list} for a legal (non-reserved) value.",
+-        f"LI(x{warl_mask_reg}, {warl_mask:#x})    # Load mask excluding {field_list}",
++        *_gated_mask_load(
++            warl_mask,
++            mask_gate,
++            lambda value: [f"LI(x{warl_mask_reg}, {value:#x})    # Load mask excluding {field_list}"],
++        ),
+         test_data.add_testcase(bin_name, coverpoint, covergroup),
+         gen_csr_read_sigupd(check_reg, (csr_name, warl_mask), test_data, warl_mask_reg),
+     ]
+@@ -216,6 +240,7 @@ def csr_walk_test(
+     walk_zeros: bool = True,
+     warl_fields: list[tuple] | None = None,
+     maskedwrites: bool = False,
++    mask_gate: tuple[str, int] | None = None,
+ ) -> list[str]:
+     """
+     Generate a CSR walking-ones test: set and (optionally) clear each bit individually.
+@@ -241,6 +266,7 @@ def csr_walk_test(
+             bits and instead check that the field holds a legal (non-reserved) value; all
+             other iterations check the field exactly as usual (see _warl_reserved_check).
+         maskedwrites: If True, the CSR is written with a mask applied to the value being written.
++        mask_gate: Optional (preprocessor condition, additional mask bits).
+     """
+     assert 0 <= start_bit < 32, f"start_bit must be in 0..31, got {start_bit}"
+     csr_name, mask = csr
+@@ -275,6 +301,14 @@ def csr_walk_test(
+             warl_mask &= ~(((1 << width) - 1) << lsb)
+         return warl_mask
+ 
++    def warl_mask_gate_for(reserved_fields: list[tuple]) -> tuple[str, int] | None:
++        if mask_gate is None:
++            return None
++        condition, bits = mask_gate
++        for field in reserved_fields:
++            bits &= ~(((1 << field[2]) - 1) << field[1])
++        return condition, bits
++
+     def readback_lines(bin_name: str, matched: list[tuple]) -> list[str]:
+         """
+         Readback + signature check for one walk iteration.  `matched` holds the WARL entries whose
+@@ -306,6 +340,7 @@ def csr_walk_test(
+                     check_reg,
+                     warl_mask_reg,
+                     warl_mask_for(reserved),
++                    warl_mask_gate_for(reserved),
+                 )
+             gate, rest = remaining[0], remaining[1:]
+             gated = [f for f in matched if len(f) == 5 and f[4] == gate]
+@@ -327,7 +362,11 @@ def csr_walk_test(
+         f"LI(x{walk_reg}, {1 << start_bit})              # 1 in bit {start_bit}",
+     ]
+     if mask is not None:
+-        lines.append(f"LI(x{mask_reg}, {mask})    # Load mask ({mask:#x})")
++        lines.extend(
++            _gated_mask_load(
++                mask, mask_gate, lambda value: [f"LI(x{mask_reg}, {value})    # Load mask ({value:#x})"]
++            )
++        )
+     if walk_zeros:
+         lines.append(f"LI(x{temp_reg}, -1)             # x{temp_reg} = all 1s")
+ 
+diff --git a/generators/testgen/src/testgen/priv/extensions/Sm.py b/generators/testgen/src/testgen/priv/extensions/Sm.py
+index 4f3b0c78..d61a7517 100644
+--- a/generators/testgen/src/testgen/priv/extensions/Sm.py
++++ b/generators/testgen/src/testgen/priv/extensions/Sm.py
+@@ -575,12 +575,13 @@ def _generate_mcsr_tests(test_data: TestData, test_chunks: list) -> None:
+         | (0 << 34)  # SXL:  Supervisor-Mode XLEN  not supported by Sail.  Test in xlen suite.
+         | (0 << 36)  # SBE not supported by Sail; test in Endian
+         | (0 << 37)  # MBE not supported by Sail; test in Endian
+-        | (0 << 38)  # GVA not supported by Sail; TODO change to 1 when H is implemented
+-        | (0 << 39)  # MPV not supported by Sail; TODO change to 1 when H is implemented
+         | (1 << 41)  # MPELP: Machine Previous Expect Landing Pad
+         | (0 << 42)  # MDT:   not yet supported by Sail; TODO change to 1 when Smdbltrp implemented
+         | (1 << 63)  # SD for RV64
+     )
++    # GVA/MPV belong to mstatus on RV64 and mstatush on RV32.
++    mstatus_gate = ("defined(H_SUPPORTED) && __riscv_xlen == 64", (1 << 38) | (1 << 39))
++    mstatush_gate = ("defined(H_SUPPORTED) && __riscv_xlen == 32", (1 << 6) | (1 << 7))
+     mseccfg_mask = (
+         (0 << 0)  # Smepmp MML not supported TODO: change these to 1 when Sail implements & boot code sets it up
+         | (0 << 1)  # Smepmp MMWP not supported
+@@ -676,7 +677,14 @@ def _generate_mcsr_tests(test_data: TestData, test_chunks: list) -> None:
+ 
+     tc = test_data.new_test_chunk(test_chunks)
+     tc.code.extend(
+-        csr_access_test(test_data, ("mstatus", mstatus_mask), covergroup, coverpoint_masked, maskedwrites=True)
++        csr_access_test(
++            test_data,
++            ("mstatus", mstatus_mask),
++            covergroup,
++            coverpoint_masked,
++            maskedwrites=True,
++            mask_gate=mstatus_gate,
++        )
+     )
+ 
+     for csr in csrm:
+@@ -704,7 +712,11 @@ def _generate_mcsr_tests(test_data: TestData, test_chunks: list) -> None:
+         ]
+     )
+ 
+-    tc.code.extend(csr_access_test(test_data, csr_mstatush, covergroup, coverpoint_masked, maskedwrites=True))
++    tc.code.extend(
++        csr_access_test(
++            test_data, csr_mstatush, covergroup, coverpoint_masked, maskedwrites=True, mask_gate=mstatush_gate
++        )
++    )
+ 
+     tc.code.append("\n#ifdef SM1P12P0_OR_LATER_SUPPORTED")
+     tc.code.extend(csr_access_test(test_data, csr_menvcfgh, covergroup, coverpoint_masked, maskedwrites=True))
+@@ -744,6 +756,7 @@ def _generate_mcsr_tests(test_data: TestData, test_chunks: list) -> None:
+             coverpoint_masked,
+             warl_fields=warl_fields,
+             maskedwrites=True,
++            mask_gate=mstatus_gate,
+         )
+     )
+ 
+@@ -775,7 +788,11 @@ def _generate_mcsr_tests(test_data: TestData, test_chunks: list) -> None:
+         ]
+     )
+ 
+-    tc.code.extend(csr_walk_test(test_data, csr_mstatush, covergroup, coverpoint_masked, maskedwrites=True))
++    tc.code.extend(
++        csr_walk_test(
++            test_data, csr_mstatush, covergroup, coverpoint_masked, maskedwrites=True, mask_gate=mstatush_gate
++        )
++    )
+     tc.code.append("\n#ifdef SM1P12P0_OR_LATER_SUPPORTED")
+     tc.code.extend(csr_walk_test(test_data, csr_menvcfgh, covergroup, coverpoint_masked, maskedwrites=True))
+     tc.code.append("#endif // SM1P12P0_OR_LATER_SUPPORTED")
+diff --git a/tests/env/riscv_arch_test.h b/tests/env/riscv_arch_test.h
+index 07ae5d68..52123385 100644
+--- a/tests/env/riscv_arch_test.h
++++ b/tests/env/riscv_arch_test.h
+@@ -4,7 +4,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ #include "rvtest_config.h"
+-#undef H_SUPPORTED // TODO: Remove this once Sail supports Hypervisor
+ #include "derived_config.h"
+ #include "encoding.h"
+ #include "utils.h"

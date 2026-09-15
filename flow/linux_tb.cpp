@@ -6,7 +6,8 @@
 //	    checkpoint/restore + windowed-VCD harness so the expensive boot runs ONCE
 //	    and the userspace transition can be re-analysed in seconds. Plusargs:
 //	      +save_at=<cyc> +save_file=<f>     write a checkpoint at cycle <cyc>
-//	      +restore=<f> +restore_at=<cyc>    restore and resume at <cyc>
+//	      +restore=<f>                   restore model, cycle and clock phase
+//	      +stop_at=<cyc>                  stop at an absolute harness cycle
 //	      +trace_file=<f> +trace_from=<a> +trace_to=<b>   VCD over cycles [a,b]
 //	    A checkpoint is bound to THIS binary; rebuilding invalidates it, so the
 //	    full-VCD capture is comprehensive (look at any signal offline, no re-run).
@@ -59,13 +60,23 @@ int main(int argc, char **argv)
 	const char *p;
 	uint64_t save_at = 0;               const char *save_file = nullptr;
 	const char *restore_file = nullptr; uint64_t restore_at = 0;
+	bool check_restore_at = false;
+	uint64_t stop_at = ~0ULL;
+	bool require_exit = false;
 	const char *trace_file = nullptr;
 	uint64_t trace_from = 0, trace_to = ~0ULL;
 
 	if ((p = plusval(argc, argv, "+save_at=")))    save_at = strtoull(p, 0, 0);
 	if ((p = plusval(argc, argv, "+save_file=")))  save_file = p;
 	if ((p = plusval(argc, argv, "+restore=")))    restore_file = p;
-	if ((p = plusval(argc, argv, "+restore_at="))) restore_at = strtoull(p, 0, 0);
+	if ((p = plusval(argc, argv, "+restore_at="))) {
+		restore_at = strtoull(p, 0, 0);
+		check_restore_at = true;
+	}
+	if ((p = plusval(argc, argv, "+stop_at="))) stop_at = strtoull(p, 0, 0);
+	for (int i = 1; i < argc; i++)
+		if (!strcmp(argv[i], "+require_exit") || !strcmp(argv[i], "+require_exit=1"))
+			require_exit = true;
 	if ((p = plusval(argc, argv, "+trace_file="))) trace_file = p;
 	if ((p = plusval(argc, argv, "+trace_from="))) trace_from = strtoull(p, 0, 0);
 	if ((p = plusval(argc, argv, "+trace_to=")))   trace_to = strtoull(p, 0, 0);
@@ -73,13 +84,24 @@ int main(int argc, char **argv)
 	uint64_t cyc = 0;
 	VerilatedVcdC *tfp = nullptr;
 	vluint64_t t = 0;
+	constexpr uint64_t checkpoint_format = 0x4b41525553415631ULL;
 
 	if (restore_file) {
 		VerilatedRestore is;
 		is.open(restore_file);
+		uint64_t format = 0;
+		is >> format;
+		if (format != checkpoint_format) {
+			fprintf(stderr, "[linux_tb] incompatible checkpoint format\n");
+			std::exit(2);
+		}
+		is >> cyc >> t;
 		is >> *tb;
 		is.close();
-		cyc = restore_at;
+		if (check_restore_at && restore_at != cyc) {
+			fprintf(stderr, "[linux_tb] restore_at disagrees with saved cycle\n");
+			return 2;
+		}
 		fprintf(stderr, "[linux_tb] restored %s, resume cyc=%llu\n",
 			restore_file, (unsigned long long)cyc);
 	}
@@ -94,8 +116,8 @@ int main(int argc, char **argv)
 	}
 
 	bool saved = false;
-	tb->clk = 0;
-	while (!Verilated::gotFinish()) {
+	if (!restore_file) tb->clk = 0;
+	while (!Verilated::gotFinish() && cyc < stop_at) {
 		tb->clk = !tb->clk;
 		tb->eval();
 		if (tfp && cyc >= trace_from && cyc <= trace_to)
@@ -106,6 +128,7 @@ int main(int argc, char **argv)
 			if (save_file && !saved && cyc >= save_at) {
 				VerilatedSave os;
 				os.open(save_file);
+				os << checkpoint_format << cyc << t;
 				os << *tb;
 				os.close();
 				saved = true;
@@ -115,9 +138,10 @@ int main(int argc, char **argv)
 		}
 	}
 	if (tfp) { tfp->close(); delete tfp; }
+	int rc = tb->sim_exit_valid ? (int)tb->sim_exit_code : (require_exit ? 2 : 0);
 	tb->final();
 	delete tb;
-	return 0;
+	return rc;
 }
 
 #else	/* plain (fast) build -- make linux-sim */

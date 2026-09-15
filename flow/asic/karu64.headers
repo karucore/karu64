@@ -1,0 +1,7 @@
+rtl/karu_axi_defs.vh
+rtl/karu_cfg.vh
+rtl/karu_ext.vh
+rtl/karu_fpkg.vh
+rtl/karu_pma.vh
+rtl/karu_uop_defs.vh
+rtl/karu_vcfg.vh

@@ -1,9 +1,13 @@
 # rtl/zvk — standard RISC-V vector-crypto (Zvk\*)
 
-Opt-in standard vector-crypto for `karu64`. The coarse
+Opt-in standard vector-crypto for `karu64`. Full Zvbb is separate lane/widening
+logic and is enabled in every normal V build (`KARU_NO_ZVBB` opts out; combine
+it with `KARU_ZVKB` for the subset only). The coarse
 `-DKARU_ZVK` umbrella enables all implemented standard leaves; the leaf knobs
-can also be enabled independently: `-DKARU_ZVKB` (vandn/vbrev8/vrev8/vrol/vror
-lane bit-manip glue), `-DKARU_ZVKNED` (AES), `-DKARU_ZVKNHA` (SHA-256),
+can also be enabled independently: `-DKARU_ZVKB` retains only
+vandn/vbrev8/vrev8/vrol/vror when paired with the `KARU_NO_ZVBB` area opt-out;
+it is otherwise already supplied by default-on Zvbb. `-DKARU_ZVKNED` (AES),
+`-DKARU_ZVKNHA` (SHA-256),
 `-DKARU_ZVKNHB` (SHA-256/SHA-512, implies Zvknha), `-DKARU_ZVKSED` (SM4),
 `-DKARU_ZVKSH` (SM3), and `-DKARU_ZVKG` (GHASH/GCM).
 Distinct from the opt-in `KARU_KECCAK` single-instruction Keccak-p[1600]
@@ -122,9 +126,10 @@ vsm4/vsm3/vghsh) is `0x77`, only vector *bitmanip* (Zvbb/Zvbc) stays in OP-V `0x
 `vkeccak.vi` (Zvknhk, see below) shares this same `0x77` major opcode and the
 VAES.vs selector space. All **fn3 = 010 (OPMVV)** — even
 the `.vi` forms (`vaeskf*`/`vsm4k`/`vsm3c`), which carry `uimm` in the `vs1` field.
-`vaes*`/`vsm4r`/`vgmul` share funct6 `101000`(.vv)/`101001`(.vs) and select the
-specific op via the **`vs1` field**. **Re-read this section before touching decode —
-do not hand-derive funct6 from memory.**
+`vaes*` and `vsm4r` use funct6 `101000` (.vv) / `101001` (.vs) and select the
+specific op via the **`vs1` field**. `vgmul.vv` occupies selector 17 only in
+the `101000` row. **Re-read this section before touching decode—do not
+hand-derive funct6 from memory.**
 
 ### Zvknhk `vkeccak.vi` (riscv-pqc)
 
@@ -182,10 +187,21 @@ Self-checking KATs against the standard / Marian's validated vectors:
 | `tb_vcrypto_kat.sv` | the aggregated handshake, including SHA2 SEW32 and SEW64 staged paths |
 | `make zvk-kat` | all standalone KATs above, plus the aggregate handshake KAT |
 | `make zvk-decode-test` | all standard OP-VE encodings under `-DKARU_ZVK` |
-| `make zvk-decode-leaf-test` | each official leaf knob decodes its ops and traps the other leaves |
-| `make zvk-test` | full-core `-DKARU_ZVK` instruction smoke across AES/SHA-2/SM4/SM3/GHASH |
+| `make zvk-decode-leaf-test` | each optional crypto leaf knob decodes its ops and traps the other optional crypto leaves; default Zvbb/Zvkb remains available in every row |
+| `make zvk-test-all` | identical instruction smoke on Spike, the focused `-DKARU_ZVK` Karu model and the exact shipping profile, including every AES/SM4 `.vs` scalar-element-group broadcast at `vl=8,m1` and `vl=16,m2` (`zvk-test-ship` selects the last model alone) |
+| `make zvbb-test-all` | full/subset/off decode gating plus full Zvbb on Karu and Spike: exhaustive e8 unary inputs, every SEW and LMUL extremes, mask/tail, masked data sources, all `vwsll` forms, and reserved encodings |
 | `tb_keccak_kat.sv` / `make keccak-kat` | `keccak.v` Keccak-p[1600,24] and [1600,12] against the riscv-pqc `KECCAK-P` / `KECCAK-P12` vectors |
 | `make keccak-test`, `make keccak-test-zvk` | full-core `vkeccak.vi`: spec KATs, fixed-group/tail/`vl`/LMUL rules, reserved-encoding traps |
+| `make keccak-bench` | ideal-memory Verilator cycles for resident permutations, SHAKE128/256 absorb/squeeze and components; FPGA lane/writeback geometry |
+| `make keccak-sponge-test` | complete SHAKE128/256 outputs against independent hashlib answers, all byte alignments, page crossings and output canaries |
+| `make keccak-compare` | resident hardware paths plus six fully checked GCC/Clang RV64GC, Zbb and vector-enabled C rows; [harness](../../test/keccak-sw/README.md) and [numbers](../../doc/keccak-software-comparison.md) |
+
+Masked data operands use registers distinct from `v0`: RVV reserves reading
+the same register at both mask EEW=1 and element EEW. The shared issue gate
+rejects that source overlap; ACT4/Sail checks the strict trapping policy.
+The Spike cross-check uses legal masked operands because Spike permits some
+reserved encodings to execute. See the
+[ACT4 instructions](../../test/act4-karu/README.md).
 
 Build pattern (one example):
 
@@ -237,7 +253,9 @@ Zvk unit itself is not currently the obvious 8 ns timing wall.
       iterating EGW element groups (EGW128 low/high halves, EGW256 whole regs).
 - [x] directed full-core test on the `-DKARU_ZVK` build (`make zvk-test`):
       raw standard instruction words across AES/SHA-2/SM4/SM3/GHASH,
-      decode→issue→VRF→`karu_vcrypto`→VRF writeback.
+      decode→issue→VRF→`karu_vcrypto`→VRF writeback. Multi-group AES and
+      SM4 `.vs` cases verify that every destination group uses element group
+      zero of `vs2`; `make zvk-test-all` runs the same ELF on Spike.
 - [ ] broaden directed full-core coverage to more operands, masks/tails, and
       cross-check standard encodings against spike/toolchain where supported.
 

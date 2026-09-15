@@ -17,7 +17,7 @@
 #	SGMII_PHY_Mode=false => MAC-side PCS talking to an external PHY (our case).
 #
 #	Run:  make gen-pcspma
-#	Output: _build/ip/gig_ethernet_pcs_pma_0 (read by the synth flow in a later slice).
+#	Output: _build/ip/gig_ethernet_pcs_pma_0 (read when KARU_ETH_SGMII is enabled).
 
 source [file join [file dirname [file normalize [info script]]] .. vivado_paths.tcl]
 

@@ -183,7 +183,10 @@
 `define SYS_FENCE   5'h04
 `define SYS_FENCEI  5'h05   //  FENCE.I: flush IFU prefetch (self-modifying code)
 `define SYS_SRET    5'h06   //  supervisor return (S-mode)
-`define SYS_SFENCEVMA 5'h07 //  SFENCE.VMA: flush Sv39 TLBs
+`define SYS_SFENCEVMA 5'h07 //  SFENCE.VMA / SINVAL.VMA: ordered full TLB/PWC flush
+`define SYS_SFENCEINVAL 5'h08 //  Svinval ordering-only fences: S/M, unaffected by TVM
+`define SYS_HFENCEVVMA 5'h09 //  HFENCE/HINVAL.VVMA: H, unaffected by TVM/VTVM
+`define SYS_HFENCEGVMA 5'h0a //  HFENCE/HINVAL.GVMA: H, TVM gates HS execution
 `define SYS_TRAP    5'h1f   //  decode-time illegal instruction
 
 //  LSU size codes (mirror funct3[1:0])

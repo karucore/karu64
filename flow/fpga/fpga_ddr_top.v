@@ -24,7 +24,7 @@ module fpga_ddr_top #(
 	input  wire			uart_cts,
 	output wire			trap
 );
-	wire	irq_timer, irq_ext_m, irq_ext_s;
+	wire	irq_timer, irq_software, irq_ext_m, irq_ext_s;
 
 	//	== imem / dmem AXI4 (core <-> xbar) ==
 	wire [`AXI_ID_W-1:0]	imem_arid;   wire [`AXI_ADDR_W-1:0] imem_araddr;
@@ -67,6 +67,7 @@ module fpga_ddr_top #(
 	karu64 #(.RESET_PC(RESET_PC), .EXT_TIME(1)) cpu (
 		.clk(clk), .rst(rst), .trap(trap),
 		.irq(irq_timer), .irq_external_m(irq_ext_m), .irq_external_s(irq_ext_s),
+		.irq_software(irq_software),
 		.time_in(clint_mtime),
 		.hpm_events(32'b0),
 		.cache_flush_req(), .cache_flush_invalidate(), .cache_flush_done(1'b1),
@@ -133,6 +134,7 @@ module fpga_ddr_top #(
 		.uart_txd(uart_txd), .uart_rxd(uart_rxd),
 		.uart_rts(uart_rts), .uart_cts(uart_cts),
 		.irq_timer(irq_timer), .irq_ext_m(irq_ext_m), .irq_ext_s(irq_ext_s),
+		.irq_software(irq_software),
 		.clint_mtime(clint_mtime)
 	);
 

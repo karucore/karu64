@@ -16,8 +16,8 @@
 //	     is captured at AR-accept and held to RLAST, so the master's R beats
 //	     route back to the right requester. Writes are dmem-only.
 //
-//	Address split: is_dram = (pa[31:28] == 4'h8)  -> 0x8000_0000..0x8FFF_FFFF
-//	matches the core's cacheable window (karu_mem). Everything else is MMIO.
+//	DRAM occupies 0x8000_0000..0xFFFF_FFFF, all cacheable by the core unless
+//	attributes request bypass. Boot memory and MMIO are decoded below DRAM.
 //
 //	Single outstanding per master per channel (which the IFU/LSU + the behavioral
 //	slave both honour) keeps the routing a latched select rather than a tag FIFO.
@@ -120,6 +120,7 @@ module karu_ddr_xbar #(
 
 	//	== interrupt lines to the core ==
 	output wire			irq_timer,
+	output wire			irq_software,
 	output wire			irq_ext_m,
 	output wire			irq_ext_s,
 	//	CLINT mtime -> core CSR `time` (rdtime), so rdtime + mtimecmp share one domain
@@ -159,6 +160,9 @@ module karu_ddr_xbar #(
 	wire			clint_mtip, clint_msip;
 	wire			plic_irq_m, plic_irq_s;
 	wire [63:0]		ns_rdata, clint_rdata, plic_rdata, flash_rdata, eth_rdata;
+	reg [63:0]		clint_rdata_q;
+	reg [63:0]		ns_rdata_q, flash_rdata_q;
+	reg [63:0]		plic_rdata_q;
 	wire [63:0]		boot_imem_rdata, boot_dmem_rdata;
 	wire			ns_thr_ready;
 	wire			flash_busy;
@@ -184,16 +188,19 @@ module karu_ddr_xbar #(
 		.dmem_wstrb(boot_wstrb), .dmem_wdata(boot_wdata)
 	);
 
-	//	mr_* (MMIO target select) and mmio_r_fire are latched / derived in the
+	//	mr_* (MMIO target select) and read acceptance are latched / derived in the
 	//	dmem-read front-end far below, but the MMIO device instances here consume
 	//	them -- hoist the decls so a single-pass front-end (Genus + default_nettype
 	//	none) does not see implicit nets in the .re() port expressions.
 	reg				mr_uart, mr_clint, mr_plic, mr_flash, mr_eth;
-	wire			mmio_r_fire;
+	localparam MR_IDLE = 1'b0, MR_VLD = 1'b1;
+	reg mr_st;
+	wire mmio_ar_accept;
 
 	karu_ns16550 #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_uart (
 		.clk(clk), .rst(rst),
-		.re(mmio_r_fire && mr_uart), .raddr(mr_addr[2:0]),
+		.re(mmio_ar_accept && is_uart(dmem_araddr)),
+		.raddr(mr_st == MR_IDLE ? dmem_araddr[2:0] : mr_addr[2:0]),
 		.we(ns_we), .wstrb(dmem_wstrb), .wdata(dmem_wdata), .rdata(ns_rdata),
 		.uart_txd(uart_txd), .uart_rxd(uart_rxd),
 		.uart_rts(uart_rts), .uart_cts(uart_cts),
@@ -201,7 +208,7 @@ module karu_ddr_xbar #(
 	);
 	karu_clint #(.CPU_CLK_HZ(CPU_CLK_HZ)) u_clint (
 		.clk(clk), .rst(rst),
-		.raddr(mr_addr), .rdata(clint_rdata),
+		.raddr(mr_st == MR_IDLE ? dmem_araddr : mr_addr), .rdata(clint_rdata),
 		.we(clint_we), .waddr(dmem_awaddr), .wstrb(dmem_wstrb), .wdata(dmem_wdata),
 		.mtip(clint_mtip), .msip(clint_msip), .mtime_o(clint_mtime)
 	);
@@ -211,7 +218,7 @@ module karu_ddr_xbar #(
 	//	(SGMII to the external DP83867).
 	karu_eth u_eth (
 		.clk(clk), .rst(rst),
-		.rd_req(eth_rd_req), .rd_addr(dmem_araddr[31:0]),
+		.rd_req(eth_rd_req), .rd_addr(dmem_araddr[31:0]), .rd_size(dmem_arsize),
 		.rd_done(eth_rd_done), .rd_data(eth_rdata),
 		.wr_req(eth_wr_req), .wr_addr(dmem_awaddr[31:0]),
 		.wr_strb(dmem_wstrb), .wr_data(dmem_wdata),
@@ -226,17 +233,20 @@ module karu_ddr_xbar #(
 
 	karu_plic u_plic (
 		.clk(clk), .rst(rst),
-		.raddr(mr_addr), .rdata(plic_rdata),
+		.re(mmio_ar_accept && is_plic(dmem_araddr)),
+		.raddr(mr_st == MR_IDLE ? dmem_araddr : mr_addr), .rdata(plic_rdata),
 		.we(plic_we), .waddr(dmem_awaddr), .wstrb(dmem_wstrb), .wdata(dmem_wdata),
 		.uart_irq(uart_intr), .eth_irq(eth_irq), .irq_m(plic_irq_m), .irq_s(plic_irq_s)
 	);
 	karu_qspi_mmio u_flash (
 		.clk(clk), .rst(rst),
-		.re(mmio_r_fire && mr_flash), .raddr(mr_addr[4:0]), .rdata(flash_rdata),
+		.re(mmio_ar_accept && is_flash(dmem_araddr)),
+		.raddr(mr_st == MR_IDLE ? dmem_araddr[4:0] : mr_addr[4:0]), .rdata(flash_rdata),
 		.we(flash_we), .waddr(dmem_awaddr[4:0]), .wstrb(dmem_wstrb),
 		.wdata(dmem_wdata), .busy(flash_busy)
 	);
 	assign irq_timer = clint_mtip;
+	assign irq_software = clint_msip;
 	assign irq_ext_m = plic_irq_m;
 	assign irq_ext_s = plic_irq_s;
 
@@ -349,14 +359,12 @@ module karu_ddr_xbar #(
 	assign imem_rvalid = (lr_to_imem && (lr_st == LR_VLD)) || (dr_to_imem && m_rvalid);
 	assign imem_rdata  = lr_to_imem ? boot_imem_rdata : m_rdata;
 	assign imem_rid    = lr_to_imem ? lr_id : m_rid;
-	assign imem_rresp  = `AXI_RESP_OKAY;
+	assign imem_rresp  = lr_to_imem ? `AXI_RESP_OKAY : m_rresp;
 	assign imem_rlast  = lr_to_imem ? 1'b1 : m_rlast;
 
 	//	================= dmem READ front-end (DRAM vs MMIO) =================
 	//	A dmem read is either a DRAM read (served by the engine above) or an
 	//	MMIO read (combinational device rdata). Latch which at AR-accept.
-	localparam MR_IDLE = 1'b0, MR_VLD = 1'b1;
-	reg				mr_st;
 	reg [`AXI_ID_W-1:0]	mr_id;
 	//	mr_uart/mr_clint/mr_plic/mr_flash/mr_eth hoisted up to the MMIO instances
 	reg				eth_rd_ready;
@@ -367,7 +375,7 @@ module karu_ddr_xbar #(
 	wire mmio_ar_base = (mr_st == MR_IDLE) && dmem_arvalid &&
 						!dmem_ar_dram && !dmem_ar_boot;
 	wire eth_rd_candidate = mmio_ar_base && dmem_ar_eth && !eth_busy;
-	wire mmio_ar_accept = mmio_ar_base && (!dmem_ar_eth || !eth_busy);
+	assign mmio_ar_accept = mmio_ar_base && (!dmem_ar_eth || !eth_busy);
 	assign eth_rd_req = mmio_ar_accept && dmem_ar_eth;
 	wire mmio_rvalid = (mr_st == MR_VLD) && (!mr_eth || eth_rd_ready);
 
@@ -377,6 +385,15 @@ module karu_ddr_xbar #(
 			eth_rd_ready <= 1'b0;
 		end else case (mr_st)
 			MR_IDLE: if (mmio_ar_accept) begin
+				// All immediate devices snapshot at acceptance. UART RBR
+				// pop uses this same edge, never the later RREADY handshake.
+				if (is_uart(dmem_araddr)) ns_rdata_q <= ns_rdata;
+				if (is_flash(dmem_araddr)) flash_rdata_q <= flash_rdata;
+				// Snapshot the accepted address before RVALID: mtime must
+				// not change an AXI response while the master stalls it.
+				if (is_clint(dmem_araddr)) clint_rdata_q <= clint_rdata;
+				// Claim atomically with this snapshot, before any R stall.
+				if (is_plic(dmem_araddr)) plic_rdata_q <= plic_rdata;
 				mr_addr  <= dmem_araddr;
 				mr_id    <= dmem_arid;
 				mr_uart  <= is_uart(dmem_araddr);
@@ -394,12 +411,11 @@ module karu_ddr_xbar #(
 		if (!rst && eth_rd_done) eth_rd_ready <= 1'b1;
 	end
 
-	wire [63:0] mmio_rdata = mr_uart  ? ns_rdata    :
-							  mr_clint ? clint_rdata :
-							  mr_plic  ? plic_rdata  :
+	wire [63:0] mmio_rdata = mr_uart  ? ns_rdata_q  :
+							  mr_clint ? clint_rdata_q :
+							  mr_plic  ? plic_rdata_q :
 							  mr_eth   ? eth_rdata    :
-							  mr_flash ? flash_rdata : 64'b0;
-	assign mmio_r_fire = mmio_rvalid && dmem_rready;
+							  mr_flash ? flash_rdata_q : 64'b0;
 
 	//	dmem AR ready: DRAM path or MMIO path depending on the address
 	assign dmem_arready = dmem_ar_dram ? dmem_rd_arready :
@@ -413,7 +429,9 @@ module karu_ddr_xbar #(
 						 mmio_rvalid ? mmio_rdata : m_rdata;
 	assign dmem_rid    = lr_to_dmem ? lr_id :
 						 mmio_rvalid ? mr_id : m_rid;
-	assign dmem_rresp  = `AXI_RESP_OKAY;
+	assign dmem_rresp  = lr_to_dmem ? `AXI_RESP_OKAY :
+		mmio_rvalid ? ((mr_uart || mr_clint || mr_plic || mr_eth || mr_flash)
+			? `AXI_RESP_OKAY : `AXI_RESP_DECERR) : m_rresp;
 	assign dmem_rlast  = (lr_to_dmem || mmio_rvalid) ? 1'b1 : m_rlast;
 
 	//	================= dmem WRITE front-end (DRAM vs MMIO) =================
@@ -457,11 +475,15 @@ module karu_ddr_xbar #(
 	assign plic_we  = mmio_aw_fire && is_plic(dmem_awaddr);
 	assign flash_we = mmio_aw_fire && is_flash(dmem_awaddr);
 
+	reg [1:0] local_bresp;
 	always @(posedge clk) begin
 		if (rst) begin
 			w_st <= W_IDLE;
 		end else case (w_st)
 			W_IDLE: begin
+				local_bresp <= (dmem_aw_boot || dmem_aw_eth || is_uart(dmem_awaddr) ||
+					is_clint(dmem_awaddr) || is_plic(dmem_awaddr) || is_flash(dmem_awaddr))
+					? `AXI_RESP_OKAY : `AXI_RESP_DECERR;
 				if (boot_wr_fire) begin
 					w_bid <= dmem_awid;
 					w_st  <= W_MMIO_B;
@@ -489,9 +511,11 @@ module karu_ddr_xbar #(
 										  (dmem_aw_boot || !mmio_wr_wait));
 	//	W: for MMIO the beat is consumed with the AW (mmio_aw_fire); for DRAM the
 	//	beats stream to the master while in W_DRAM (single-beat write-through).
-	assign dmem_wready  = dmem_aw_dram ? ((w_st == W_DRAM) && m_wready)
-									   : ((w_st == W_IDLE) && dmem_awvalid &&
-										  (dmem_aw_boot || !mmio_wr_wait));
+	// AW may change as soon as accepted. Its latched route, not the live
+	// address pins, governs every subsequent W beat of a DRAM transaction.
+	assign dmem_wready  = (w_st == W_DRAM) ? m_wready :
+		((w_st == W_IDLE) && !dmem_aw_dram && dmem_awvalid &&
+		 (dmem_aw_boot || !mmio_wr_wait));
 
 	//	master AW/W (DRAM writes only)
 	assign m_awid    = dmem_awid;
@@ -510,7 +534,7 @@ module karu_ddr_xbar #(
 	assign dmem_bvalid = (w_st == W_DRAM)   ? m_bvalid :
 						 (w_st == W_MMIO_B) ? 1'b1     : 1'b0;
 	assign dmem_bid    = (w_st == W_DRAM)   ? m_bid    : w_bid;
-	assign dmem_bresp  = `AXI_RESP_OKAY;
+	assign dmem_bresp  = (w_st == W_DRAM) ? m_bresp : local_bresp;
 
 `ifdef SIM_TB
 	karu_ddr_xbar_assert u_xbar_assert (
@@ -561,9 +585,9 @@ module karu_ddr_xbar #(
 	);
 `endif
 
-	//	clint_msip has no core input today; sink it (see karu_axi_mem note).
+	//	Unused AXI attributes.
 	wire _unused = &{ imem_arsize, imem_arburst, imem_arprot,
 					  dmem_arsize, dmem_arburst, dmem_arprot,
 					  dmem_awlen, dmem_awsize, dmem_awburst, dmem_awprot,
-					  dmem_wlast, clint_msip, m_bresp, 1'b0 };
+					  dmem_wlast, m_bresp, 1'b0 };
 endmodule

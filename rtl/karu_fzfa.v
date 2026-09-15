@@ -7,7 +7,7 @@
 //  round-toward-zero, then reduce modulo 2^32 (i.e. keep the low 32 bits and
 //  sign-extend bit 31 to XLEN). Flags:
 //    NV = NaN | inf | (the rtz integer is outside [-2^31, 2^31-1])
-//    NX = a nonzero fraction was discarded (and not NaN/inf)
+//    NX = a nonzero fraction was discarded, unless NV is raised
 //  Validated bit-exact against spike (make zfa-test).
 
 `include "karu_fpkg.vh"
@@ -64,5 +64,5 @@ module karu_fcvtmod_wd (
 
     assign flags =
         ((is_nan || is_inf || oor) ? (5'b1 << `FF_NV) : 5'b0) |
-        ((!is_nan && !is_inf && frac_nz) ? (5'b1 << `FF_NX) : 5'b0);
+        ((!is_nan && !is_inf && !oor && frac_nz) ? (5'b1 << `FF_NX) : 5'b0);
 endmodule

@@ -25,10 +25,12 @@ module karu_fregfile (
 );
     reg [63:0] fx [0:31];
 
+`ifndef KARU_ASIC
     integer i;
     initial begin
         for (i = 0; i < 32; i = i + 1) fx[i] = 64'b0;
     end
+`endif
 
     always @(posedge clk) begin
         if (we) fx[rd] <= rd_v;     //  f0 has no special semantics

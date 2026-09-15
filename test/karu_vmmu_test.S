@@ -46,10 +46,19 @@
 //	         succeeds with sstatus.SUM=1.
 //	  M (14) MXR: vector load from an execute-only page faults 13 without
 //	         MXR, succeeds with sstatus.MXR=1.
-//	  N (15) Svadu: a store to a W,D=0 page does NOT fault and HW writes
-//	         back A+D into the PTE (karu always; spike needs _svadu in isa).
+//	  N (15) Svade: A=0 loads and D=0 stores fault without changing the PTE,
+//	         destination or memory; a load-filled D=0 TLB entry still rejects
+//	         stores. Software sets A/D, flushes and successfully retries.
 //	  O (16) invalid PTE (V=0): vector load -> cause 13.
 //	exit 0 = all pass. The harness prints "[HTIF] exit <code>".
+
+// Reuse the full vector/translation suite with PMA, NC and IO mappings.
+// The identity alias uses the same type, so validation loads do not mix
+// cacheability attributes without the required software cache maintenance.
+#ifndef TEST_PBMT
+#define TEST_PBMT 0
+#endif
+	.equ	PAGE_TYPE, (TEST_PBMT << 61)
 
 	.equ	TOHOST,		0x80001000
 	.equ	TRAPS_VAR,	0x80001008	//	trap counter
@@ -97,17 +106,17 @@
 	.equ	PTE_D,		0x80
 	.equ	PTR_L1,		((L1T >> 12) << 10) | PTE_V
 	.equ	PTR_L0,		((L0T >> 12) << 10) | PTE_V
-	.equ	LEAF_F0,	((F0 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D
-	.equ	LEAF_F1,	((F1 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D
-	.equ	LEAF_F2,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D
-	.equ	LEAF_UCODE,	((UCODE_PHYS >> 12) << 10) | PTE_V|PTE_R|PTE_X|PTE_U|PTE_A|PTE_D
-	.equ	LEAF_UF0,	((F0 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D
-	.equ	LEAF_UF1,	((F1 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D
+	.equ	LEAF_F0,	((F0 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D|PAGE_TYPE
+	.equ	LEAF_F1,	((F1 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D|PAGE_TYPE
+	.equ	LEAF_F2,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PTE_D|PAGE_TYPE
+	.equ	LEAF_UCODE,	((UCODE_PHYS >> 12) << 10) | PTE_V|PTE_R|PTE_X|PTE_U|PTE_A|PTE_D|PAGE_TYPE
+	.equ	LEAF_UF0,	((F0 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D|PAGE_TYPE
+	.equ	LEAF_UF1,	((F1 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_U|PTE_A|PTE_D|PAGE_TYPE
 	//	V4 permission-matrix leaves (alias F2; perms vary):
-	.equ	LEAF_RO,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_A|PTE_D		//	load-only (no W)
-	.equ	LEAF_XO,	((F2 >> 12) << 10) | PTE_V|PTE_X|PTE_A|PTE_D		//	exec-only (no R) -> MXR
-	.equ	LEAF_WND,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A		//	W, D=0 -> Svadu writeback
-	.equ	IDENT2,		((0x80000000 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_X|PTE_A|PTE_D
+	.equ	LEAF_RO,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_A|PTE_D|PAGE_TYPE	// load-only
+	.equ	LEAF_XO,	((F2 >> 12) << 10) | PTE_V|PTE_X|PTE_A|PTE_D|PAGE_TYPE	// execute-only
+	.equ	LEAF_WND,	((F2 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_A|PAGE_TYPE	// D=0
+	.equ	IDENT2,		((0x80000000 >> 12) << 10) | PTE_V|PTE_R|PTE_W|PTE_X|PTE_A|PTE_D|PAGE_TYPE
 	.equ	SATP0,		(8 << 60) | (ROOT >> 12)
 
 //	====================================================================
@@ -120,13 +129,15 @@ _start:
 	csrw	mtvec, t0
 	li	t0, 0x6600		//	FS=11 VS=11 (spike resets them Off)
 	csrs	mstatus, t0
-	//	menvcfg.ADUE (bit 61) = 1: enable HW A/D-bit update so a store to a
-	//	D=0 page writes the bit back instead of faulting (phase N). karu_sv39
-	//	does this unconditionally (menvcfg reads 0 there, a no-op); spike
-	//	gates on ADUE, so set it -> identical observable behavior, same ELF.
+	//	Svade fault-on-clear semantics, also if the reference has optional
+	//	Svadu hardware updates. Karu implements ADUE as read-only zero.
 	li	t0, 1
 	slli	t0, t0, 61
-	csrs	0x30a, t0		//	menvcfg
+	csrc	0x30a, t0		//	menvcfg.ADUE = 0
+#if TEST_PBMT != 0
+	li	t0, (1 << 62)
+	csrs	0x30a, t0		// menvcfg.PBMTE
+#endif
 
 	//	prefill F0 with byte (0x40+i)&0xFF, F1 with (0x80+i)&0xFF,
 	//	F2 with (0xC0+i)&0xFF over the full 4 KiB
@@ -274,6 +285,9 @@ s_driver:
 	sfence.vma
 
 	//	---- A: cross-page contiguous LOAD ----
+#ifdef TEST_PBMT_FAULT
+	j pbmt_fault_suite
+#endif
 	li	t0, 32
 	vsetvli	t0, t0, e8, m1, tu, mu
 	li	t1, V0 + 0xFF0
@@ -804,7 +818,7 @@ s_after_u:
 	li	t2, (1 << 19)
 	csrc	sstatus, t2		//	restore MXR = 0
 
-	//	---- N: Svadu -- store to W,D=0 page sets A+D in the PTE, no fault ----
+	//	---- N: Svade -- D=0 load fills TLB, stores still fault precisely ----
 	li	t0, L0T + 14*8		//	VWND = 0xE000 -> F2, R|W|A (D=0)
 	li	t1, LEAF_WND
 	sd	t1, 0(t0)
@@ -813,19 +827,110 @@ s_after_u:
 	sd	zero, 0(t0)
 	li	t0, 32
 	vsetvli	t0, t0, e8, m1, tu, mu
+	li	t1, F2
+	vle8.v	v16, (t1)		//	preserve all target bytes before the fault
 	li	t1, 0xE000
-	vse8.v	v8, (t1)		//	store -> HW A/D writeback (no fault)
+	vle8.v	v8, (t1)		//	A=1,D=0 is legal for load; prime the TLB
+	li	t0, 0x5A
+	vmv.v.x	v8, t0
+n_store_fault:
+	vse8.v	v8, (t1)
 	li	t0, STRAPS_VAR
 	ld	t1, 0(t0)
-	bnez	t1, fail_n
+	li	t2, 1
+	bne	t1, t2, fail_n
+	li	t0, SCAUSE_VAR
+	ld	t1, 0(t0)
+	li	t2, 15
+	bne	t1, t2, fail_n
+	li	t0, STVAL_VAR
+	ld	t1, 0(t0)
+	li	t2, 0xE000
+	bne	t1, t2, fail_n
+	li	t0, SEPC_VAR
+	ld	t1, 0(t0)
+	la	t2, n_store_fault
+	bne	t1, t2, fail_n
 	li	t0, L0T + 14*8		//	re-read the PTE from memory
 	ld	t1, 0(t0)
-	li	t2, PTE_D
-	and	t3, t1, t2
-	beqz	t3, fail_n		//	D must now be set
-	li	t2, PTE_A
-	and	t3, t1, t2
-	beqz	t3, fail_n		//	A must now be set
+	li	t2, LEAF_WND
+	bne	t1, t2, fail_n	//	no PTE write on fault
+	csrw	vstart, zero
+	li	t1, F0 + 0x300
+	vse8.v	v16, (t1)
+	li	a0, F2
+	li	a1, F0 + 0x300
+	li	a2, 32
+	jal	ra, cmpn
+	bnez	a0, fail_n		//	no target-memory writes before fault
+	li	t0, L0T + 14*8
+	li	t1, LEAF_WND | PTE_D
+	sd	t1, 0(t0)
+	sfence.vma
+	li	t1, 0xE000
+	vse8.v	v8, (t1)		//	software D repair permits the retry
+	li	t0, STRAPS_VAR
+	ld	t1, 0(t0)
+	li	t2, 1
+	bne	t1, t2, fail_n
+	li	t1, F0 + 0x320
+	vse8.v	v8, (t1)
+	li	a0, F2
+	li	a1, F0 + 0x320
+	li	a2, 32
+	jal	ra, cmpn
+	bnez	a0, fail_n
+
+	//	A=0 load: destination and PTE both remain unchanged.
+	li	t0, L0T + 14*8
+	li	t1, LEAF_WND & ~PTE_A
+	sd	t1, 0(t0)
+	sfence.vma
+	li	t0, 0x6D
+	vmv.v.x	v8, t0
+	li	t1, F0 + 0x340
+	vse8.v	v8, (t1)
+	li	t1, 0xE000
+n_load_fault:
+	vle8.v	v8, (t1)
+	li	t0, STRAPS_VAR
+	ld	t1, 0(t0)
+	li	t2, 2
+	bne	t1, t2, fail_n
+	li	t0, SCAUSE_VAR
+	ld	t1, 0(t0)
+	li	t2, 13
+	bne	t1, t2, fail_n
+	li	t0, STVAL_VAR
+	ld	t1, 0(t0)
+	li	t2, 0xE000
+	bne	t1, t2, fail_n
+	li	t0, SEPC_VAR
+	ld	t1, 0(t0)
+	la	t2, n_load_fault
+	bne	t1, t2, fail_n
+	li	t0, L0T + 14*8
+	ld	t1, 0(t0)
+	li	t2, LEAF_WND & ~PTE_A
+	bne	t1, t2, fail_n
+	csrw	vstart, zero
+	li	t1, F0 + 0x360
+	vse8.v	v8, (t1)
+	li	a0, F0 + 0x340
+	li	a1, F0 + 0x360
+	li	a2, 32
+	jal	ra, cmpn
+	bnez	a0, fail_n
+	li	t0, L0T + 14*8
+	li	t1, LEAF_WND
+	sd	t1, 0(t0)
+	sfence.vma
+	li	t1, 0xE000
+	vle8.v	v8, (t1)		//	A repair suffices for load, even D=0
+	li	t0, STRAPS_VAR
+	ld	t1, 0(t0)
+	li	t2, 2
+	bne	t1, t2, fail_n
 
 	//	---- O: invalid PTE (V=0) -> vector load faults 13 ----
 	li	t0, L0T + 15*8		//	VINV = 0xF000 -> 0 (invalid)
@@ -984,3 +1089,113 @@ u_ecall:
 	.space	4096
 	.section .f2, "aw"
 	.space	4096
+
+#ifdef TEST_PBMT_FAULT
+// DUT bus-fault variant: +read_error_exact_addr=80005303 rejects only
+// the IO byte transfer at F0+0x303, not other bytes in that AXI word.
+// Reuses the page tables, data initialization, trap handler and exit path.
+	.section .pbmtfault, "ax"
+	.balign 4
+pbmt_fault_suite:
+	li s0, 17
+	li t0, 16
+	vsetvli zero, t0, e8, m1, tu, mu
+	li t0, 0x5a
+	vmv.v.x v8, t0
+	li t1, V0 + 0x300
+	vle8ff.v v8, (t1)
+	csrr t0, vl
+	li t1, 3
+	bne t0, t1, pbmt_fault_fail
+	li t0, TRAPS_VAR
+	ld t0, 0(t0)
+	bnez t0, pbmt_fault_fail
+	jal ra, pbmt_check_prefix
+
+	// An ordinary load faults after three completed elements; they are
+	// preserved and vstart identifies element 3 for a software restart.
+	li s0, 18
+	li t0, 0x5a
+	vmv.v.x v8, t0
+	li t1, V0 + 0x300
+	vle8.v v8, (t1)
+	csrr t0, vstart
+	li t1, 3
+	bne t0, t1, pbmt_fault_fail
+	csrw vstart, zero
+	jal ra, pbmt_check_prefix
+	li t0, TRAPS_VAR
+	ld t0, 0(t0)
+	li t1, 1
+	bne t0, t1, pbmt_fault_fail
+	jal ra, pbmt_check_cause
+
+	// Misaligned e32 decomposes into bytes. The third byte fails, so tval
+	// is base+2, not the element start, and no partial element is written.
+	li s0, 19
+	li t0, 4
+	vsetvli zero, t0, e32, m1, tu, mu
+	li t0, 0x5a
+	vmv.v.x v8, t0
+	li t1, V0 + 0x301
+	vle32.v v8, (t1)
+	csrr t0, vstart
+	bnez t0, pbmt_fault_fail
+	vmv.x.s t0, v8
+	li t1, 0x5a
+	bne t0, t1, pbmt_fault_fail
+	jal ra, pbmt_check_cause
+	li t0, TRAPS_VAR
+	ld t0, 0(t0)
+	li t1, 2
+	bne t0, t1, pbmt_fault_fail
+
+	// Mask element 0: its bytes (including the injected-error address)
+	// must not be touched; remaining misaligned elements load normally.
+	li s0, 20
+	li t0, 14
+	vmv.s.x v0, t0
+	li t1, V0 + 0x301
+	vle32.v v8, (t1), v0.t
+	li t0, TRAPS_VAR
+	ld t0, 0(t0)
+	li t1, 2
+	bne t0, t1, pbmt_fault_fail
+	li t0, 1
+	j write_tohost
+
+pbmt_check_cause:
+	li t0, MCAUSE_VAR
+	ld t0, 0(t0)
+	li t1, 5
+	bne t0, t1, pbmt_fault_fail
+	li t0, MTVAL_VAR
+	ld t0, 0(t0)
+	li t1, V0 + 0x303
+	bne t0, t1, pbmt_fault_fail
+	ret
+
+pbmt_check_prefix:
+	li t0, 16
+	vsetvli zero, t0, e8, m1, tu, mu
+	li t1, V1 + 0x100
+	vse8.v v8, (t1)
+	li t2, 0
+1:
+	lbu t3, 0(t1)
+	li t4, 0x5a
+	li t5, 3
+	bgeu t2, t5, 2f
+	addi t4, t2, 0x40
+2:
+	bne t3, t4, pbmt_fault_fail
+	addi t1, t1, 1
+	addi t2, t2, 1
+	li t5, 16
+	bltu t2, t5, 1b
+	ret
+pbmt_fault_fail:
+	slli t0, s0, 1
+	ori t0, t0, 1
+	j write_tohost
+#endif

@@ -30,9 +30,12 @@ module karu_tdp_be_ram #(
     input  wire [DATA_W-1:0]    b_wdata,
     output reg  [DATA_W-1:0]    b_rdata
 );
+`ifndef KARU_ASIC
     (* ram_style = "block" *)
+`endif
     reg [DATA_W-1:0] mem [0:DEPTH-1];
 
+`ifndef KARU_ASIC
     integer i;
     initial begin
         for (i = 0; i < DEPTH; i = i + 1)
@@ -40,6 +43,7 @@ module karu_tdp_be_ram #(
         a_rdata = {DATA_W{1'b0}};
         b_rdata = {DATA_W{1'b0}};
     end
+`endif
 
     integer ba;
     always @(posedge clk) begin
@@ -66,6 +70,23 @@ module karu_tdp_be_ram #(
             end
         end
     end
+// synthesis translate_off
+    // A zero-enable write must preserve the addressed storage, even when a
+    // fractional vector group's unused address wraps to register zero.
+    reg az_q = 0, bz_q = 0;
+    reg [ADDR_W-1:0] az_addr, bz_addr;
+    reg [DATA_W-1:0] az_data, bz_data;
+    always @(posedge clk) begin
+        if (az_q && mem[az_addr] !== az_data) $fatal(1, "zero-BE port A changed storage");
+        if (bz_q && mem[bz_addr] !== bz_data) $fatal(1, "zero-BE port B changed storage");
+        az_q <= a_en && a_we && !(|a_be) &&
+                !(b_en && b_we && (|b_be) && b_addr == a_addr);
+        bz_q <= b_en && b_we && !(|b_be) &&
+                !(a_en && a_we && (|a_be) && a_addr == b_addr);
+        az_addr <= a_addr; az_data <= mem[a_addr];
+        bz_addr <= b_addr; bz_data <= mem[b_addr];
+    end
+// synthesis translate_on
 endmodule
 
 module karu_1w1r_async_ram #(
@@ -82,11 +103,13 @@ module karu_1w1r_async_ram #(
 );
     reg [DATA_W-1:0] mem [0:DEPTH-1];
 
+`ifndef KARU_ASIC
     integer i;
     initial begin
         for (i = 0; i < DEPTH; i = i + 1)
             mem[i] = {DATA_W{1'b0}};
     end
+`endif
 
     always @(posedge clk) begin
         if (we)
@@ -112,11 +135,13 @@ module karu_1w2r_async_ram #(
 );
     reg [DATA_W-1:0] mem [0:DEPTH-1];
 
+`ifndef KARU_ASIC
     integer i;
     initial begin
         for (i = 0; i < DEPTH; i = i + 1)
             mem[i] = {DATA_W{1'b0}};
     end
+`endif
 
     always @(posedge clk) begin
         if (we)

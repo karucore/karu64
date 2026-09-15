@@ -1,0 +1,22 @@
+From: Karu KVM integration fixture
+Subject: [PATCH] RISC-V: KVM: refresh guest CSR configuration on debug changes
+
+Pinned base: Linux 7.1.2 archive SHA-256
+37198c93727be247c9fb5309bb86cd5e496c61e5322cd8c4eca9476bb0b5883f
+
+The SET_GUEST_DEBUG callback updates guest_debug but never calls the existing
+configuration helper. Disabling debug after the vCPU has run consequently
+leaves breakpoint delegation disabled, and the same-vCPU load fast path can
+retain stale hardware CSRs. Use the helper to update hedeleg and csr_dirty.
+The unmodified RISC-V ebreak_test exercises this transition.
+
+--- a/arch/riscv/kvm/vcpu.c
++++ b/arch/riscv/kvm/vcpu.c
+@@ -538,6 +538,7 @@ int kvm_arch_vcpu_ioctl_set_guest_debug(struct kvm_vcpu *vcpu,
+ 	else
+ 		vcpu->guest_debug = 0;
+ 
++	kvm_riscv_vcpu_config_guest_debug(vcpu);
+ 	return 0;
+ }
+ 

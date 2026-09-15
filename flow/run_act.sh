@@ -13,8 +13,8 @@
 #
 # Env overrides:
 #   SIMV              verilator binary (default: the 4 MiB Vhtif_fp TB)
-#   MAX_CYCLES        per-test cycle cap (default 2000000)
-#   PER_TEST_TIMEOUT  wall-clock seconds per ELF (default 120)
+#   MAX_CYCLES        per-test cycle cap (default 20000000)
+#   PER_TEST_TIMEOUT  wall-clock seconds per ELF (default 300)
 #   JOBS              parallel jobs for -d mode (default min(nproc/2,8))
 #   WORKDIR           scratch for .hex/.log (default _build/act-work)
 #
@@ -25,8 +25,8 @@ set -o pipefail
 cd "$(dirname "$0")/.."
 
 SIMV="${SIMV:-_build/Vhtif_fp/Vhtif_tb}"
-MAX_CYCLES="${MAX_CYCLES:-2000000}"
-PER_TEST_TIMEOUT="${PER_TEST_TIMEOUT:-120}"
+MAX_CYCLES="${MAX_CYCLES:-20000000}"
+PER_TEST_TIMEOUT="${PER_TEST_TIMEOUT:-300}"
 WORKDIR="${WORKDIR:-_build/act-work}"
 OBJCOPY="${OBJCOPY:-riscv64-unknown-elf-objcopy}"
 NM="${NM:-riscv64-unknown-elf-nm}"

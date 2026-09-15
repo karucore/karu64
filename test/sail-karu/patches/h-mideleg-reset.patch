@@ -1,0 +1,27 @@
+--- a/model/core/interrupt_regs.sail
++++ b/model/core/interrupt_regs.sail
+@@ -206,6 +206,14 @@
+ register medeleg : Medeleg     // Exception delegation to S-mode
+ register mideleg : Minterrupts // Interrupt delegation to S-mode
+ 
++// H interrupt delegation has read-only-one fields even before the first
++// software write. Preserve unspecified writable reset values while applying
++// the same fixed-bit constraints as a CSR write, after reset_misa().
++function reset_interrupt_delegation() -> unit = {
++  mideleg = legalize_mideleg(mideleg, mideleg.bits);
++  csr_write_callback("mideleg", mideleg.bits);
++}
++
+ mapping clause csr_name_map = 0x304  <-> "mie"
+ mapping clause csr_name_map = 0x344  <-> "mip"
+ mapping clause csr_name_map = 0x302  <-> "medeleg"
+--- a/model/sys/sys_control.sail
++++ b/model/sys/sys_control.sail
+@@ -443,6 +443,7 @@ function reset_sys() -> unit = {
+ 
+   // "The misa register is reset to enable the maximal set of supported extensions"
+   reset_misa();
++  reset_interrupt_delegation();
+ 
+   // "For implementations with the "A" standard extension, there is no valid load reservation."
+   cancel_reservation();

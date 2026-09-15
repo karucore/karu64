@@ -6,7 +6,8 @@ ENTRY(_start)
 SECTIONS
 {
 	. = 0x80000000;
-	.text   : { *(.text.boot) *(.text*) }
+	.text   : { *(.text.boot) }
+	ASSERT(SIZEOF(.text) <= 0x1000, "MMU test code overlaps HTIF/diagnostic page")
 
 	. = 0x80002000;	.rootA  : { *(.rootA) }
 	. = 0x80003000;	.rootB  : { *(.rootB) }
@@ -17,6 +18,12 @@ SECTIONS
 	. = 0x80008000;	.frameA : { *(.frameA) }
 	. = 0x80009000;	.frameB : { *(.frameB) }
 	. = 0x8000A000;	.frameW : { *(.frameW) }
+	. = 0x8000B000;	.svade  : { *(.text.svade) }
+	ASSERT(SIZEOF(.svade) <= 0x5000, "MMU test code overlaps Svnapot runtime frames")
+
+	/* The 64 KiB NAPOT fixture occupies 0x80010000..0x8001ffff at run time. */
+	. = 0x80020000;	.pbmt   : { *(.text.pbmt) }
+	ASSERT(SIZEOF(.pbmt) <= 0x10000, "MMU Svpbmt test exceeds its code region")
 
 	/DISCARD/ : { *(.comment) *(.riscv.attributes) }
 }

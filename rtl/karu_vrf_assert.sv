@@ -118,17 +118,33 @@ module karu_vrf_assert #(
     //  index outside `sh` before VRF3 reports it.
     //  ==================================================================
     reg [VBUS_W-1:0] sh [0:NENT-1];
+    // ASIC storage has no common power-up value. Compare only bytes observed
+    // on the write stream; preserve knowledge across soft reset with the RAM.
+    reg [VBUS_W-1:0] sh_known [0:NENT-1];
     integer i, e;
-    initial for (i = 0; i < NENT; i = i + 1) sh[i] = {VBUS_W{1'b0}};
+    initial for (i = 0; i < NENT; i = i + 1) begin
+        sh[i] = {VBUS_W{1'b0}};
+`ifdef KARU_ASIC
+        sh_known[i] = {VBUS_W{1'b0}};
+`else
+        sh_known[i] = {VBUS_W{1'b1}};
+`endif
+    end
 
     always @(posedge clk) begin
         if (!rst) begin
             if (a_en && a_we && a_addr < NENT)
                 for (e = 0; e < NBYTES; e = e + 1)
-                    if (a_be[e]) sh[a_addr][e*8 +: 8] <= a_wdata[e*8 +: 8];
+                    if (a_be[e]) begin
+                        sh[a_addr][e*8 +: 8] <= a_wdata[e*8 +: 8];
+                        sh_known[a_addr][e*8 +: 8] <= 8'hff;
+                    end
             if (b_en && b_we && b_addr < NENT)
                 for (e = 0; e < NBYTES; e = e + 1)
-                    if (b_be[e]) sh[b_addr][e*8 +: 8] <= b_wdata[e*8 +: 8];
+                    if (b_be[e]) begin
+                        sh[b_addr][e*8 +: 8] <= b_wdata[e*8 +: 8];
+                        sh_known[b_addr][e*8 +: 8] <= 8'hff;
+                    end
         end
     end
 
@@ -140,7 +156,8 @@ module karu_vrf_assert #(
     always @* begin
         v0_ok = 1'b1;
         for (gg = 0; gg < VGRAN; gg = gg + 1)
-            if (v0[gg*VBUS_W +: VBUS_W] !== sh[gg]) v0_ok = 1'b0;
+            if ((v0[gg*VBUS_W +: VBUS_W] & sh_known[gg]) !==
+                (sh[gg] & sh_known[gg])) v0_ok = 1'b0;
     end
 
     //  VRF5b: registered-read coherence. Capture each port's read this cycle;
@@ -157,8 +174,10 @@ module karu_vrf_assert #(
             b_rd_q <= b_en && !b_we && (b_addr < NENT);  b_raddr_q <= b_addr;
         end
     end
-    wire a_rdata_ok = !a_rd_q || (a_rdata === sh[a_raddr_q]);
-    wire b_rdata_ok = !b_rd_q || (b_rdata === sh[b_raddr_q]);
+    wire a_rdata_ok = !a_rd_q || ((a_rdata & sh_known[a_raddr_q]) ===
+                                 (sh[a_raddr_q] & sh_known[a_raddr_q]));
+    wire b_rdata_ok = !b_rd_q || ((b_rdata & sh_known[b_raddr_q]) ===
+                                 (sh[b_raddr_q] & sh_known[b_raddr_q]));
 
     //  ==================================================================
     //  Undisturbed-tail check (VRF6): a vl-governed *element* write must not

@@ -36,9 +36,8 @@ cd "$UBOOT_DIR"
 #	DT-driven so the karu64 SoC description comes from the prior-stage FDT).
 make qemu-riscv64_smode_defconfig >/dev/null
 
-#	Deltas for this SoC / build host:
-#	- EFI off: the mkeficapsule host tool needs gnutls-dev (absent), and we don't
-#	  need EFI for a netboot U-Boot.
+#	Deltas for this SoC:
+#	- EFI and capsule tooling are disabled for the netboot-only image.
 #	- Fixed TEXT_BASE at the OpenSBI fw_jump target (no PIE-load needed).
 #	- LiteEth NIC.
 ./scripts/config --disable EFI_LOADER --disable CMD_BOOTEFI --disable CMD_BOOTEFI_SELFTEST \
@@ -54,12 +53,27 @@ make qemu-riscv64_smode_defconfig >/dev/null
 if [ -n "${UBOOT_NETBOOT_CMD:-}" ]; then
 	./scripts/config --set-val BOOTDELAY 2
 	./scripts/config --enable USE_BOOTCOMMAND
-	./scripts/config --set-str BOOTCOMMAND "$UBOOT_NETBOOT_CMD"
+	# v2025.01 scripts/config substitutes string values through sed without
+	# escaping '&', corrupting Hush's && operators. Write a fresh Kconfig
+	# string instead; quote/backslash escaping belongs to Kconfig, not sed.
+	case "$UBOOT_NETBOOT_CMD" in
+		*$'\n'*|*$'\r'*) echo 'ERROR: UBOOT_NETBOOT_CMD must be one line' >&2; exit 1 ;;
+	esac
+	bootcmd_config=${UBOOT_NETBOOT_CMD//\\/\\\\}
+	bootcmd_config=${bootcmd_config//\"/\\\"}
+	./scripts/config --undefine BOOTCOMMAND
+	printf 'CONFIG_BOOTCOMMAND="%s"\n' "$bootcmd_config" >> .config
 	echo "== baked auto-netboot bootcmd =="
 else
 	./scripts/config --set-val BOOTDELAY -1
 fi
 make olddefconfig >/dev/null
+if [ -n "${UBOOT_NETBOOT_CMD:-}" ]; then
+	grep -Fxq "CONFIG_BOOTCOMMAND=\"$bootcmd_config\"" .config || {
+		echo 'ERROR: Kconfig did not preserve the requested bootcommand' >&2
+		exit 1
+	}
+fi
 
 #	RISC-V links -pie unconditionally; the bare-metal GNU ld.bfd can't, so use lld.
 make -j"$(nproc)" LD=ld.lld u-boot.bin

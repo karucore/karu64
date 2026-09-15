@@ -160,8 +160,19 @@ module karu_assert #(
     //  ==== RVA23 semantic contracts (Supm / CBO / TVM-TW-TSR / Zfa) ====
     //  ---- Supm pointer masking ----
     input  wire [5:0]   csr_dpmlen,     //  current data-access PMLEN (0/7/16)
+    input  wire         csr_data_vm,
+    input  wire [5:0]   lsu_pmlen,      // may differ for forced-guest HLV/HSV
+    input  wire         lsu_data_vm,
+    input  wire [63:0]  lsu_addr_raw,
     input  wire [63:0]  lsu_addr,       //  masked scalar data effective address
-    input  wire [63:0]  vlsu_base_pm,   //  masked vector base (0 when V disabled)
+    input  wire [63:0]  vlsu_base_in,   // raw issue operand; PM follows arithmetic
+    input  wire [5:0]   vlsu_dpmlen_q,
+    input  wire         vlsu_pm_virtual_q,
+    input  wire         vlsu_pelem_q,
+    input  wire [63:0]  vlsu_eaddr_raw, vlsu_eaddr,
+    input  wire [63:0]  vlsu_g_raw, vlsu_g_va,
+    input  wire         vlsu_xlate_req,
+    input  wire [63:0]  vlsu_xlate_va, vlsu_vmem_va,
     //  ---- Zicbom/Zicboz ----
     input  wire         cbo_ill,        //  CBO disallowed by priv+envcfg -> illegal
     input  wire         lsu_is_cbo,     //  the in-flight LSU op is any cbo.*
@@ -197,10 +208,17 @@ module karu_assert #(
     input  wire         dmmu_req_lsu,   //  this DMMU request is the scalar LSU's
     input  wire [63:0]  dmmu_va,        //  the VA actually fed to the DMMU
     input  wire [63:0]  dmmu_va_exp,    //  expected scalar DMMU VA (walk-1 EA / walk-2 beat-2 VA)
-    input  wire [63:0]  vlsu_base_q,    //  the base the VLSU latched (must be masked)
+    input  wire [63:0]  vlsu_base_q,    // latched raw base, before stride/index
 
     //  ---- independent gating recompute (don't trust the *_ill / *_en wires) ----
     input  wire [1:0]   csr_priv,       //  0=U,1=S,3=M
+    input  wire         csr_virt,
+    input  wire         henvcfg_cbze, henvcfg_cbcfe,
+    input  wire [1:0]   henvcfg_cbie,
+    input  wire         virtual_trap,
+    input  wire [1:0]   csr_exc,
+    input  wire         fp_dirty, v_dirty,
+    input  wire         ifu_page_fault, ex_valid, exec_busy,
     input  wire         menvcfg_cbze, menvcfg_cbcfe,    input wire [1:0] menvcfg_cbie,
     input  wire         senvcfg_cbze, senvcfg_cbcfe,    input wire [1:0] senvcfg_cbie,
     input  wire         cbo_zero_en, cbo_cf_en, cbo_inval_en,   //  csr's computed enables
@@ -214,6 +232,21 @@ module karu_assert #(
     input  wire [31:0]  csr_mcounteren,
     input  wire [31:0]  csr_scounteren
 );
+    // Recompute complete permissions rather than exempting guests from the
+    // checker. Machine and guest controls have different exception classes.
+    function automatic cbo_allowed(input m, input h, input s);
+        cbo_allowed = csr_priv == 3 ||
+            (m && (!csr_virt || h) && (csr_priv != 0 || s));
+    endfunction
+`ifdef KARU_EN_S
+    wire sret_ill_exp = sys_sret_raw && !csr_virt &&
+        (csr_priv == 0 || (csr_priv == 1 && csr_tsr));
+    wire sfence_ill_exp = sys_sfence_raw && !csr_virt &&
+        (csr_priv == 0 || (csr_priv == 1 && csr_tvm));
+`else
+    wire sret_ill_exp = sys_sret_raw;
+    wire sfence_ill_exp = sys_sfence_raw;
+`endif
     integer fails   = 0;
     reg     enabled = 1'b1;
     reg     do_stop = 1'b1;
@@ -229,6 +262,32 @@ module karu_assert #(
         na  = $test$plusargs("no_assert");
         if (nss)        do_stop = 1'b0;     //  report, do not $finish
         if (na && !nss) enabled = 1'b0;     //  bare +no_assert -> fully off
+    end
+
+    // Independent arithmetic form of PM, unlike the RTL's fixed slices.
+    // This checker is excluded from synthesis; variable shifts are intentional.
+    function automatic [63:0] pm_expect;
+        input [63:0] a;
+        input [5:0] n;
+        input virtual_mode;
+        reg [63:0] shifted;
+        begin
+            shifted = a << n;
+            if (virtual_mode) pm_expect = $signed(shifted) >>> n;
+            else pm_expect = shifted >> n;
+        end
+    endfunction
+    reg [63:0] vlsu_base_exp;
+    reg [5:0] vlsu_dpmlen_exp;
+    reg vlsu_pm_virtual_exp;
+    always @(posedge clk) begin
+        if (rst) begin
+            vlsu_base_exp <= 0; vlsu_dpmlen_exp <= 0; vlsu_pm_virtual_exp <= 0;
+        end else if (vlsu_req) begin
+            vlsu_base_exp <= vlsu_base_in;
+            vlsu_dpmlen_exp <= csr_dpmlen;
+            vlsu_pm_virtual_exp <= csr_data_vm;
+        end
     end
 
     //  ---- watchdog counters ----
@@ -508,21 +567,18 @@ module karu_assert #(
         end
 
         //  ==============================================================
-        //  Supm pointer masking (data addresses canonicalised, fetch not)
+        //  Supm pointer masking (final data addresses transformed, fetch not)
         //  ==============================================================
-        //  INV20: when PMLEN>0 the scalar data effective address must be
-        //  canonical in its top PMLEN bits (= sign-extension of bit XLEN-1-PMLEN);
-        //  this is the transform the masking wire is supposed to apply. (Fetch
-        //  has no PM wire in its path, so it is structurally never masked.)
-        `KCHK((csr_dpmlen != 6'd16) || (lsu_addr[63:48] == {16{lsu_addr[47]}}),
-              "INV20a scalar data VA not PM-canonical (PMLEN16)")
-        `KCHK((csr_dpmlen != 6'd7)  || (lsu_addr[63:57] == {7{lsu_addr[56]}}),
-              "INV20b scalar data VA not PM-canonical (PMLEN7)")
-        //  INV21: same for the vector (VLSU) base.
-        `KCHK((csr_dpmlen != 6'd16) || (vlsu_base_pm[63:48] == {16{vlsu_base_pm[47]}}),
-              "INV21a vector base not PM-canonical (PMLEN16)")
-        `KCHK((csr_dpmlen != 6'd7)  || (vlsu_base_pm[63:57] == {7{vlsu_base_pm[56]}}),
-              "INV21b vector base not PM-canonical (PMLEN7)")
+        // INV20: virtual addresses sign-extend; Bare addresses zero-extend.
+        // Check all bits, including the unmodified address portion.
+        `KCHK(lsu_addr == pm_expect(lsu_addr_raw, lsu_pmlen, lsu_data_vm),
+              "INV20 scalar EA != final-address PM transform")
+        // INV21: vector PM follows the final stride/index/field arithmetic.
+        // Tagged bases themselves are deliberately NOT canonical.
+        `KCHK(!vlsu_active || !vlsu_pelem_q || vlsu_eaddr == pm_expect(vlsu_eaddr_raw, vlsu_dpmlen_q, vlsu_pm_virtual_q),
+              "INV21a vector element EA != final-address PM transform")
+        `KCHK(!vlsu_active || vlsu_pelem_q || vlsu_g_va == pm_expect(vlsu_g_raw, vlsu_dpmlen_q, vlsu_pm_virtual_q),
+              "INV21b vector granule VA != final-address PM transform")
 
         //  ==============================================================
         //  Zicbom/Zicboz contracts
@@ -577,14 +633,16 @@ module karu_assert #(
         //  raw VA, or a beat-2 walk fed the wrong VA).
         `KCHK(!dmmu_req_lsu || (dmmu_va == dmmu_va_exp),
               "INV29 DMMU scalar VA != expected (masked EA / beat-2 VA)")
-        //  INV30: the base the VLSU latched is PM-canonical (catches a re-wire of
-        //  the VLSU base back to the raw register value). Only meaningful while a
-        //  VLSU op is in flight -- base_q is otherwise stale (latched under an
-        //  earlier priv/PMM), so gate on vlsu_active.
-        `KCHK(!vlsu_active || (csr_dpmlen != 6'd16) || (vlsu_base_q[63:48] == {16{vlsu_base_q[47]}}),
-              "INV30a VLSU latched base not PM-canonical (PMLEN16)")
-        `KCHK(!vlsu_active || (csr_dpmlen != 6'd7)  || (vlsu_base_q[63:57] == {7{vlsu_base_q[56]}}),
-              "INV30b VLSU latched base not PM-canonical (PMLEN7)")
+        // INV30: latch the raw operand and effective PM context, then send
+        // transformed addresses to both translation and the memory fault path.
+        `KCHK(!vlsu_active || vlsu_base_q == vlsu_base_exp,
+              "INV30a VLSU did not retain raw base operand")
+        `KCHK(!vlsu_active || (vlsu_dpmlen_q == vlsu_dpmlen_exp && vlsu_pm_virtual_q == vlsu_pm_virtual_exp),
+              "INV30b VLSU PM context changed during operation")
+        `KCHK(!vlsu_xlate_req || vlsu_xlate_va == pm_expect(vlsu_xlate_va, vlsu_dpmlen_q, vlsu_pm_virtual_q),
+              "INV30c VLSU translated an unmasked address")
+        `KCHK(!vmem_req || vlsu_vmem_va == pm_expect(vlsu_vmem_va, vlsu_dpmlen_q, vlsu_pm_virtual_q),
+              "INV30d vector memory fault-address tag is unmasked")
 
         //  ==============================================================
         //  Independent recompute of the gating (priv + envcfg / mstatus)
@@ -592,17 +650,11 @@ module karu_assert #(
         //  INV31: the csr's per-class CBO enables match a first-principles
         //  recompute from priv + menvcfg/senvcfg (catches a wrong-bit / wrong-
         //  privilege regression in karu_csr).
-        `KCHK(cbo_zero_en  == ((csr_priv == 2'd3)
-                            || (csr_priv == 2'd1 && menvcfg_cbze)
-                            || (csr_priv == 2'd0 && menvcfg_cbze && senvcfg_cbze)),
+        `KCHK(cbo_zero_en == cbo_allowed(menvcfg_cbze, henvcfg_cbze, senvcfg_cbze),
               "INV31a cbo_zero_en disagrees with priv+envcfg recompute")
-        `KCHK(cbo_cf_en    == ((csr_priv == 2'd3)
-                            || (csr_priv == 2'd1 && menvcfg_cbcfe)
-                            || (csr_priv == 2'd0 && menvcfg_cbcfe && senvcfg_cbcfe)),
+        `KCHK(cbo_cf_en == cbo_allowed(menvcfg_cbcfe, henvcfg_cbcfe, senvcfg_cbcfe),
               "INV31b cbo_cf_en disagrees with priv+envcfg recompute")
-        `KCHK(cbo_inval_en == ((csr_priv == 2'd3)
-                            || (csr_priv == 2'd1 && (menvcfg_cbie != 2'b00))
-                            || (csr_priv == 2'd0 && (menvcfg_cbie != 2'b00) && (senvcfg_cbie != 2'b00))),
+        `KCHK(cbo_inval_en == cbo_allowed(|menvcfg_cbie, |henvcfg_cbie, |senvcfg_cbie),
               "INV31c cbo_inval_en disagrees with priv+envcfg recompute")
         //  INV31d: end-to-end mapping -- a CBO that actually ISSUES to the LSU
         //  (cbo_ill did not block it) must have its OWN class enabled. Catches a
@@ -615,9 +667,9 @@ module karu_assert #(
               "INV31f cbo.inval issued while its class is disabled")
         //  INV32: the sret/sfence illegal wires match a recompute from priv +
         //  mstatus.TVM/TSR (independent of karu64's expression).
-        `KCHK(sret_ill   == (sys_sret_raw   && ((csr_priv == 2'd0) || (csr_priv == 2'd1 && csr_tsr))),
+        `KCHK(sret_ill == sret_ill_exp,
               "INV32a sret_ill disagrees with priv+TSR recompute")
-        `KCHK(sfence_ill == (sys_sfence_raw && ((csr_priv == 2'd0) || (csr_priv == 2'd1 && csr_tvm))),
+        `KCHK(sfence_ill == sfence_ill_exp,
               "INV32b sfence_ill disagrees with priv+TVM recompute")
         //  INV33: a wfi that should trap (below M with TW) is reflected in
         //  sys_priv_ill.
@@ -628,7 +680,7 @@ module karu_assert #(
         //  CSR gating as invariants (satp-TVM, Zihpm/Zicntr counteren)
         //  ==============================================================
         //  INV34: an S-mode satp access with TVM must be illegal.
-        `KCHK(!(csr_op_req && csr_op_addr == 12'h180 && csr_priv == 2'd1 && csr_tvm)
+        `KCHK(!(csr_op_req && csr_op_addr == 12'h180 && !csr_virt && csr_priv == 2'd1 && csr_tvm)
               || csr_illegal, "INV34 S-mode satp access under TVM not illegal")
         //  INV35: a user-counter read (0xC00-0xC1F) below M must be illegal when
         //  its mcounteren bit is clear (S/U) or scounteren bit is clear (U).
@@ -636,7 +688,21 @@ module karu_assert #(
                 && (csr_priv != 2'd3)
                 && (!csr_mcounteren[csr_op_addr[4:0]]
                     || (csr_priv == 2'd0 && !csr_scounteren[csr_op_addr[4:0]])))
-              || csr_illegal, "INV35 ungated counter read did not trap")
+              || (csr_exc != 0), "INV35 ungated counter read did not trap")
+        `KCHK(!(csr_op_req && csr_op_addr >= 12'hc00 && csr_op_addr <= 12'hc1f &&
+                csr_priv != 3 && !csr_mcounteren[csr_op_addr[4:0]]) || csr_illegal,
+              "INV35b machine counter denial lost illegal-instruction priority")
+        `KCHK(!(csr_op_req && !csr_virt && csr_priv == 0 &&
+                csr_op_addr >= 12'hc00 && csr_op_addr <= 12'hc1f &&
+                !csr_scounteren[csr_op_addr[4:0]]) || csr_illegal,
+              "INV35c host-user counter denial has wrong exception class")
+        `KCHK(!virtual_trap || (trap_req && trap_cause == 22 && !wb_we && !fwb_we &&
+                !lsu_req && !dmmu_req_lsu && !vlsu_req && !varith_req &&
+                !perf_retire && !fp_dirty && !v_dirty &&
+                !sys_sret && !sys_mret && !sys_sfencevma),
+              "INV36 virtual-instruction trap has wrong cause or execution side effect")
+        `KCHK(!ifu_page_fault || (!ex_valid && !exec_busy),
+              "INV37 younger instruction-fetch fault overtook older execution")
 
         //  ==============================================================
         //  Hang guards / liveness watchdogs
@@ -664,6 +730,10 @@ module karu_assert #(
             cbo_track <= 1'b1; cbo_track_zero <= lsu_is_cboz;
             cbo_xlated <= 1'b0; cbo_beats <= 5'd0; cbo_first <= 1'b1;
             cbo_bare_q <= lsu_bare;
+        end else if (trap_req) begin
+            // An access fault can terminate cbo.zero before all eight beats.
+            // Do not attach its unfinished transaction count to a later LSU op.
+            cbo_track <= 1'b0;
         end else if (cbo_track) begin
             if (lsu_xlate_active) cbo_xlated <= 1'b1;
             if (cbo_track_zero && lsu_awvalid && lsu_awready) begin //  one beat accepted
@@ -764,10 +834,9 @@ module karu_assert #(
             (dmem_wvalid && $stable({dmem_wdata, dmem_wstrb, dmem_wlast})));
 
     //  RVA23 semantic contracts.
-    a_inv20a_pm16: assert property ((csr_dpmlen == 6'd16) |-> (lsu_addr[63:48] == {16{lsu_addr[47]}}));
-    a_inv20b_pm7:  assert property ((csr_dpmlen == 6'd7)  |-> (lsu_addr[63:57] == {7{lsu_addr[56]}}));
-    a_inv21a_vpm16: assert property ((csr_dpmlen == 6'd16) |-> (vlsu_base_pm[63:48] == {16{vlsu_base_pm[47]}}));
-    a_inv21b_vpm7:  assert property ((csr_dpmlen == 6'd7)  |-> (vlsu_base_pm[63:57] == {7{vlsu_base_pm[56]}}));
+    a_inv20_pm: assert property (lsu_addr == pm_expect(lsu_addr_raw, lsu_pmlen, lsu_data_vm));
+    a_inv21a_vpm_elem: assert property ((vlsu_active && vlsu_pelem_q) |-> (vlsu_eaddr == pm_expect(vlsu_eaddr_raw, vlsu_dpmlen_q, vlsu_pm_virtual_q)));
+    a_inv21b_vpm_gran: assert property ((vlsu_active && !vlsu_pelem_q) |-> (vlsu_g_va == pm_expect(vlsu_g_raw, vlsu_dpmlen_q, vlsu_pm_virtual_q)));
     a_inv22_cbo_ill: assert property (cbo_ill |-> !lsu_req);
     a_inv23_cboz_beat: assert property (
         (lsu_active && lsu_is_cboz && lsu_wvalid) |->
@@ -783,22 +852,32 @@ module karu_assert #(
     a_inv27b_fcvtmod_xpos: assert property ((fpu_done && ex_fp_zfa == 4'd7 && ex_rd != 5'd0) |-> wb_we);
     a_inv28b_fli_fpos:     assert property ((fpu_done && ex_fp_zfa == 4'd8) |-> fwb_we);
     a_inv29_dmmu_va: assert property (dmmu_req_lsu |-> (dmmu_va == dmmu_va_exp));
-    a_inv30a_vbq16: assert property ((vlsu_active && csr_dpmlen == 6'd16) |-> (vlsu_base_q[63:48] == {16{vlsu_base_q[47]}}));
-    a_inv30b_vbq7:  assert property ((vlsu_active && csr_dpmlen == 6'd7)  |-> (vlsu_base_q[63:57] == {7{vlsu_base_q[56]}}));
-    a_inv31a_zen: assert property (cbo_zero_en  == ((csr_priv==2'd3)||(csr_priv==2'd1&&menvcfg_cbze)||(csr_priv==2'd0&&menvcfg_cbze&&senvcfg_cbze)));
-    a_inv31b_cfen:assert property (cbo_cf_en    == ((csr_priv==2'd3)||(csr_priv==2'd1&&menvcfg_cbcfe)||(csr_priv==2'd0&&menvcfg_cbcfe&&senvcfg_cbcfe)));
-    a_inv31c_inen:assert property (cbo_inval_en == ((csr_priv==2'd3)||(csr_priv==2'd1&&(menvcfg_cbie!=2'b00))||(csr_priv==2'd0&&(menvcfg_cbie!=2'b00)&&(senvcfg_cbie!=2'b00))));
+    a_inv30a_vbase: assert property (vlsu_active |-> (vlsu_base_q == vlsu_base_exp));
+    a_inv30b_vcontext: assert property (vlsu_active |-> (vlsu_dpmlen_q == vlsu_dpmlen_exp && vlsu_pm_virtual_q == vlsu_pm_virtual_exp));
+    a_inv30c_vxlate: assert property (vlsu_xlate_req |-> (vlsu_xlate_va == pm_expect(vlsu_xlate_va, vlsu_dpmlen_q, vlsu_pm_virtual_q)));
+    a_inv30d_vmemva: assert property (vmem_req |-> (vlsu_vmem_va == pm_expect(vlsu_vmem_va, vlsu_dpmlen_q, vlsu_pm_virtual_q)));
+    a_inv31a_zen: assert property (cbo_zero_en == cbo_allowed(menvcfg_cbze, henvcfg_cbze, senvcfg_cbze));
+    a_inv31b_cfen:assert property (cbo_cf_en == cbo_allowed(menvcfg_cbcfe, henvcfg_cbcfe, senvcfg_cbcfe));
+    a_inv31c_inen:assert property (cbo_inval_en == cbo_allowed(|menvcfg_cbie, |henvcfg_cbie, |senvcfg_cbie));
     a_inv31d_zissue: assert property ((lsu_req && lsu_is_cboz)     |-> cbo_zero_en);
     a_inv31e_cfissue:assert property ((lsu_req && lsu_is_cbocf)    |-> cbo_cf_en);
     a_inv31f_inissue:assert property ((lsu_req && lsu_is_cboinval) |-> cbo_inval_en);
-    a_inv32a_sret: assert property (sret_ill   == (sys_sret_raw   && ((csr_priv==2'd0)||(csr_priv==2'd1&&csr_tsr))));
-    a_inv32b_sfence: assert property (sfence_ill == (sys_sfence_raw && ((csr_priv==2'd0)||(csr_priv==2'd1&&csr_tvm))));
+    a_inv32a_sret: assert property (sret_ill == sret_ill_exp);
+    a_inv32b_sfence: assert property (sfence_ill == sfence_ill_exp);
     a_inv33_wfi: assert property ((sys_wfi_raw && (csr_priv!=2'd3) && csr_tw) |-> sys_priv_ill);
-    a_inv34_satp_tvm: assert property ((csr_op_req && csr_op_addr==12'h180 && csr_priv==2'd1 && csr_tvm) |-> csr_illegal);
+    a_inv34_satp_tvm: assert property ((csr_op_req && csr_op_addr==12'h180 && !csr_virt && csr_priv==2'd1 && csr_tvm) |-> csr_illegal);
     a_inv35_ctren: assert property (
         (csr_op_req && (csr_op_addr >= 12'hC00 && csr_op_addr <= 12'hC1F) && (csr_priv != 2'd3)
          && (!csr_mcounteren[csr_op_addr[4:0]] || (csr_priv == 2'd0 && !csr_scounteren[csr_op_addr[4:0]])))
-            |-> csr_illegal);
+            |-> (csr_exc != 0));
+    a_inv35b_mctren: assert property ((csr_op_req && csr_op_addr >= 12'hc00 && csr_op_addr <= 12'hc1f &&
+        csr_priv != 3 && !csr_mcounteren[csr_op_addr[4:0]]) |-> csr_illegal);
+    a_inv35c_sctren: assert property ((csr_op_req && !csr_virt && csr_priv == 0 &&
+        csr_op_addr >= 12'hc00 && csr_op_addr <= 12'hc1f && !csr_scounteren[csr_op_addr[4:0]]) |-> csr_illegal);
+    a_inv36_virtual: assert property (virtual_trap |-> (trap_req && trap_cause == 22 &&
+        !wb_we && !fwb_we && !lsu_req && !dmmu_req_lsu && !vlsu_req && !varith_req &&
+        !perf_retire && !fp_dirty && !v_dirty && !sys_sret && !sys_mret && !sys_sfencevma));
+    a_inv37_ifault_order: assert property (ifu_page_fault |-> (!ex_valid && !exec_busy));
     //  NOTE: the sequential CBO tracker checks (INV22b / INV23b/c/d -- translated-
     //  first, exactly-8-aligned-monotonic cbo.zero beats) are runtime-checker-only
     //  (they need a small state machine); they are not mirrored as SVA here.
@@ -878,11 +957,23 @@ bind karu64 karu_assert u_karu_assert (
     .dmem_wvalid(dmem_wvalid), .dmem_wready(dmem_wready),
     .dmem_wdata(dmem_wdata), .dmem_wstrb(dmem_wstrb), .dmem_wlast(dmem_wlast),
     //  RVA23 semantic contracts
-    .csr_dpmlen(csr_dpmlen), .lsu_addr(lsu_addr),
+    .csr_dpmlen(csr_dpmlen), .csr_data_vm(csr_data_vm),
+    .lsu_pmlen(lsu_pmlen), .lsu_data_vm(lsu_data_vm),
+    .lsu_addr_raw(lsu_addr_raw), .lsu_addr(lsu_addr),
 `ifdef KARU_EN_V
-    .vlsu_base_pm(vlsu_base_pm),
+    .vlsu_base_in(ex_xrs1_v), .vlsu_dpmlen_q(vlsu.dpmlen_q),
+    .vlsu_pm_virtual_q(vlsu.pm_virtual_q), .vlsu_pelem_q(vlsu.pelem_q),
+    .vlsu_eaddr_raw(vlsu.eaddr_raw), .vlsu_eaddr(vlsu.eaddr),
+    .vlsu_g_raw(vlsu.g_raw), .vlsu_g_va(vlsu.g_va),
+    .vlsu_xlate_req(vxlate_req), .vlsu_xlate_va(vxlate_va),
+    .vlsu_vmem_va(vmem_va),
 `else
-    .vlsu_base_pm(64'b0),
+    .vlsu_base_in(64'b0), .vlsu_dpmlen_q(6'b0),
+    .vlsu_pm_virtual_q(1'b0), .vlsu_pelem_q(1'b0),
+    .vlsu_eaddr_raw(64'b0), .vlsu_eaddr(64'b0),
+    .vlsu_g_raw(64'b0), .vlsu_g_va(64'b0),
+    .vlsu_xlate_req(1'b0), .vlsu_xlate_va(64'b0),
+    .vlsu_vmem_va(64'b0),
 `endif
     .cbo_ill(cbo_ill), .lsu_is_cbo(lsu_is_cbo), .lsu_is_cboz(lsu_is_cboz),
     .lsu_is_cbocf(lsu_is_cbocf), .lsu_is_cboinval(lsu_is_cboinval),
@@ -900,6 +991,14 @@ bind karu64 karu_assert u_karu_assert (
     .vlsu_base_q(64'b0),
 `endif
     .csr_priv(csr_priv),
+    .csr_virt(csr_virt), .virtual_trap(virtual_trap), .csr_exc(csr_exc),
+    .fp_dirty(fp_dirty), .v_dirty(v_dirty),
+    .ifu_page_fault(ifu_page_fault), .ex_valid(ex_valid), .exec_busy(exec_busy),
+`ifdef KARU_EN_H
+    .henvcfg_cbze(csr.csr_henvcfg[7]), .henvcfg_cbcfe(csr.csr_henvcfg[6]), .henvcfg_cbie(csr.csr_henvcfg[5:4]),
+`else
+    .henvcfg_cbze(1'b0), .henvcfg_cbcfe(1'b0), .henvcfg_cbie(2'b0),
+`endif
     .menvcfg_cbze(csr.menvcfg_cbze), .menvcfg_cbcfe(csr.menvcfg_cbcfe), .menvcfg_cbie(csr.menvcfg_cbie),
     .senvcfg_cbze(csr.senvcfg_cbze), .senvcfg_cbcfe(csr.senvcfg_cbcfe), .senvcfg_cbie(csr.senvcfg_cbie),
     .cbo_zero_en(cbo_zero_en), .cbo_cf_en(cbo_cf_en), .cbo_inval_en(cbo_inval_en),

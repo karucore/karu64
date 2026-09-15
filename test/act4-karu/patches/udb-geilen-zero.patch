@@ -1,0 +1,11 @@
+--- a/spec/std/isa/param/NUM_EXTERNAL_GUEST_INTERRUPTS.yaml
++++ b/spec/std/isa/param/NUM_EXTERNAL_GUEST_INTERRUPTS.yaml
+@@ -13,7 +13,7 @@
+ long_name: TODO
+ schema:
+   type: integer
+-  minimum: 1
++  minimum: 0
+   maximum: 63
+ definedBy:
+   extension:

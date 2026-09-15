@@ -104,7 +104,7 @@ module karu_dec (
                     unit = `UNIT_LSU; rs1 = rs1_w; rs2 = 5'd0; rd = 5'd0;
                     imm = 64'd0; size = `LS_D;          //  addr = rs1 (no offset)
                     case (ins[31:20])
-                        12'h000:  sub = `LSU_CBOINVAL;      //  cbo.inval (W permission)
+                        12'h000:  sub = `LSU_CBOINVAL;      //  cbo.inval (load-or-store permission)
                         12'h001:  sub = `LSU_CBOCF;         //  cbo.clean (R|W)
                         12'h002:  sub = `LSU_CBOCF;         //  cbo.flush (R|W)
                         12'h004:  sub = `LSU_CBOZERO;       //  cbo.zero  (W, real zero)
@@ -597,6 +597,18 @@ module karu_dec (
                           || ( fn3 == 3'b010 && fn7[6:1] == 6'b010010 &&
                                (ins[19:15] == 5'b01000 || ins[19:15] == 5'b01001) ) //  vbrev8/vrev8
 `endif
+`ifdef KARU_EN_ZVBB
+                          //    Zvbb additions over Zvkb: full-element reverse,
+                          //    leading/trailing-zero and population counts, plus
+                          //    widening logical left shift in all OPIV forms.
+                          || ( fn3 == 3'b010 && fn7[6:1] == 6'b010010 &&
+                               (ins[19:15] == 5'b01010 ||                         //  vbrev.v
+                                ins[19:15] == 5'b01100 ||                         //  vclz.v
+                                ins[19:15] == 5'b01101 ||                         //  vctz.v
+                                ins[19:15] == 5'b01110) )                         //  vcpop.v
+                          || ( (fn3 == 3'b000 || fn3 == 3'b100 || fn3 == 3'b011) &&
+                               fn7[6:1] == 6'b110101 )                            //  vwsll.vv/vx/vi
+`endif
                            )
                         unit = `UNIT_VARITH;
                     else begin unit = `UNIT_SYS; sub = `SYS_TRAP; end
@@ -629,11 +641,13 @@ module karu_dec (
                 if (fn3 == 3'b000) begin
                     unit = `UNIT_SYS;
                     rd   = 5'd0; rs1 = 5'd0; rs2 = 5'd0;
-                    //  SFENCE.VMA is funct7=0001001 with rs1(vaddr)/rs2(asid)
-                    //  operands, so it must be matched on funct7, not the full
+                    //  SFENCE.VMA / SINVAL.VMA use rs1(vaddr)/rs2(asid)
+                    //  operands, so they must match funct7, not the full
                     //  funct12. Linux issues ASID/VA-targeted sfence.vma
                     //  (rs2!=0) at context switch. karu's MMU flushes the
-                    //  whole TLB on any sfence.vma, so rs1/rs2 stay unused (0).
+                    //  whole TLB/PWC on either instruction, so rs1/rs2 stay
+                    //  unused (0). SINVAL is deliberately as strongly ordered
+                    //  as SFENCE.VMA; the two ordering-only fences can be NOPs.
                     case (ins[31:20])
                         12'h000: sub = `SYS_ECALL;
                         12'h001: sub = `SYS_EBREAK;
@@ -645,21 +659,58 @@ module karu_dec (
                         //  the spec permits the wait to terminate immediately --
                         //  implement as a retiring NOP (FENCE is the core's NOP).
                         12'h00d, 12'h01d: sub = `SYS_FENCE;
-                        default: sub = (ins[31:25] == 7'b0001001)
-                                           ? `SYS_SFENCEVMA : `SYS_TRAP;
+                        12'h180, 12'h181: sub = (rd_w == 5'd0 && rs1_w == 5'd0)
+                                           ? `SYS_SFENCEINVAL : `SYS_TRAP;
+                        default: begin
+                            sub = `SYS_TRAP;
+                            if (rd_w == 5'd0) begin
+                                case (fn7)
+                                    7'h09, 7'h0b: sub = `SYS_SFENCEVMA;
+`ifdef KARU_EN_H
+                                    // Conservative global invalidation; no
+                                    // operand-value filtering or early issue.
+                                    7'h11, 7'h13: sub = `SYS_HFENCEVVMA;
+                                    7'h31, 7'h33: sub = `SYS_HFENCEGVMA;
+`endif
+                                    default: sub = `SYS_TRAP;
+                                endcase
+                            end
+                        end
                     endcase
                 end else if (fn3 == 3'b100) begin
                     //  Zimop: MOP.R.N (mask 0xb3c0707f==0x81c04073) and MOP.RR.N
                     //  (0xb200707f==0x82004073) are "may-be-operations" that, until
                     //  some extension repurposes them, write 0 to rd. Realise as
-                    //  ALU add x0,x0 -> rd. (funct3=100 SYSTEM is otherwise unused
-                    //  here -- no H-extension HLV/HSV.)
+                    //  ALU add x0,x0 -> rd. H memory operations occupy the
+                    //  same major opcode but have disjoint exact encodings.
                     if (((ins & 32'hb3c0_707f) == 32'h81c0_4073) ||
                         ((ins & 32'hb200_707f) == 32'h8200_4073)) begin
                         unit = `UNIT_ALU; sub = `ALU_ADD;
                         rs1 = 5'd0; rs2 = 5'd0; use_imm = 1'b0; rd = rd_w;
                     end else begin
                         unit = `UNIT_SYS; sub = `SYS_TRAP;
+`ifdef KARU_EN_H
+                        // HLV/HLVX use rs2 as a selector, not a source. HSV
+                        // has a real rs2 and reserves rd=0. Reuse integer LSU
+                        // data handling; karu64 supplies forced-guest context.
+                        case (ins[31:20])
+                            12'h600, 12'h601, 12'h640, 12'h641,
+                            12'h680, 12'h681, 12'h6c0,
+                            12'h643, 12'h683: begin
+                                unit = `UNIT_LSU; sub = `LSU_LOAD;
+                                rs2 = 0; size = ins[27:26];
+                                sign_l = !ins[20];
+                            end
+                            default: begin
+                                if (rd_w == 0 &&
+                                    (fn7 == 7'h31 || fn7 == 7'h33 ||
+                                     fn7 == 7'h35 || fn7 == 7'h37)) begin
+                                    unit = `UNIT_LSU; sub = `LSU_STORE;
+                                    size = ins[27:26];
+                                end
+                            end
+                        endcase
+`endif
                     end
                 end else begin
                     unit    = `UNIT_CSR;
@@ -911,6 +962,32 @@ module karu_dec (
                 use_imm = 1'b0;
 `endif
             end
+        end
+
+        // Reserved fields independent of vtype are rejected in decode.
+        if (unit == `UNIT_VLSU &&
+            (ins[28] || fn3 == 3'b100 ||
+             ((sub == `VLSU_VLM || sub == `VLSU_VSM) && (!vm || fn3 != 3'b000)) ||
+             ((sub == `VLSU_VLR || sub == `VLSU_VSR) &&
+              (!vm || (ins[31:29] != 0 && ins[31:29] != 1 &&
+                       ins[31:29] != 3 && ins[31:29] != 7) ||
+               (sub == `VLSU_VSR && fn3 != 3'b000))))) begin
+            unit = `UNIT_SYS; sub = `SYS_TRAP;
+        end
+        if ((unit == `UNIT_VARITH || unit == `UNIT_VFPU) && (
+            // Element broadcasts reserve vs2; scalar/vector moves require vm=1.
+            (fn6 == 6'b010111 && (fn3 != 3'b010) && vm && rs2_w != 0) ||
+            (fn6 == 6'b010000 && !vm &&
+             (unit == `UNIT_VFPU || (fn3 == 3'b010 && rs1_w == 0) || fn3 == 3'b110)) ||
+            (fn3 == 3'b010 && fn6 == 6'b010100 && rs1_w == 17 && rs2_w != 0) ||
+            (fn3 == 3'b010 && (fn6[5:3] == 3'b011 || fn6 == 6'b010111) && !vm) ||
+            ((fn3 == 0 || fn3 == 4 || fn3 == 3) &&
+             (fn6 == 6'b010000 || fn6 == 6'b010010) && vm) ||
+            (fn3 == 3'b011 && fn6 == 6'b100111 &&
+             (!vm || (rs1_w != 0 && rs1_w != 1 && rs1_w != 3 && rs1_w != 7) ||
+              ((rd_w & rs1_w) != 0) || ((rs2_w & rs1_w) != 0))))) begin
+            unit = `UNIT_SYS; sub = `SYS_TRAP;
+            rs1_is_f = 1'b0; rd_is_f = 1'b0;
         end
 
         //  ---- build-time ISA-extension gating (see karu_ext.vh) ----

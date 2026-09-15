@@ -26,11 +26,10 @@
         .popsection
 
 // ----------------------- Startup -----------------------
-// karu64 resets into M-mode at 0x80000000 with a minimal CSR set. Bypass
-// the framework's default M-mode boot (as the vetted RVI20U64 config does)
-// and run straight from reset.
+// Standard M-mode startup initializes the CSRs and installs ACT4's trap
+// handler, including for vector tests that deliberately raise exceptions.
+#define STANDARD_SM_SUPPORTED
 #define RVMODEL_BOOT
-#define RVMODEL_BOOT_TO_MMODE
 
 // ----------------------- Termination -----------------------
 // PASS = tohost 1 (code 0); FAIL = tohost 3 (code 1). Drain first so a
@@ -79,14 +78,12 @@
 3:
 
 // ----------------------- Faults / interrupts -----------------------
-// karu64 is M-mode only with a single external IRQ line. The priv /
-// interrupt / PMP / Sv test groups are excluded at generation time
-// (EXCLUDE_EXTENSIONS); these stubs just let the header preprocess.
+// This configuration runs in M-mode on the RAM-only HTIF testbench. It has
+// no CLINT or interrupt generator, so no timer MMIO addresses are declared.
+// Interrupt / PMP / Sv suites are outside this configuration's scope;
+// synchronous vector exception tests use the standard M-mode trap handler.
 
 #define RVMODEL_ACCESS_FAULT_ADDRESS 0x00000000
-
-#define RVMODEL_MTIMECMP_ADDRESS 0x02004000
-#define RVMODEL_MTIME_ADDRESS    0x0200BFF8
 
 #define RVMODEL_INTERRUPT_LATENCY    10
 #define RVMODEL_TIMER_INT_SOON_DELAY 100

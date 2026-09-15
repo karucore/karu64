@@ -46,16 +46,15 @@ if {$ddr4_custom_2133} {
 	puts "KARU_DDR4_CUSTOM_2133: experimental custom-mode DDR4-2133 MIG enabled"
 }
 
-#	Optional Ethernet PHY front-end (E3 slice 1: DP83867 MDIO management). Enabled by
-#	KARU_ETH_PHY in KARU_DEFINES; adds the front-end RTL + the management-pin XDC. The
-#	SGMII PCS/PMA datapath is a later slice.
+#	Optional DP83867 MDIO management front-end. KARU_ETH_PHY adds its RTL and pin
+#	constraints; KARU_ETH_SGMII below adds the PCS/PMA and MAC datapath.
 set eth_phy 0
 if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_ETH_PHY] >= 0} {
 	set eth_phy 1
 	puts "KARU_ETH_PHY: DP83867 MDIO front-end enabled"
 }
 
-#	Optional full SGMII datapath (E3 D2b): the 1G PCS/PMA (SelectIO/LVDS) + LiteEth GMII
+#	Optional full SGMII datapath: the 1G PCS/PMA (SelectIO/LVDS) + LiteEth GMII
 #	core. KARU_ETH_SGMII REQUIRES KARU_ETH_PHY (the MDIO/reset front-end manages the PHY).
 set eth_sgmii 0
 if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_ETH_SGMII] >= 0} {

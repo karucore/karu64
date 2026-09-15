@@ -1,0 +1,81 @@
+--- a/tests/env/rvtest_setup.h
++++ b/tests/env/rvtest_setup.h
+@@ -85,7 +85,6 @@
+   .option norvc
+   .global rvtest_code_end       // define the label and make it available
+   .global cleanup_epilogs       // ****ALERT: tests must populate x1 with a point to the end of regular sig area TODO: Is this still true?
+-  /**** MPRV must be clear here !!! ****/
+ 
+   // The following epilog and checks are needed if there is any trap handler.  Right now, it is not
+   // invoked unless there is STANDARD_SM_SUPPORTED.  A user with custom M-mode will need
+@@ -100,6 +99,9 @@
+   cleanup_epilogs:
+     #ifdef STANDARD_SM_SUPPORTED
+       RVTEST_TSBI_GOTO_MMODE
++      // Save areas use physical addresses on normal and abort cleanup paths.
++      LI(T1, MSTATUS_MPRV)
++      csrc CSR_MSTATUS, T1
+       #ifdef S_SUPPORTED
+         #ifdef H_SUPPORTED
+           RVTEST_TRAP_EPILOG V        // actual v-mode prolog/epilog/handler code
+@@ -897,7 +899,12 @@
+         TRAP_CANARY
+ 
+       trap_sigptr:
++        #ifdef H_SUPPORTED
++          // H exception records contain six XLEN words rather than four.
++          .fill ((3*TRAP_SIGUPD_COUNT+1)/2)*(SIG_STRIDE>>2),4,0xdeadbeef
++        #else
+           .fill TRAP_SIGUPD_COUNT*(SIG_STRIDE>>2),4,0xdeadbeef
++        #endif
+ 
+       // Create canary at end of signature region to detect overwrites
+       sig_end_canary:
+--- a/tests/env/rvtest_trap_handler.h
++++ b/tests/env/rvtest_trap_handler.h
+@@ -925,7 +925,11 @@
+      slli T2, T2, 32                            // RV64: shift to mstatus upper half position
+      csrs  CSR_MSTATUS,  T2                     // RV64: set MPV in mstatus
+ #endif
++#ifdef H_SUPPORTED
++   .elseif ((\LMODE\()==HSmode) || (\LMODE\()==Smode) || (\LMODE\()==Umode) || (\LMODE\()==Mmode))
++#else
+    .elseif ((\LMODE\()==HSmode))
++#endif
+      LI    T2, (1<<MPV_LSB)
+ #if (UDB_MXLEN==32)
+   #ifdef SM1P12P0_OR_LATER_SUPPORTED
+@@ -935,7 +939,7 @@
+      slli   T2, T2, 32                          // RV64: shift to mstatus upper half position
+      csrc   CSR_MSTATUS, T2                     // RV64: clear MPV in mstatus
+ #endif
+-   .endif                                       // S and U modes: leave MPV unchanged
++   .endif
+ 
+         //---- Step 2: Set mstatus.MPP to target privilege level ----
+     LI(    T4, MSTATUS_MPP)                      // load full MPP field mask (bits 12:11)
+@@ -966,10 +970,8 @@
+ 
+   #ifdef S_SUPPORTED
+     #ifdef H_SUPPORTED
+-      .elseif (\LMODE\() == Smode)
+-            LREG    T1,  1*sv_area_sz(T2)         // S-mode with H: 2 areas from M (M->HS->S)
+-      .elseif (\LMODE\() == HSmode || \LMODE\() == Umode)
+-            LREG    T1, 0*sv_area_sz(T2)          // HS/U with H: 1 area from M (M->HS)
++      .elseif (\LMODE\() == Smode || \LMODE\() == HSmode || \LMODE\() == Umode)
++            LREG    T1, 0*sv_area_sz(T2)          // Host S/U uses the HS save area at M+1.
+     #else
+       .elseif (\LMODE\() == Smode || \LMODE\() == Umode)
+             LREG    T1,  0*sv_area_sz(T2)         // S/U without H: 1 area from M (M->S)
+@@ -3072,7 +3074,11 @@
+         addi T1, T1, 1*sv_area_sz                 // H: offset to HS save area
+       .else
+         .ifc \__MODE__ , S
++        #ifdef H_SUPPORTED
+           addi T1, T1, 2*sv_area_sz               // S: offset to S save area
++        #else
++          addi T1, T1, 1*sv_area_sz               // S without H: immediately follows M.
++        #endif
+         .else
+           .ifc \__MODE__ , V
+              addi T1, T1, 1*sv_area_sz            // V: offset in two steps (3*sv_area_sz too large)

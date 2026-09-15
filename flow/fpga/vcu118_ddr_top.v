@@ -22,19 +22,19 @@
 //	to 0x8000_0000. Optional DDR4 host-debug scaffolding is enabled only under
 //	`KARU_DDR_HOST_DBG`.
 //
-//	*** NOT yet hardware-validated (no VCU118 attached). ***  The ddr4_0 and
-//	axi_dwidth_converter_0 instances are black boxes until generated
-//	(`make mig-vcu118`); reconcile their port names/widths with the generated
-//	ddr4_0.veo / converter .veo before synthesis. The DDR4 PHY pins below are
-//	the standard MIG c0_ddr4_* bus; the MIG generates their pin XDC.
+//	The DDR/SGMII/ROM configuration has booted Linux on VCU118. Source changes
+//	after a recorded bitstream still require a fresh implementation and board
+//	acceptance. The ddr4_0 and axi_dwidth_converter_0 instances are generated
+//	IP; their resolved interfaces are checked by the batch synthesis flow. The
+//	DDR4 PHY pins below are the standard MIG c0_ddr4_* bus; the MIG supplies its
+//	pin constraints.
 
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
 `ifndef SIM_TB
-//	NOTE: the LiteEth MAC/register path is wired into the DDR SoC for hardware
-//	timing probes. The external VCU118 SGMII/DP83867 PHY front-end is still a
-//	separate board-link step; this top currently exposes no Ethernet pins.
+//	The optional KARU_ETH_SGMII/KARU_ETH_PHY build wires the LiteEth MAC, VCU118
+//	SGMII pins and DP83867 management interface into this top.
 module vcu118_ddr_top (
 	//	DDR4 system reference clock (250 MHz, DIFF_SSTL12, pins E12/D12)
 	input  wire			c0_sys_clk_p,
@@ -302,12 +302,13 @@ module vcu118_ddr_top (
 	wire [`AXI_ID_W-1:0]	s_bid;    wire [1:0] s_bresp;
 	wire					s_bvalid, s_bready;
 
-	wire		irq_timer, irq_ext_m, irq_ext_s;
+	wire		irq_timer, irq_software, irq_ext_m, irq_ext_s;
 	wire [63:0]	clint_mtime;		//	CLINT mtime -> CSR rdtime (shared timer domain)
 
 	karu64 #(.RESET_PC(32'h0000_1000), .EXT_TIME(1)) cpu (
 		.clk(clk), .rst(rst), .trap(trap),
 		.irq(irq_timer), .irq_external_m(irq_ext_m), .irq_external_s(irq_ext_s),
+		.irq_software(irq_software),
 		.time_in(clint_mtime),
 		.hpm_events(32'b0),
 		.cache_flush_req(), .cache_flush_invalidate(), .cache_flush_done(1'b1),
@@ -367,6 +368,7 @@ module vcu118_ddr_top (
 		.uart_txd(uart_txd), .uart_rxd(uart_rxd),
 		.uart_rts(uart_rts), .uart_cts(~usb_uart_cts_i),
 		.irq_timer(irq_timer), .irq_ext_m(irq_ext_m), .irq_ext_s(irq_ext_s),
+		.irq_software(irq_software),
 		.clint_mtime(clint_mtime)
 `ifdef KARU_ETH_SGMII
 		,.eth_clk125(eth_clk125),
@@ -566,8 +568,8 @@ module vcu118_ddr_top (
 	//	ui_clk); reconcile its s_axi_*/m_axi_* port names with the generated .veo.
 	//
 	//	MIG AXI is 0-based (offset within DRAM). The core issues 0x8xxx_xxxx, so
-	//	we drop the 0x8000_0000 base by taking [30:0] (the DRAM window is exactly
-	//	0x8000_0000..0x8FFF_FFFF, so bit 31 is the base and [30:0] is the offset).
+	//	we drop the 0x8000_0000 base by taking [30:0]. The 2 GiB window is
+	//	0x8000_0000..0xFFFF_FFFF, so bit 31 selects DRAM and [30:0] is the offset.
 	wire [30:0]				mig_araddr;
 	wire [`AXI_LEN_W-1:0]	mig_arlen;  wire [2:0] mig_arsize; wire [1:0] mig_arburst;
 	wire					mig_arlock; wire [3:0] mig_arcache; wire [2:0] mig_arprot;
@@ -658,12 +660,12 @@ module vcu118_ddr_top (
 	);
 
 `ifdef KARU_ETH_PHY
-	//	===== DP83867 MDIO management front-end (E3 slice 1) =====
+	//	===== DP83867 MDIO management front-end =====
 	//	Consumes the sim-validated karu_dp83867_mdio FSM (make mdio-test) via the
 	//	karu_eth_phy_fe wrapper (auto-start one-shot + MDIO IOBUF): on reset it holds
 	//	PHY RESET_N, soft-resets the PHY, RMW-ensures SGMII_EN/SGMII_AUTONEG_EN, and
-	//	reads PHYIDR1 (id_ok when 0x2000). Management path ONLY -- the SGMII datapath
-	//	needs the SelectIO/LVDS 1G PCS/PMA (a later slice). id_ok surfaced on led_o[0].
+	//	reads PHYIDR1 (id_ok when 0x2000). KARU_ETH_SGMII instantiates the matching
+	//	SelectIO/LVDS PCS/PMA below. id_ok is surfaced on led_o[0].
 	wire		eth_id_ok;
 	wire [15:0]	eth_phy_id;
 	wire		eth_mdio_done, eth_mdio_error, eth_mdio_busy;

@@ -4,13 +4,10 @@
 #	netlist, a final mapped netlist, an STA-friendly netlist, and an
 #	area report.
 #
-#	The default flow is HIERARCHICAL: each leaf module is mapped by
-#	abc independently. Flat mapping (`KARU_FLATTEN=1`) gives a marginally
-#	better critical path because abc can optimise across module
-#	boundaries, but on this design the flat AIG is ~186k nodes and
-#	abc's nangate script takes longer than is useful for an
-#	experimental eval flow. Hierarchical results are accurate to within
-#	a few percent and complete in single-digit minutes.
+#	The default flow is HIERARCHICAL: each leaf module is mapped by ABC
+#	independently. Flat mapping (`KARU_FLATTEN=1`) permits cross-module
+#	optimization but needs more resources. Partitioning and memory mapping
+#	affect both area and timing estimates; see README.md for measured scope.
 
 set top      "karu64"
 set out_dir  $::env(KARU_OUT_DIR)
@@ -99,6 +96,21 @@ puts "RTL sources: [llength $rtl_unique]"
 yosys "read_verilog -defer -I../../rtl$defs $rtl_unique"
 
 yosys "hierarchy -check -top $top"
+
+# Fast structural regression for accidental runtime division/modulo. Resolve
+# parameters and dead branches first: explicit one-cycle divider configs are
+# expected to fail this audit, while the default ASIC / FPGA serial configs
+# must contain none of these operators. Constant power-of-two indexing folds
+# to shifts/masks before this check. No mapping or STA is needed.
+if {[env_true KARU_DIV_AUDIT_ONLY]} {
+	yosys "proc"
+	yosys "opt_expr -full"
+	yosys "opt_clean -purge"
+	yosys "tee -o $out_dir/reports/div_operators.rpt select -list t:\$div t:\$mod t:\$divfloor t:\$modfloor"
+	yosys "select -assert-none t:\$div t:\$mod t:\$divfloor t:\$modfloor"
+	puts "RUNTIME_DIV_AUDIT_PASS: no live division/modulo operators"
+	exit
+}
 
 #	-noabc: skip synth's internal abc invocation; we run our own
 #	below so we control the script (otherwise the bit-serial fdiv /

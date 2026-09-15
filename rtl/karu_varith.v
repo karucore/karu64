@@ -209,11 +209,18 @@ module karu_varith (
     wire is_vsmul   = opiv && (b_vv || b_vx) && (f6_q == 6'b100111);    //  vsmul.vv/.vx (OPIV; OPMV 100111 = vmulh)
     wire is_vssr    = opiv && (f6_q[5:1] == 5'b10101);          //  vssrl(101010)/vssra(101011), f6[0]=arith
     wire is_avg     = opmv && (f6_q[5:2] == 4'b0010);           //  vaaddu/vaadd/vasubu/vasub (f6[1]=sub,f6[0]=signed)
-    //  -- widening (OPMV 11xxxx): dest = 2*SEW, 2*LMUL register group --
-    wire is_wide    = opmv && (f6_q[5:4] == 2'b11);
-    wire wide_w     = is_wide && (f6_q[5:2] == 4'b1101);        //  .w forms (vwadd.w etc.): vs2 already wide
-    wire wide_mul   = is_wide && (f6_q[5:2] == 4'b1110);        //  vwmulu/vwmulsu/vwmul
-    wire wide_mac   = is_wide && (f6_q[5:2] == 4'b1111);        //  vwmaccu/vwmacc/vwmaccus/vwmaccsu
+    //  -- widening: base-V OPMV 11xxxx plus Zvbb vwsll (OPIV 110101) --
+`ifdef KARU_EN_ZVBB
+    wire is_vwsll   = opiv && (f6_q == 6'b110101);
+`else
+    wire is_vwsll   = 1'b0;
+`endif
+    wire is_wide    = (opmv && (f6_q[5:4] == 2'b11)) || is_vwsll;
+    //  Qualify the base-V classes with opmv: vwsll's 110101 would otherwise
+    //  alias wide_w's 1101 prefix.
+    wire wide_w     = opmv && (f6_q[5:2] == 4'b1101);            //  .w forms (vwadd.w etc.): vs2 already wide
+    wire wide_mul   = opmv && (f6_q[5:2] == 4'b1110);            //  vwmulu/vwmulsu/vwmul
+    wire wide_mac   = opmv && (f6_q[5:2] == 4'b1111);            //  vwmaccu/vwmacc/vwmaccus/vwmaccsu
     //  -- narrowing (OPIV 1011xx): vs2 = 2*SEW, dest = SEW --
     wire is_narrow  = opiv && (f6_q[5:2] == 4'b1011);
     wire narrow_clip= is_narrow && f6_q[1];                     //  vnclipu(101110)/vnclip(101111)
@@ -232,12 +239,14 @@ module karu_varith (
     wire [4:0]  vf_r_vs1, vf_r_vs2, vf_r_vold;
     wire        vf_cvt_rod, vf_seqop, czv_idx;
     wire [31:0] vf_e_sh, vf_src_sh, vf_wa_off, vf_wb_off, vf_w_sh, vf_sl_sh;
-    reg         cz_q, kg;
+    reg         cz_q;
+    reg         czv_q, czk_q;
     reg  [5:0]  state;
 
     wire is_alu     = opiv && !is_cmp && !is_mvmerge && !is_vmvnr && !is_carry
                     && !is_satadd && !is_vsmul && !is_vssr && !is_narrow && !is_wred
-                    && !is_gather && !is_gei16 && !is_slideup && !is_slidedn;
+                    && !is_gather && !is_gei16 && !is_slideup && !is_slidedn
+                    && !is_vwsll;
     wire is_unary   = (f3_q == 3'b010) && (f6_q == 6'b010000);  //  VWXUNARY0 (OPMVV)
     wire is_munary  = (f3_q == 3'b010) && (f6_q == 6'b010100);  //  VMUNARY0
     //  VXUNARY0 (OPMVV 010010): integer extend vsext/vzext.vf{2,4,8}. vs1[2:1]
@@ -257,6 +266,23 @@ module karu_varith (
     wire is_brev8   = 1'b0;
     wire is_rev8    = 1'b0;
 `endif
+`ifdef KARU_EN_ZVBB
+    //  Full Zvbb VXUNARY0 selectors. These are normal-width, element-local
+    //  operations and use the same lane path as the two Zvkb reversals.
+    wire is_brev     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01010);
+    wire is_vclz     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01100);
+    wire is_vctz     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01101);
+    wire is_vcpop_e  = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01110);
+`else
+    wire is_brev     = 1'b0;
+    wire is_vclz     = 1'b0;
+    wire is_vctz     = 1'b0;
+    wire is_vcpop_e  = 1'b0;
+`endif
+    //  These VXUNARY0 selectors use vs1 as a subopcode, not a vector source.
+    //  Keep them off the generic OPMVV vs1 granule-read path.
+    wire is_vxunary_lane = is_brev8 || is_rev8 || is_brev
+                         || is_vclz || is_vctz || is_vcpop_e;
     wire [2:0] ext_flog = 3'd4 - {1'b0, vs1_q[2:1]};            //  log2(factor): vf8->3, vf4->2, vf2->1
     wire       ext_sign = vs1_q[0];                             //  1 = vsext, 0 = vzext
     wire [6:0] ext_ssew = sewb >> ext_flog;                     //  source (narrow) element width
@@ -293,9 +319,14 @@ module karu_varith (
     //  write a single register.
     wire grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid || is_cmp
             || is_carry_e || is_carry_m || is_satadd || is_vsmul || is_vssr || is_avg
-            || is_vext || is_brev8 || is_rev8;
+            || is_vext || is_brev8 || is_rev8
+            || is_brev || is_vclz || is_vctz || is_vcpop_e;
     //  vmv<nr>r.v copies imm+1 registers (1/2/4/8); other group ops span LMUL.
-    wire [3:0] iter_n = is_vmvnr ? (imm_q[3:0] + 4'd1) : (grp ? nreg_q : 4'd1);
+    wire lane_walk;
+    wire [31:0] live_regs;
+    wire [3:0] iter_n = is_vmvnr ? (imm_q[3:0] + 4'd1)
+                     : lane_walk && (live_regs < nreg_q) ? live_regs[3:0]
+                     : (grp ? nreg_q : 4'd1);
 
     assign sewb = 7'd8 << vsew_q;               //  bits/element
     //  log2(sewb): sewb = 8<<vsew is a power of 2, so index*sewb barrel-shift
@@ -308,6 +339,7 @@ module karu_varith (
     //  are powers of 2 too -> r*epr and *epc_w geometry are SHIFTS, not DSPs.
     localparam LOG2VLEN = $clog2(VLEN);
     wire [5:0] epr_lg  = LOG2VLEN[5:0] - 6'd3 - {3'b0, vsew_q}; //  log2(epr)
+    assign live_regs = (vl_q == 0) ? 32'd1 : (((vl_q - 1) >> epr_lg) + 1);
     wire [5:0] epc_lg  = 6'd3 - {3'b0, vsew_q};                 //  log2(epc_w) = 0..3
     wire [5:0] eprw_lg = epr_lg - 6'd1;                         //  log2(epr_w = epr/2)
     wire [5:0] wsew_lg = sew_lg + 6'd1;                         //  log2(wsewb = 2*sewb)
@@ -353,11 +385,13 @@ module karu_varith (
 
     //  perm load streams the source/index groups in: vs2_q+pli, vs1_q+pli.
     //  is_fp_q selects the FP datapath addressing (vf_r_*).
-    assign r_vs1  = is_fp_q ? vf_r_vs1
+    assign r_vs1  = czk_q ? (vd_q + {1'b0, r})
+                  : is_fp_q ? vf_r_vs1
                   : ld_active ? (vs1_q + {1'b0, pli})
                   : is_reduce ? vs1_q                       //  reduction: vs1[0] scalar seed
                   : is_wide   ? (vs1_q + r_half) : (vs1_q + {1'b0, r});
-    assign r_vs2  = is_fp_q ? vf_r_vs2
+    assign r_vs2  = czk_q ? (vd_q + {1'b0, r})
+                  : is_fp_q ? vf_r_vs2
                   : ld_active ? (vs2_q + {1'b0, pli})
                   : is_narrow ? (vs2_q + r_dbl)
                   : (is_wide && wide_w) ? (vs2_q + {1'b0, r})
@@ -484,7 +518,16 @@ module karu_varith (
     reg                   lane_warm;                    //  2-stage lane: S_RUN warm-up cycle
 `endif
     reg  [`KARU_VLEN-1:0] grp_acc;                      //  prior passes' accumulated result
-    wire                  last_g = (gpass == (VGRAN_C-1));
+    // Only element-local lane operations may stop at vl. Fixed-group crypto,
+    // whole-register moves and the geometry-changing engines keep their walks.
+    // synthesis translate_off
+    initial begin
+        if (VGRAN_C != 2)
+            $fatal(1, "bounded lane walk requires two granules per register");
+    end
+    // synthesis translate_on
+    wire                  last_g = (gpass == (VGRAN_C-1)) ||
+        (lane_walk && (ebase + (({31'b0, gpass} + 1) << (epr_lg-1)) >= vl_q));
     //  this pass's chunk base. Folds to a constant 0 at VGRAN_C==1 so the FP geg/
     //  fdbuf selects (which use gwin directly, not generate-gated) are static in
     //  the byte-identical build -- no live gpass mux there either.
@@ -493,7 +536,10 @@ module karu_varith (
     //  is_vext (whole-register ext_res) nor cmp/mlg/mscan/vfirst (whole-reg).
     wire is_grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid
                || is_vmvsx || is_carry_e || is_satadd || is_avg || is_vssr || is_vsmul
-               || is_brev8 || is_rev8;
+               || is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop_e;
+    assign lane_walk = is_grp && !cz_q && !is_fp_q
+                    && !(BS_MUL && (is_mul || is_mac || is_vsmul))
+                    && !(BS_DIV && is_div);
     reg  [`KARU_VLEN-1:0] grp_full;                     //  grp_acc + this pass's slice
     //  WB stage: register the LANE OUTPUT (grp_res/grp_sat) before the
     //  accumulate + grp_full + wdata_hot writeback, cutting the route-bound
@@ -570,6 +616,7 @@ module karu_varith (
             .is_carry_e(is_carry_e), .is_satadd(is_satadd), .is_avg(is_avg),
             .is_vssr(is_vssr), .is_vsmul(is_vsmul),
             .is_brev8(is_brev8), .is_rev8(is_rev8),
+            .is_brev(is_brev), .is_vclz(is_vclz), .is_vctz(is_vctz), .is_vcpop(is_vcpop_e),
             .mv_is_vv(mv_is_vv), .mv_splat(mv_splat),
             .vm(vm_q), .v0_bits(v0b_L), .vl(vl_q), .eg_base(eg_base_L),
             //  FP datapath (operands packed 64b/lane into the lane bus)
@@ -712,24 +759,89 @@ module karu_varith (
     //  ff = first active set bit; vcpop = count of active set bits.
     //  stage-4: the whole family (vmsbf/msof/msif, vfirst, vcpop) derives
     //  from a {found, first-index, count} SUMMARY of the active set bits.
-    //  Each S_RUN pass folds one vs2_g granule into the summary regs
-    //  (found_q/ff_q/cnt_q, seeded at accept); the combinational g* values
-    //  include the current pass, so the last pass's x-results read them
-    //  directly. The mscan WRITE bits are then recomputable from the
+    //  S_RUN registers independent 16-bit summaries; S_MSUM folds them
+    //  into the running summary with balanced trees. No serial conditional
+    //  increment or priority chain spans the 128-bit granule. Counts need
+    //  only clog2(VLEN+1) bits, including the all-ones VLEN-bit mask.
+    //  Both phases have fixed latency, independent of operand values.
+    //  The mscan WRITE bits are then recomputable from the
     //  summary alone (no source read) -- S_CMW serves them via mscan_wbits
     //  against cmp_actall's vm||v0 arm.
-    reg         found_q;  reg [31:0] ff_q;  reg [63:0] cnt_q;
-    reg gfound; reg [31:0] gff; reg [63:0] gcnt; integer gsi; reg [31:0] gsig;
+    localparam MS_BLOCKS = `KARU_VBUS_W / 16;
+    localparam MS_INDEX_W = $clog2(`KARU_VBUS_W);
+    localparam MS_COUNT_W = $clog2(VLEN+1);
+    reg         found_q;  reg [31:0] ff_q;
+    reg [MS_COUNT_W-1:0] cnt_q;
+    reg [`KARU_VBUS_W-1:0] ms_active;
+    reg [4:0] ms_count_q [0:MS_BLOCKS-1];
+    reg [3:0] ms_first_q [0:MS_BLOCKS-1];
+    reg [MS_BLOCKS-1:0] ms_found_q;
+    integer gsi, msb;
+    reg [31:0] gsig;
+
+    function [4:0] mask_pop16;
+        input [15:0] bits;
+        reg [1:0] p2 [0:7];
+        reg [2:0] p4 [0:3];
+        reg [3:0] p8 [0:1];
+        integer k;
+        begin
+            for (k=0; k<8; k=k+1)
+                p2[k] = {1'b0,bits[2*k]} + {1'b0,bits[2*k+1]};
+            for (k=0; k<4; k=k+1)
+                p4[k] = {1'b0,p2[2*k]} + {1'b0,p2[2*k+1]};
+            for (k=0; k<2; k=k+1)
+                p8[k] = {1'b0,p4[2*k]} + {1'b0,p4[2*k+1]};
+            mask_pop16 = {1'b0,p8[0]} + {1'b0,p8[1]};
+        end
+    endfunction
+    function [3:0] mask_first16;
+        input [15:0] bits;
+        reg [7:0] h8;
+        reg [3:0] h4;
+        reg [1:0] h2;
+        begin
+            mask_first16[3] = ~(|bits[7:0]);
+            h8 = mask_first16[3] ? bits[15:8] : bits[7:0];
+            mask_first16[2] = ~(|h8[3:0]);
+            h4 = mask_first16[2] ? h8[7:4] : h8[3:0];
+            mask_first16[1] = ~(|h4[1:0]);
+            h2 = mask_first16[1] ? h4[3:2] : h4[1:0];
+            mask_first16[0] = ~h2[0];
+        end
+    endfunction
     always @(*) begin
-        gfound=found_q; gff=ff_q; gcnt=cnt_q; gsig=32'b0;
+        ms_active=0; gsig=0;
         for (gsi = 0; gsi < `KARU_VBUS_W; gsi = gsi + 1) begin
             gsig = (gpass ? 32'd`KARU_VBUS_W : 32'd0) + gsi[31:0];
-            if (gsig < vl_q && (vm_q || v0_q[gsig[7:0]]) && vs2_g[gsi]) begin
-                if (!gfound) begin gfound=1'b1; gff=gsig; end
-                gcnt = gcnt + 64'd1;
-            end
+            ms_active[gsi] = gsig < vl_q && (vm_q || v0_q[gsig[7:0]]) && vs2_g[gsi];
         end
     end
+    wire [MS_COUNT_W-1:0] ms_counts [1:2*MS_BLOCKS-1];
+    wire [MS_INDEX_W-1:0] ms_firsts [1:2*MS_BLOCKS-1];
+    wire ms_found [1:2*MS_BLOCKS-1];
+    genvar MS;
+    generate
+        if (`KARU_VBUS_W < 32 || (`KARU_VBUS_W & (`KARU_VBUS_W-1)) != 0)
+            begin : g_mask_summary_guard
+                KARU_BAD_MASK_BUS_must_be_power_of_two_at_least_32 _elab_error();
+            end
+        for (MS=0; MS<MS_BLOCKS; MS=MS+1) begin : g_mask_leaf
+            localparam [MS_INDEX_W-1:0] BASE = MS*16;
+            assign ms_counts[MS_BLOCKS+MS] = {{(MS_COUNT_W-5){1'b0}},ms_count_q[MS]};
+            assign ms_firsts[MS_BLOCKS+MS] = BASE | {{(MS_INDEX_W-4){1'b0}},ms_first_q[MS]};
+            assign ms_found[MS_BLOCKS+MS] = ms_found_q[MS];
+        end
+        for (MS=1; MS<MS_BLOCKS; MS=MS+1) begin : g_mask_fold
+            assign ms_counts[MS] = ms_counts[2*MS] + ms_counts[2*MS+1];
+            assign ms_found[MS] = ms_found[2*MS] | ms_found[2*MS+1];
+            assign ms_firsts[MS] = ms_found[2*MS] ? ms_firsts[2*MS] : ms_firsts[2*MS+1];
+        end
+    endgenerate
+    wire gfound = found_q | ms_found[1];
+    wire [31:0] gff = (found_q || !ms_found[1]) ? ff_q :
+        ((gpass ? 32'd`KARU_VBUS_W : 32'd0) | {{(32-MS_INDEX_W){1'b0}},ms_firsts[1]});
+    wire [MS_COUNT_W-1:0] gcnt = cnt_q + ms_counts[1];
     reg [VLEN-1:0] mscan_wbits; integer swi; reg swb;
     always @(*) begin
         mscan_wbits = {VLEN{1'b0}}; swb=1'b0;
@@ -850,7 +962,9 @@ module karu_varith (
             default: msm_rnd = ~msm_lsb & (msm_dmsb | msm_stk);
         endcase
         msm_res0 = msm_sh + {63'b0, msm_rnd};
-        msm_sat  = ($signed(msm_res0) > $signed({1'b0, m_smax}));
+        // Same MIN * MIN overflow as the combinational lane. At e64 the
+        // shifted product has already wrapped, so compare element operands.
+        msm_sat  = (m_a == (m_smax + 64'd1)) && (m_b == (m_smax + 64'd1));
         msm_res  = msm_sat ? m_smax : msm_res0;
         //  element result select
         if (is_vsmul)    mres_el = msm_res;
@@ -881,13 +995,13 @@ module karu_varith (
     wire [31:0] w_gbase = gpass[0] ? epg_w32 : 32'd0;   //  this pass's wide window
     reg [`KARU_VLEN-1:0] wide_res;
     integer we_i, wbj, w_noff;
-    reg [63:0]  w_na, w_nb, w_na_s, w_nb_s, w_wa, w_vd, w_nsm, w_wsm;
+    reg [63:0]  w_na, w_nb, w_na_s, w_nb_s, w_wa, w_vd, w_nsm, w_wsm, w_shamt;
     reg [63:0]  w_aa, w_bb, w_eres, w_pa, w_pb; reg [127:0] w_prod;
     reg         w_asig, w_bsig; reg [31:0] w_eg;    reg w_act;
     always @(*) begin
         wide_res = {`KARU_VLEN{1'b0}};  //  6c-b: keep-old = the suppressed byte enable
         w_na=0; w_nb=0; w_na_s=0; w_nb_s=0; w_wa=0; w_vd=0; w_aa=0; w_bb=0;
-        w_eres=0; w_pa=0; w_pb=0; w_prod=0; w_asig=0; w_bsig=0; w_eg=0; w_act=0; w_noff=0; w_aa=0; w_bb=0;
+        w_eres=0; w_pa=0; w_pb=0; w_prod=0; w_asig=0; w_bsig=0; w_eg=0; w_act=0; w_noff=0; w_aa=0; w_bb=0; w_shamt=0;
         w_nsm = (sewb  >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
         w_wsm = (wsewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << wsewb);
         //  one GRANULE of the wide dest per pass (gpass): narrow sources for
@@ -900,12 +1014,23 @@ module karu_varith (
                 w_act  = vm_q || v0_q[w_eg[7:0]];
                 w_noff = (r[0] ? epr_w : 32'd0) + we_i[31:0];   //  narrow elem index in src reg
                 w_na   = (vs2_g >> (we_i << sew_lg)) & ~w_nsm;
+                // Truncating a .vx scalar to SEW retains all log2(2*SEW)
+                // shift bits used by vwsll, including the e8 -> e16 case.
                 w_nb   = b_vv ? ((vs1_g >> (we_i << sew_lg)) & ~w_nsm)
                        : b_vx ? (rs1_q & ~w_nsm) : (imm_q & ~w_nsm);
                 w_na_s = sext(w_na, sewb);  w_nb_s = sext(w_nb, sewb);
                 w_wa   = (vs2_g  >> ((we_i - w_gbase) << wsew_lg)) & ~w_wsm;    //  wide vs2 (.w)
                 w_vd   = (vold_g >> ((we_i - w_gbase) << wsew_lg)) & ~w_wsm;    //  wide mac addend
-                if (wide_mul || wide_mac) begin
+                if (is_vwsll) begin
+                    //  Zvbb widening shift is unsigned: zero-extend vs2 to
+                    //  2*SEW, then use the low log2(2*SEW) bits of vs1/x/uimm.
+                    //  Decoder's generic .vi path sign-extends simm5. vwsll.vi
+                    //  is the exception here: its immediate is zimm5, which
+                    //  matters at SEW=32 because the wide shift mask is 6 bits.
+                    w_shamt = (b_vi ? {59'b0, imm_q[4:0]} : w_nb)
+                            & ({57'b0, wsewb} - 64'd1);
+                    w_eres  = w_na << w_shamt;
+                end else if (wide_mul || wide_mac) begin
                     //  combinational widening mul only when V_MUL_C==1; otherwise
                     //  the serial multiplier (S_WMLOAD/S_MSTEP/S_WMFIN) handles it
                     //  and this product is constant-folded away.
@@ -939,7 +1064,14 @@ module karu_varith (
     end
 
     //  req-time is_wide / is_narrow for the FSM branch selection
-    wire req_is_wide   = (vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:4] == 2'b11);
+`ifdef KARU_EN_ZVBB
+    wire req_is_vwsll  = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
+                       && (vfunct6 == 6'b110101);
+`else
+    wire req_is_vwsll  = 1'b0;
+`endif
+    wire req_is_wide   = ((vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:4] == 2'b11))
+                       || req_is_vwsll;
     wire req_is_narrow = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
                        && (vfunct6[5:2] == 4'b1011);
     //  widening mul/mac (funct6 111xxx) -- routed to the serial multiplier when BS_MUL
@@ -1275,7 +1407,9 @@ module karu_varith (
                     if (pge < vl_q) begin
                         psrc64 = {32'b0, pge} + slide_off;
                         //  prd == psrc64[31:0] when in bounds (mod-2^32 equal)
-                        praw   = (psrc64 < {32'b0, vlmax}) ? pval : 64'd0;
+                        // Guard the offset too: XLEN_MAX + pge can wrap.
+                        praw   = (slide_off < {32'b0, vlmax} &&
+                                  psrc64 < {32'b0, vlmax}) ? pval : 64'd0;
                         pwr    = 1'b1;
                     end
                 end else if (is_slide1dn) begin
@@ -1392,7 +1526,8 @@ module karu_varith (
                //   write-time-recomputed active set (cmp_actall).
                S_CMW=6'd47,
                //   Zvk: zero-BE wlast pad when the op ends on an inactive group
-               S_CPAD=6'd48
+               S_CPAD=6'd48,
+               S_MSUM=6'd50
 `ifdef KARU_V_CWB_STAGE
                //   KARU_V_CWB_STAGE: cold assembly -> drain register hop
                , S_CSTAGE=6'd49
@@ -1531,7 +1666,8 @@ module karu_varith (
     //  (unreachable for grp_gran -- the serial m_*/d_* paths that would
     //  need a different granule are NOT grp_gran; they are ser_gran with
     //  their own indices). NONE refinements: scalar/imm b-operand
-    //  (.vx/.vi), vid (no sources), vmv.s.x (vs2 is a selector), and
+    //  (.vx/.vi), vid (no sources), lane VXUNARY0 (vs1 is a selector),
+    //  vmv.s.x (vs2 is a selector), and
     //  vmv.v.* (vm=1: the vs2 arm is never selected). The granule feed
     //  preserves the source-snapshot-before-dest-writes overlap rule by
     //  construction: passes walk granules forward, so a granule read at
@@ -1546,13 +1682,12 @@ module karu_varith (
     localparam [1:0] RDU_NONE = 2'b00, RDU_GRAN = 2'b01, RDU_WHOLE = 2'b10;
     wire grp_gran = !cz_q && is_grp && !((BS_MUL && (is_mul || is_mac || is_vsmul)) || (BS_DIV && is_div));
     wire [1:0] rdu_vs1 = cz_q ? RDU_WHOLE
-                       : ((is_grp && (b_vx || b_vi)) || is_vid) ? RDU_NONE
+                       : ((is_grp && (b_vx || b_vi)) || is_vid || is_vxunary_lane) ? RDU_NONE
                        : grp_gran                               ? RDU_GRAN : RDU_WHOLE;
     wire [1:0] rdu_vs2 = cz_q ? RDU_WHOLE
                        : (is_vmvsx || is_vid || (is_mvmerge && vm_q)) ? RDU_NONE
                        : grp_gran ? RDU_GRAN : RDU_WHOLE;
     //  cz_q hoisted above (latched at accept: op is Zvk/vkeccak, issue-cycle inputs)
-    reg  czv_q, czk_q;  //  split: vcrypto / vkeccak (granule-feed classes)
     //  GRAN classes (every op belongs to exactly one; the per-class arms
     //  below pick the need flags and granule indices). Beyond the lane
     //  loop:
@@ -1629,6 +1764,9 @@ module karu_varith (
                     || (nar_gran && nar_ph && b_vv)
                     || (fseq_gran && ((vf_is_warith && !vf_is_vf) || vf_is_fred || vf_is_wred))
                     || czv_gran
+`ifdef KARU_EN_KECCAK
+                    || (czk_gran && czk_ld_ph)
+`endif
                     || (pl_gran && ld_active);
     assign rdu_vs2_g = (grp_gran && (rdu_vs2 == RDU_GRAN))
                     || (fp_gran && fp_src_ph && !(vf_is_merge && vm_q))
@@ -1641,6 +1779,9 @@ module karu_varith (
                     || (ext_gran && cmp_src_ph)
                     || (fseq_gran && !vf_is_vmvsf)
                     || czv_gran
+`ifdef KARU_EN_KECCAK
+                    || (czk_gran && czk_ld_ph)
+`endif
                     || (pl_gran && ld_active);
     assign rdu_vold_g = (grp_gran && is_mac)
                      || (fp_gran && vf_is_fma && fp_src_ph)
@@ -1651,12 +1792,10 @@ module karu_varith (
                      || (fseq_gran && vf_is_wfma)
                      || (fp_gran && vf_is_cmp && fpw_ph)
                      || czv_gran
-`ifdef KARU_EN_KECCAK
-                     || (czk_gran && czk_ld_ph)
-`endif
                      ;
     wire rdu_gdef = (pl_gran && ld_active) ? plw[WPW-1] : gpass[0];
     assign rdu_g1 =
+                    czk_gran ? 1'b0 :
 `ifdef KARU_EN_ZVK
                     czv_gran  ? czv_idx :
 `endif
@@ -1667,8 +1806,9 @@ module karu_varith (
                   : fseq_gran ? (vf_is_warith ? vf_wa_off[7] : 1'b0)
                   : rdu_gdef;
     assign rdu_g2 =
+                    czk_gran ? 1'b1 :
 `ifdef KARU_EN_ZVK
-                    czv_gran  ? czv_idx :
+                    czv_gran  ? ((f6_q == 6'b101001) ? 1'b0 : czv_idx) :
 `endif
                     red_gran  ? rch[1]          //  64-bit chunk rch -> granule rch[1]
                   : ser_gran  ? (is_div ? dsh[7] : msh[7])
@@ -1686,9 +1826,6 @@ module karu_varith (
     assign rdu_gv =
 `ifdef KARU_EN_ZVK
                     czv_gran  ? czv_idx :
-`endif
-`ifdef KARU_EN_KECCAK
-                    czk_gran  ? kg :
 `endif
                     ser_gran  ? msh[7]
                   : wser_gran ? wm_vsh[7]
@@ -1757,7 +1894,9 @@ module karu_varith (
     //  vf_eprd/vf_eprs are epr or epr/2 -> powers of 2; use shift/mask geometry.
     wire [5:0]  vf_eprd_lg = (vf_is_wcvt || vf_is_warith) ? eprw_lg : epr_lg;
     wire [5:0]  vf_eprs_lg = vf_is_ncvt ? eprw_lg : epr_lg;
-    wire [3:0]  vf_nregd  = (vf_is_wcvt || vf_is_warith) ? (nreg_q << 1) : nreg_q;
+    // Scalar moves ignore LMUL: only vd[0], never vd+1's element zero.
+    wire [3:0]  vf_nregd  = vf_is_vmvsf ? 4'd1 :
+                           (vf_is_wcvt || vf_is_warith) ? (nreg_q << 1) : nreg_q;
     wire [31:0] vf_ebase  = {28'b0, r} << vf_eprd_lg;   //  r*vf_eprd (shift)
     wire [31:0] vf_geg    = vf_ebase + fe;
     wire [4:0]  vf_srcreg = vs2_q + (vf_geg >> vf_eprs_lg);             //  /vf_eprs (shift)
@@ -2072,7 +2211,7 @@ module karu_varith (
 `endif
     reg       wmul_q;   //  serial path is a widening multiply (shares S_MSTEP)
     //  widening iterates 2*LMUL dest registers
-    wire [4:0] wide_iter = {nreg_q, 1'b0};
+    wire [4:0] wide_iter = vlmul_q[2] ? 5'd1 : {nreg_q, 1'b0};
     reg       vsat_q;       //  sticky saturation across the op (output at done)
     assign busy = (state != S_IDLE);
     assign vsat = vsat_q;
@@ -2110,7 +2249,6 @@ module karu_varith (
     //  (Zvl128b); the granule walk below assumes the usual VGRAN=2 layout.
     localparam integer KVGRP = (2048 + VLEN - 1) / VLEN;
     reg  [KVGRP*VLEN-1:0]   ksbuf;
-    //  kg hoisted above (granule sub-step within a register, S_KLOAD)
     reg                     kreq;
     wire                    kbusy, kdone;
     wire [1599:0]           kstate_o;
@@ -2211,12 +2349,9 @@ module karu_varith (
 `ifdef KARU_EN_ZVK
                     cpre_q<=1'b0;
 `endif
-`ifdef KARU_EN_KECCAK
-                    kg<=1'b0;
-`endif
                     nreg_q<=nreg; vd_q<=vd_base; vs1_q<=vs1_base; vs2_q<=vs2_base;
                     v0_q<=v0; r<=0; macc<={VLEN{1'b0}}; dle<=0; mle<=0; nph<=0; nse<=0; rch<=0;
-                    found_q<=1'b0; ff_q<=32'b0; cnt_q<=64'b0;
+                    found_q<=1'b0; ff_q<=32'b0; cnt_q<={MS_COUNT_W{1'b0}};
                     pli<=0; pse<=0; iota_acc<=0; ld_active <= req_is_perm && !req_is_fp;
                     plw <= {WPW{1'b0}}; plwa <= {PWW{1'b0}};
                     wmul_q <= (BS_MUL && req_is_wmul);
@@ -2287,7 +2422,12 @@ module karu_varith (
                     end
                     else if (is_mlg) macc <= macc | mlg_res;
                     else if (is_mscan || is_vfirst || is_vcpop) begin
-                        found_q<=gfound; ff_q<=gff; cnt_q<=gcnt;
+                        for (msb=0; msb<MS_BLOCKS; msb=msb+1) begin
+                            ms_count_q[msb] <= mask_pop16(ms_active[16*msb +: 16]);
+                            ms_first_q[msb] <= mask_first16(ms_active[16*msb +: 16]);
+                            ms_found_q[msb] <= |ms_active[16*msb +: 16];
+                        end
+                        state <= S_MSUM;
                     end
                     //  A granule op holds r (and state) until its last granule pass;
                     //  all other ops (and the last pass) take the advance branch.
@@ -2297,7 +2437,7 @@ module karu_varith (
                     end else
                     //  vmvnr/vext route their whole-reg write through S_CWB, which
                     //  owns the r-advance / done -- skip the shared advance for them.
-                    if (is_vmvnr || is_vext) begin
+                    if (is_vmvnr || is_vext || is_mscan || is_vfirst || is_vcpop) begin
                     end else
                     //  compares/carry-mask + the mask family walk source granules
                     //  (stage-4; vmv.x.s reads only granule 0 -- single visit)
@@ -2314,14 +2454,26 @@ module karu_varith (
                             else if (is_mlg || is_mscan) begin
                                 state<=S_CMW; end   //  streamed mask write
                             else begin
-                                //  x-results from the scan summary (the g*
-                                //  combinational values include this pass)
-                                if (is_vfirst) x_res<=gfound ? {32'd0, gff} : {64{1'b1}};
-                                else if (is_vcpop)  x_res<=gcnt;
-                                else if (is_vmvxs)  x_res<=vmvxs_res;
+                                if (is_vmvxs) x_res<=vmvxs_res;
                                 done<=1; state<=S_IDLE;
                             end
                         end else r<=r+1;
+                    end
+                end
+
+                S_MSUM: begin
+                    found_q<=gfound; ff_q<=gff; cnt_q<=gcnt;
+                    if (!last_g) begin
+                        gpass<=gpass+1'b1;
+                        state<=S_RUN;
+                    end else begin
+                        gpass<={GPW{1'b0}};
+                        if (is_mscan) state<=S_CMW;
+                        else begin
+                            x_res<=is_vfirst ? (gfound ? {32'd0,gff} : {64{1'b1}})
+                                            : {{(64-MS_COUNT_W){1'b0}},gcnt};
+                            done<=1; state<=S_IDLE;
+                        end
                     end
                 end
 
@@ -2531,7 +2683,11 @@ module karu_varith (
                     iota_acc <= iota_next;                  //  carry viota running prefix
                     if (pse + PLANES >= epr) begin          //  register complete -> write
                         `CWB_T<=perm_res; cwb_wd<=vd_q + r; cwb_g<={GPW{1'b0}};
-                        cwb_be<=act_be(ebase, vsew_q, is_slideup ? slide_off[31:0] : 32'd0); cwb_vlgov<=1'b1; cwb_mdest<=1'b0; cwb_vsew<=vsew_q; cwb_epr<=epr[15:0];
+                        // An XLEN-wide offset above vl disables every write;
+                        // do not wrap it into the 32-bit element geometry.
+                        cwb_be<=act_be(ebase, vsew_q, is_slideup ?
+                            ((slide_off >= {32'b0, vl_q}) ? vl_q : slide_off[31:0]) : 32'd0);
+                        cwb_vlgov<=1'b1; cwb_mdest<=1'b0; cwb_vsew<=vsew_q; cwb_epr<=epr[15:0];
                         pse <= 0;
                         if (r == nreg_q - 4'd1) begin cwb_done<=1'b1; cwb_wlast<=1'b1; end
                         else begin cwb_done<=1'b0; cwb_wlast<=1'b0; cwb_ret<=S_PCOMP; end
@@ -2843,7 +2999,14 @@ module karu_varith (
                             //  zero-BE pad with g_wlast (cache invalidate;
                             //  harmless if nothing was written)
                             if (r == nreg_q - 4'd1) state<=S_CPAD;
-                            else begin r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0; end
+                            else begin
+                                r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0;
+                                //  For .vs, keep r_vs2 = vs2_q+r at the
+                                //  original source register while r advances.
+                                //  This preserves the shared address datapath
+                                //  used by every non-crypto vector operation.
+                                if (f6_q == 6'b101001) vs2_q<=vs2_q-5'd1;
+                            end
                         end else begin
                             chalf<=1'b1;
                         end
@@ -2881,7 +3044,10 @@ module karu_varith (
                         g_wlast <= chalf && (r == nreg_q - 4'd1);
                         if (chalf) begin
                             if (r == nreg_q - 4'd1) begin done<=1'b1; state<=S_IDLE; end
-                            else begin r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0; state<=S_CREQ; end
+                            else begin
+                                r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0; state<=S_CREQ;
+                                if (f6_q == 6'b101001) vs2_q<=vs2_q-5'd1;
+                            end
                         end else begin chalf<=1'b1; state<=S_CREQ; end
                     end else begin
                         //  EGW256: drain both granules of cres
@@ -2892,7 +3058,10 @@ module karu_varith (
                         else begin
                             cwb_g <= {GPW{1'b0}};
                             if (r == nreg_q - 4'd1) begin done<=1'b1; state<=S_IDLE; end
-                            else begin r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0; state<=S_CREQ; end
+                            else begin
+                                r<=r+4'd1; chalf<=1'b0; cpre_q<=1'b0; state<=S_CREQ;
+                                if (f6_q == 6'b101001) vs2_q<=vs2_q-5'd1;
+                            end
                         end
                     end
                 end
@@ -2903,14 +3072,11 @@ module karu_varith (
                 //  -> store (one isolated 1600-bit permutation; r = reg counter)
                 //  ====================================================
                 S_KLOAD: begin
-                    //  one granule per cycle from vold_g (index kg)
-                    ksbuf[{27'b0, r, kg} * `KARU_VBUS_W +: `KARU_VBUS_W] <= vold_g;
-                    if (!kg) kg <= 1'b1;
-                    else begin
-                        kg <= 1'b0;
-                        if (r == KVGRP[3:0]-4'd1) begin r<=4'd0; state<=S_KREQ; end
-                        else r <= r + 4'd1;
-                    end
+                    // The two BRAM ports supply both halves of one register
+                    // per fill; the encoded vs1/vs2 fields are not operands.
+                    ksbuf[r*VLEN +: VLEN] <= {vs2_g, vs1_g};
+                    if (r == KVGRP[3:0]-4'd1) begin r<=4'd0; state<=S_KREQ; end
+                    else r <= r + 4'd1;
                 end
                 S_KREQ:  begin kreq<=1'b1; state<=S_KWAIT; end
                 S_KWAIT: if (kdone) begin ksbuf[1599:0]<=kstate_o; r<=4'd0; state<=S_KSTORE; end
@@ -3045,10 +3211,12 @@ module karu_varith (
             begin $display("[VRF-BRAM-ASSERT] WGN1 g_wg(%0d) >= VGRAN_C(%0d) @%0t", g_wg, VGRAN_C, $time); $finish; end
         /* verilator lint_on UNSIGNED */
         /* verilator lint_on CMPCONST */
-        //  WGN2: g_wlast (an op's FINAL granule write -> read-cache invalidate)
-        //        may fire ONLY on a register's last granule. A g_wlast on a
-        //        non-final granule would end the op mid-register (stale cache).
-        if (g_we && g_wlast && (g_wg != (VGRAN_C-1)))
+        // WGN2: a lane walk may finish within a register only after the last
+        // live element. Fixed-group/whole-register engines still drain it all.
+        if (g_we && g_wlast && (g_wg != (VGRAN_C-1)) &&
+            !(lane_walk && (g_wd == vd_q + iter_n - 1) &&
+              ((({27'b0, g_wd} - {27'b0, vd_q}) << epr_lg) +
+               (({31'b0, g_wg} + 1) << (epr_lg-1)) >= vl_q)))
             begin $display("[VRF-BRAM-ASSERT] WGN2 g_wlast on non-final granule wg=%0d (last=%0d) @%0t", g_wg, VGRAN_C-1, $time); $finish; end
     end
 // synthesis translate_on

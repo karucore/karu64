@@ -1,0 +1,91 @@
+From: Karu reference tests
+Subject: [PATCH] sstc: recompute independent timer sources from raw time
+
+Applies only to riscv-isa-sim f10808d48aec727b41757334ff18c416b0242516.
+Keep software STIP and HVIP distinct from gated comparator contributions.
+
+diff --git a/riscv/csrs.h b/riscv/csrs.h
+--- a/riscv/csrs.h
++++ b/riscv/csrs.h
+@@ -601,1 +601,2 @@
+-  void sync(const reg_t val) noexcept;
++  void sync(const reg_t val) noexcept;
++  void update_timer_pending() noexcept;
+@@ -843,1 +844,1 @@
+-  stimecmp_csr_t(processor_t* const proc, const reg_t addr, const reg_t imask);
++  stimecmp_csr_t(processor_t* const proc, const reg_t addr);
+@@ -847,2 +847,0 @@
+- private:
+-  reg_t intr_mask;
+diff --git a/riscv/csrs.cc b/riscv/csrs.cc
+--- a/riscv/csrs.cc
++++ b/riscv/csrs.cc
+@@ -1218,1 +1218,4 @@
+-  return masked_csr_t::unlogged_write(adjusted_val);
++  const bool written = masked_csr_t::unlogged_write(adjusted_val);
++  if (address == CSR_MENVCFG || address == CSR_HENVCFG)
++    state->time->update_timer_pending();
++  return written;
+@@ -1372,9 +1375,25 @@
+-void time_counter_csr_t::sync(const reg_t val) noexcept {
+-  shadow_val = val;
+-  if (proc->extension_enabled(EXT_SSTC)) {
+-    const reg_t mip_val = (shadow_val >= state->stimecmp->read() ? MIP_STIP : 0) |
+-      (shadow_val + state->htimedelta->read() >= state->vstimecmp->read() ? MIP_VSTIP : 0);
+-    const reg_t mask = ((state->menvcfg->read() & MENVCFG_STCE) ? MIP_STIP : 0) | ((state->henvcfg->read() & HENVCFG_STCE) ? MIP_VSTIP : 0);
+-    state->mip->backdoor_write_with_mask(mask, mip_val);
+-  }
+-}
++void time_counter_csr_t::sync(const reg_t val) noexcept {
++  shadow_val = val;
++  update_timer_pending();
++}
++
++void time_counter_csr_t::update_timer_pending() noexcept {
++  if (!proc->extension_enabled(EXT_SSTC))
++    return;
++
++  // STIP becomes software-writable when menvcfg.STCE is zero. Preserve it.
++  reg_t mask = (state->menvcfg->read() & MENVCFG_STCE) ? MIP_STIP : 0;
++  reg_t pending = shadow_val >= state->stimecmp->read() ? MIP_STIP : 0;
++  if (proc->extension_enabled('H')) {
++    // This implementation stores only the hardware comparator in raw mip.VSTIP;
++    // mip_csr_t::read() ORs the independently stored hvip.VSTIP into that value.
++    // Unlike software STIP, the comparator must also be refreshed when disabled.
++    // henvcfg->read() includes the effective menvcfg.STCE gate (Sstc section 3).
++    mask |= MIP_VSTIP;
++    const reg_t guest_time = shadow_val + state->htimedelta->read();
++    if ((state->henvcfg->read() & HENVCFG_STCE) &&
++        guest_time >= state->vstimecmp->read())
++      pending |= MIP_VSTIP;
++  }
++  state->mip->backdoor_write_with_mask(mask, pending);
++}
+@@ -1873,9 +1892,10 @@
+-stimecmp_csr_t::stimecmp_csr_t(processor_t* const proc, const reg_t addr, const reg_t imask):
+-  basic_csr_t(proc, addr, 0), intr_mask(imask) {
+-}
+-
+-bool stimecmp_csr_t::unlogged_write(const reg_t val) noexcept {
+-  const reg_t mask = ((state->menvcfg->read() & MENVCFG_STCE) ? MIP_STIP : 0) | ((state->henvcfg->read() & HENVCFG_STCE) ? MIP_VSTIP : 0);
+-  state->mip->backdoor_write_with_mask(mask, state->time->read() >= val ? intr_mask : 0);
+-  return basic_csr_t::unlogged_write(val);
+-}
++stimecmp_csr_t::stimecmp_csr_t(processor_t* const proc, const reg_t addr):
++  basic_csr_t(proc, addr, 0) {
++}
++
++bool stimecmp_csr_t::unlogged_write(const reg_t val) noexcept {
++  const bool written = basic_csr_t::unlogged_write(val);
++  // Re-evaluate both sources independently, using raw time even for VS writes.
++  state->time->update_timer_pending();
++  return written;
++}
+diff --git a/riscv/csr_init.cc b/riscv/csr_init.cc
+--- a/riscv/csr_init.cc
++++ b/riscv/csr_init.cc
+@@ -408,2 +408,2 @@
+-    stimecmp = std::make_shared<stimecmp_csr_t>(proc, CSR_STIMECMP, MIP_STIP);
+-    vstimecmp = std::make_shared<stimecmp_csr_t>(proc, CSR_VSTIMECMP, MIP_VSTIP);
++    stimecmp = std::make_shared<stimecmp_csr_t>(proc, CSR_STIMECMP);
++    vstimecmp = std::make_shared<stimecmp_csr_t>(proc, CSR_VSTIMECMP);

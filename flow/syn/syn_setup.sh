@@ -1,8 +1,6 @@
-#	flow/syn/syn_setup.example.sh
-#	Source from syn_setup.sh (which is .gitignored). Sets the env vars
-#	the rest of the flow (syn_yosys.sh / syn_sta.sh / tcl/*.tcl) reads.
-#	Copy to syn_setup.sh and edit if you need to change paths or
-#	timing.
+#	flow/syn/syn_setup.sh -- shared synthesis defaults.
+#	Source from the synthesis drivers. Override paths, defines and timing
+#	through environment variables; no per-machine copy is required.
 
 #	NanGate45 typical-corner liberty file. Adjust if it moves.
 #	Searched relative to this directory: ../../../src/flow (sibling of the karu64
@@ -38,13 +36,10 @@ export KARU_ABC_UPRATE_PS="${KARU_ABC_UPRATE_PS:-2000}"
 #	critical path; very slow on this design (full FPU). Off by default.
 #export KARU_FLATTEN=1
 
-#	Verilog `-D` flags passed through to read_verilog. Default config
-#	is the "small core" sweep result: 4-cycle integer multiplier,
-#	bit-serial integer divider, 4-cycle F mantissa multiplier,
-#	bit-serial D mantissa multiplier. This is ~32% smaller (255 kGE vs
-#	374 kGE) than the all-combinational variant and is the sweet spot
-#	per the README's area sweep. To let the RTL headers resolve their
-#	own non-SIM defaults instead, set KARU_DEFINES="".
+#	Verilog `-D` flags passed through to read_verilog. Balanced arithmetic
+#	does not disable features: the headers still enable FP, V and Zvbb.
+#	Add KARU_NO_V for a scalar row, or set KARU_DEFINES="" to let the
+#	headers resolve all non-SIM defaults without explicit overrides.
 export KARU_DEFINES="${KARU_DEFINES-KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64}"
 
 #	IO budget as % of clock period. set_input_delay is applied as

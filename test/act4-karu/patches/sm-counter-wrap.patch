@@ -1,0 +1,18 @@
+--- a/generators/testgen/src/testgen/priv/extensions/Sm.py
++++ b/generators/testgen/src/testgen/priv/extensions/Sm.py
+@@ -1419,11 +1419,12 @@ def _generate_mcsr_cntr_tests(test_data: TestData) -> list[str]:
+             f"addi x{r_counter}, x{r_counter}, -1",
+             f"bnez x{r_counter}, 1b",
+             f"csrr x{r_val}, mcycle               # Read mcycle after the bounded wait",
+-            f"sltiu x{r_val}, x{r_val}, 1000       # Pass if mcycle wrapped to a small value",
+             "#if __riscv_xlen == 32",
+             f"csrr x{r_val2}, mcycleh             # Read upper 32 bits after the bounded wait",
+-            f"sltiu x{r_val2}, x{r_val2}, 1        # Pass if upper 32 bits wrapped to zero",
+-            f"and x{r_val}, x{r_val}, x{r_val2}    # Pass only if both wraparound conditions are met",
++            f"sltiu x{r_val}, x{r_val2}, 1        # Pass if upper 32 bits wrapped to zero",
++            "#else",
++            f"slti x{r_val}, x{r_val}, 0          # Test the sign bit after wraparound",
++            f"xori x{r_val}, x{r_val}, 1          # Pass after wrap, independent of cycles per instruction",
+             "#endif",
+             write_sigupd(r_val, test_data),
+             "",

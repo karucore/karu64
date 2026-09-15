@@ -1,0 +1,38 @@
+{
+  "base": {
+    "privileged_isa_version": "Privileged_ISA_1_13",
+    "medeleg": { "delegatable_bits": { "len": 64, "value": "0xB3FF" } },
+    "mideleg": { "delegatable_bits": { "len": "xlen", "value": "0x222" } },
+    "scounteren_writable_bits": { "len": 32, "value": "0xFFFF_FFFF" },
+    "xtval_nonzero": { "software_breakpoint": true }
+  },
+  "platform": {
+    "archid": 0
+  },
+  "memory": {
+    "physaddr_bits": 32
+  },
+  "extensions": {
+    "S": { "supported": true },
+    "U": { "supported": true },
+    "Svbare": { "supported": true },
+    "Sv39": { "supported": true },
+    "Svade": { "supported": true },
+    "Svnapot": { "supported": true },
+    "Svpbmt": { "supported": true },
+    "Svinval": { "supported": true },
+    "Sstc": { "supported": true },
+    "B": { "supported": true },
+    "Zba": { "supported": true },
+    "Zbb": { "supported": true },
+    "Zbs": { "supported": true },
+    "Zicbom": { "supported": true },
+    "Zicbop": { "supported": true },
+    "Zicboz": { "supported": true },
+    "Smnpm": { "supported": true, "supported_pmlen_7": true, "supported_pmlen_16": true },
+    "Ssnpm": { "supported": true, "supported_pmlen_7": true, "supported_pmlen_16": true },
+    "Sscounterenw": { "supported": true },
+    "Sstvala": { "supported": true },
+    "Ssccptr": { "supported": true }
+  }
+}

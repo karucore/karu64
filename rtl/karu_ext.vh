@@ -5,7 +5,11 @@
 //  Base core is RV64I. The C, A, M, B, F, D and V extensions are individually
 //  pluggable. Vector crypto (Zvk*) is opt-IN, scoped by its own KARU_ZVK*
 //  flags in the section further down. Privilege and profiling features are
-//  also build-time scoped for area studies.
+//  also build-time scoped for area studies. KARU_H enables the implemented
+//  H/two-stage-translation block; it alone does not select the Sha/profile
+//  composition or establish complete architectural/platform certification.
+//  KARU_RVA23S64 opts into the mandatory-feature build composition below;
+//  it is not a platform/compliance certification or a new release default.
 //
 //  Default: all extensions ENABLED unless the build command opts out. Opt OUT
 //  on the build line with any of:
@@ -16,6 +20,7 @@
 //      -DKARU_NO_F   drop the F extension (single-precision FP)
 //      -DKARU_NO_D   drop the D extension (double-precision FP)
 //      -DKARU_NO_V   drop the V extension (vector; also drops Zvk* crypto)
+//      -DKARU_NO_ZVBB drop full Zvbb from an otherwise normal V build
 //      -DKARU_NO_S   drop S-mode/Sv39 (M/U privilege only; no MMU walkers)
 //      -DKARU_NO_HPM drop mhpmcounter3..31/mhpmevent3..31
 //      -DKARU_NO_MEM drop scalar L1/cache wrapper in non-vector builds
@@ -28,7 +33,8 @@
 //
 //  The RTL checks ONLY the canonical positive defines resolved here:
 //      KARU_EN_C / KARU_EN_A / KARU_EN_M / KARU_EN_B / KARU_EN_F / KARU_EN_D
-//      KARU_EN_V / KARU_EN_S / KARU_EN_HPM / KARU_EN_MEM
+//      KARU_EN_V / KARU_EN_S / KARU_EN_H / KARU_EN_HPM / KARU_EN_MEM
+//      KARU_EN_ZVBB / KARU_EN_ZVKB
 //  Never test KARU_NO_* directly in the RTL.
 
 `ifndef KARU_EXT_VH
@@ -37,8 +43,61 @@
 //  ======================================================================
 //  System / board configuration
 //  ======================================================================
+//  KARU_ASIC removes FPGA power-up values from RAM/register-file storage and
+//  the v0 shadow, and excludes FPGA RAM inference attributes. It does not
+//  change memory read latency or instantiate a foundry macro. Architectural
+//  control reset remains required; unreset data must be written before use.
 `timescale  1 ns / 1 ps
 `default_nettype none
+
+//  --- opt-in RVA23S64 build contract ---
+//  Ratified profile: riscv/riscv-profiles, src/rva23-profile.adoc,
+//  "RVA23S64 Mandatory Extensions". The default baseline supplies the U64
+//  instruction leaves, Zifencei and S-mode mechanisms. Sha additionally needs
+//  H (which enables Ssstateen below), and S64 requires Sscofpmf. Do not silently
+//  override an ISA opt-out and produce a configuration with a misleading name.
+//  PMA, progress, DIEL, complete privilege behavior and platform certification
+//  remain independent validation obligations; this switch only binds knobs.
+//  Zvk, draft Keccak and Smcntrpmf are optional and are NOT implied here.
+//  RV64 is structural; karu64 checks the validated VLEN256/ELEN64/VBUS128 geometry.
+`ifdef KARU_RVA23S64
+    `ifdef KARU_NO_C
+        `error "KARU_RVA23S64 conflicts with KARU_NO_C"
+    `endif
+    `ifdef KARU_NO_A
+        `error "KARU_RVA23S64 conflicts with KARU_NO_A"
+    `endif
+    `ifdef KARU_NO_M
+        `error "KARU_RVA23S64 conflicts with KARU_NO_M"
+    `endif
+    `ifdef KARU_NO_B
+        `error "KARU_RVA23S64 conflicts with KARU_NO_B"
+    `endif
+    `ifdef KARU_NO_F
+        `error "KARU_RVA23S64 conflicts with KARU_NO_F"
+    `endif
+    `ifdef KARU_NO_D
+        `error "KARU_RVA23S64 conflicts with KARU_NO_D"
+    `endif
+    `ifdef KARU_NO_V
+        `error "KARU_RVA23S64 conflicts with KARU_NO_V"
+    `endif
+    `ifdef KARU_NO_ZVBB
+        `error "KARU_RVA23S64 conflicts with KARU_NO_ZVBB"
+    `endif
+    `ifdef KARU_NO_S
+        `error "KARU_RVA23S64 conflicts with KARU_NO_S"
+    `endif
+    `ifdef KARU_NO_HPM
+        `error "KARU_RVA23S64 conflicts with KARU_NO_HPM (Sscofpmf requires HPM)"
+    `endif
+    `ifndef KARU_H
+        `define KARU_H
+    `endif
+    `ifndef KARU_SSCOFPMF
+        `define KARU_SSCOFPMF
+    `endif
+`endif
 
 //  --- cascade the opt-outs downward (V > D > F) ---
 `ifdef KARU_NO_F
@@ -77,6 +136,16 @@
 `ifndef KARU_NO_S
     `define KARU_EN_S
 `endif
+// karu64 has fixed RV64 privilege state. Guest development requires the
+// supervisor machinery and automatically includes the state-enable hierarchy.
+`ifdef KARU_H
+    `ifdef KARU_EN_S
+        `define KARU_EN_H
+        `define KARU_EN_SSTATEEN
+    `else
+        `error "KARU_H requires supervisor support; remove KARU_NO_S"
+    `endif
+`endif
 `ifndef KARU_NO_HPM
     `define KARU_EN_HPM
 `endif
@@ -99,6 +168,21 @@
     `endif
 `endif
 
+//  --- Zvbb/Zvkb vector bit-manipulation ---
+//  Full Zvbb is part of RVA23U64 and is therefore present in every normal V
+//  build.  -DKARU_NO_ZVBB is the area-isolation opt-out; -DKARU_ZVKB can be
+//  combined with it to retain only the smaller crypto bit-manipulation subset.
+//  Zvbb is a strict superset of Zvkb, so its internal enable also enables the
+//  shared Zvkb lane operations.
+`ifndef KARU_NO_V
+    `ifndef KARU_NO_ZVBB
+        `define KARU_EN_ZVBB
+    `endif
+    `ifdef KARU_EN_ZVBB
+        `define KARU_EN_ZVKB
+    `endif
+`endif
+
 //  --- standard Zvk vector-crypto leaves ---
 //  Opt-IN only (default OFF), like KARU_KECCAK. The coarse -DKARU_ZVK umbrella
 //  enables all implemented standard leaves. Each official leaf can also be
@@ -109,8 +193,8 @@
 //      -DKARU_ZVKSED   SM4
 //      -DKARU_ZVKSH    SM3
 //      -DKARU_ZVKG     GHASH/GCM
-//      -DKARU_ZVKB     vandn/vbrev8/vrev8/vrol/vror (bit-manip glue; the leaf
-//                      that completes the official Zvkn/Zvks profiles)
+//      -DKARU_ZVKB     vandn/vbrev8/vrev8/vrol/vror only (normally already
+//                      supplied by default-on Zvbb)
 //  Needs V; all are suppressed when V is compiled out. KARU_EN_ZVK is the
 //  aggregate "any standard Zvk *crypto* leaf is present" define used for the
 //  shared karu_vcrypto plumbing. Zvkb deliberately does NOT imply KARU_EN_ZVK:
@@ -123,10 +207,14 @@
         `define KARU_EN_ZVKSED
         `define KARU_EN_ZVKSH
         `define KARU_EN_ZVKG
-        `define KARU_EN_ZVKB
+        `ifndef KARU_EN_ZVKB
+            `define KARU_EN_ZVKB
+        `endif
     `endif
     `ifdef KARU_ZVKB
-        `define KARU_EN_ZVKB
+        `ifndef KARU_EN_ZVKB
+            `define KARU_EN_ZVKB
+        `endif
     `endif
     `ifdef KARU_ZVKNED
         `define KARU_EN_ZVKNED
@@ -174,7 +262,9 @@
 //  Needs S-mode (it gates S/U access), so it is suppressed when S is compiled out.
 `ifdef KARU_SSTATEEN
     `ifdef KARU_EN_S
-        `define KARU_EN_SSTATEEN
+        `ifndef KARU_EN_SSTATEEN
+            `define KARU_EN_SSTATEEN
+        `endif
     `endif
 `endif
 

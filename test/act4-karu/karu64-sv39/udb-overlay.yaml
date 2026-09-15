@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Privileged-1.13 verification target, not a claim that the audit is complete.
+name: karu64-sv39
+description: |
+  karu64 RV64GCV supervisor development baseline: S/U, Bare/Sv39, Svade,
+  Svnapot/Svpbmt, and non-H Svinval/Sstc on the RAM-only HTIF simulator.
+  This is a verification target, not an RVA23S64 or platform-compliance claim.
+extension_versions:
+  Sm: "= 1.13.0"
+  S: "= 1.13.0"
+  U: "= 1.0.0"
+  Svbare: "= 1.0.0"
+  Sv39: "= 1.0.0"
+  Svade: "= 1.0.0"
+  Svnapot: "= 1.0.0"
+  Svpbmt: "= 1.0.0"
+  Svinval: "= 1.0.0"
+  Sstc: "= 1.0.0"
+  B: "= 1.0.0"
+  Zba: "= 1.0.0"
+  Zbb: "= 1.0.0"
+  Zbs: "= 1.0.0"
+  Zicbom: "= 1.0.0"
+  Zicbop: "= 1.0.0"
+  Zicboz: "= 1.0.0"
+  Smnpm: "= 1.0.0"
+  Ssnpm: "= 1.0.0"
+  Sscounterenw: "= 1.0.0"
+  Sstvecd: "= 1.0.0"
+  Sstvala: "= 1.0.0"
+  Ssu64xl: "= 1.0.0"
+  Ssccptr: "= 1.0.0"
+remove_params: [ARCH_ID_VALUE]
+params:
+  # UDB's false setting describes the mandatory, read-only-zero marchid CSR.
+  MARCHID_IMPLEMENTED: false
+  # Reserved xtvec modes retain the new BASE but normalize MODE to Direct.
+  MTVEC_ILLEGAL_WRITE_BEHAVIOR: custom
+  VECTOR_LS_MISALIGNED_LEGAL: true
+  VECTOR_LS_WHOLEREG_MISALIGNED_LEGAL: true
+  # Legally issued FP/vector operations may dirty context without changing
+  # a register value, including stores and reads of their state CSRs.
+  HW_MSTATUS_FS_DIRTY_UPDATE: imprecise
+  HW_MSTATUS_VS_DIRTY_UPDATE: imprecise
+  MUTABLE_MISA_B: false
+  CACHE_BLOCK_SIZE: 64
+  FORCE_UPGRADE_CBO_INVAL_TO_FLUSH: false
+  PMLEN: 16
+  MUTABLE_MISA_U: false
+  U_MODE_ENDIANNESS: little
+  UXLEN: [64]
+  TRAP_ON_ECALL_FROM_U: true
+  MUTABLE_MISA_S: false
+  ASID_WIDTH: 16
+  S_MODE_ENDIANNESS: little
+  SXLEN: [64]
+  TRAP_ON_ECALL_FROM_S: true
+  SATP_MODE_BARE: true
+  STVEC_MODES: [0, 1]
+  STVEC_BASE_ALIGNMENT_VECTORED: 4
+  STVAL_WIDTH: 64
+  # The PMA rejects addresses above the 32-bit external physical map.
+  PHYS_ADDR_WIDTH: 32
+  REPORT_VA_IN_MTVAL_ON_LOAD_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_STORE_AMO_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_INSTRUCTION_PAGE_FAULT: true
+  REPORT_VA_IN_MTVAL_ON_BREAKPOINT: true
+  REPORT_VA_IN_STVAL_ON_BREAKPOINT: true
+  REPORT_VA_IN_STVAL_ON_LOAD_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_MISALIGNED: true
+  REPORT_VA_IN_STVAL_ON_LOAD_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_ACCESS_FAULT: true
+  REPORT_VA_IN_STVAL_ON_LOAD_PAGE_FAULT: true
+  REPORT_VA_IN_STVAL_ON_STORE_AMO_PAGE_FAULT: true
+  REPORT_VA_IN_STVAL_ON_INSTRUCTION_PAGE_FAULT: true
+  REPORT_ENCODING_IN_STVAL_ON_ILLEGAL_INSTRUCTION: true
+  SCOUNTENABLE_EN: [true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, true]

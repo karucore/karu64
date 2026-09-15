@@ -3,12 +3,14 @@
 //	wishbone MAC) + the sim MII loopback, and presents karu64's simple strobed
 //	MMIO-slave convention to the SoC interconnect.
 //
-//	karu64's LSU issues only 8-byte-aligned MMIO reads (it extracts the wanted
-//	32-bit lane itself), so a read returns BOTH 32-bit halves of the addressed
-//	64-bit unit -> two wishbone read beats. A write drives whichever 32-bit
-//	lane(s) wstrb selects -> one or two wishbone write beats. CSR accesses are
-//	always full 32-bit words (sel = 1111); only slot-SRAM writes use sub-word
-//	sel, which the core honours (full_memory_we).
+//	Reads retain their AXI size: byte/halfword/word reads access only the
+//	selected 32-bit Wishbone word, while 8-byte reads access both halves.
+//	Data stays in its original 64-bit AXI byte lanes. This matters for Svpbmt
+//	IO, where reading an adjacent device register can have a side effect.
+//	A write drives whichever 32-bit
+//	lane(s) wstrb selects -> one or two wishbone write beats. CSR registers
+//	are word-sized; narrow reads select bytes within only that word. Slot-SRAM
+//	writes honour sub-word sel (full_memory_we); CSR write semantics are unchanged.
 //
 //	Multi-cycle: a read/write takes several cycles (wishbone ack latency x beats).
 //	`busy` is high for the duration; rd_done/wr_done pulse for one cycle when the
@@ -23,8 +25,9 @@ module karu_eth (
 	input  wire			rst,
 
 	//	== simple MMIO slave (karu64 strobed convention) ==
-	input  wire			rd_req,		//	pulse: start a 64-bit read @rd_addr
+	input  wire			rd_req,		//	pulse: start a read @rd_addr
 	input  wire [31:0]	rd_addr,
+	input  wire [2:0]	rd_size,	//	AXI log2(bytes), 0..3
 	output reg			rd_done,	//	1-cyc pulse: rd_data valid
 	output reg  [63:0]	rd_data,
 
@@ -190,14 +193,22 @@ module karu_eth (
 	//	8-byte-aligned byte base of the access, and the two 32-bit word addrs.
 	wire [31:0] base8_r = {rd_addr[31:3], 3'b000};
 	wire [31:0] base8_w = {wr_addr[31:3], 3'b000};
+	reg [3:0] read_sel;
+	always @(*) begin
+		case (rd_size)
+			3'd0: read_sel = 4'b0001 << rd_addr[1:0];
+			3'd1: read_sel = 4'b0011 << rd_addr[1:0];
+			default: read_sel = 4'b1111;
+		endcase
+	end
 
 	always @(*) begin
 		wb_cyc_r = 1'b0; wb_stb_r = 1'b0; wb_we_r = 1'b0;
 		wb_adr = 30'b0; wb_sel = 4'b0; wb_dat_w = 32'b0;
 		case (st)
-			S_R0:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=0; wb_adr=adr_lo; wb_sel=4'hf; end
+			S_R0:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=0; wb_adr=adr_lo; wb_sel=sel_lo; end
 			S_R0G: begin wb_cyc_r=1; wb_stb_r=0; end	//	gap: cyc held, stb low
-			S_R1:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=0; wb_adr=adr_hi; wb_sel=4'hf; end
+			S_R1:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=0; wb_adr=adr_hi; wb_sel=sel_hi; end
 			S_W0:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=1; wb_adr=adr_lo; wb_sel=sel_lo; wb_dat_w=dat_lo; end
 			S_W0G: begin wb_cyc_r=1; wb_stb_r=0; end	//	gap: cyc held, stb low
 			S_W1:  begin wb_cyc_r=1; wb_stb_r=1; wb_we_r=1; wb_adr=adr_hi; wb_sel=sel_hi; wb_dat_w=dat_hi; end
@@ -217,8 +228,11 @@ module karu_eth (
 				S_IDLE: begin
 					if (rd_req) begin
 						adr_lo <= base8_r[31:2];
-						adr_hi <= (base8_r + 32'd4) >> 2;
-						st     <= S_R0;
+						adr_hi <= {base8_r[31:3],1'b1};
+						sel_lo <= rd_size == 3 || !rd_addr[2] ? read_sel : 4'b0;
+						sel_hi <= rd_size == 3 || rd_addr[2] ? read_sel : 4'b0;
+						rd_lo  <= 0;
+						st     <= rd_size != 3 && rd_addr[2] ? S_R1 : S_R0;
 					end else if (wr_req) begin
 						adr_lo <= base8_w[31:2];
 						adr_hi <= (base8_w + 32'd4) >> 2;
@@ -231,7 +245,13 @@ module karu_eth (
 						else                           wr_done <= 1'b1;	//	empty write
 					end
 				end
-				S_R0:  if (wb_ack) begin rd_lo <= wb_dat_r; st <= S_R0G; end
+				S_R0:  if (wb_ack) begin
+						rd_lo <= wb_dat_r;
+						if (sel_hi != 0) st <= S_R0G;
+						else begin
+							rd_data <= {32'b0,wb_dat_r}; rd_done <= 1'b1; st <= S_IDLE;
+						end
+					end
 				S_R0G: if (!wb_ack) st <= S_R1;	//	wait for stale ack to clear
 				S_R1:  if (wb_ack) begin
 						rd_data <= {wb_dat_r, rd_lo};
@@ -248,4 +268,11 @@ module karu_eth (
 			endcase
 		end
 	end
+// synthesis translate_off
+	always @(posedge clk) if (!rst && rd_req) begin
+		if (rd_size > 3 || (rd_size == 1 && rd_addr[0]) ||
+			(rd_size == 2 && rd_addr[1:0] != 0))
+			$fatal(1,"Ethernet narrow read must be naturally aligned, size <= 8 bytes");
+	end
+// synthesis translate_on
 endmodule

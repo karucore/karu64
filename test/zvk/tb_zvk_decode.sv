@@ -205,8 +205,25 @@ module tb_zvk_decode;
         check_varith(32'h5222c0d7, "vror.vx");
         check_varith(32'h5220b0d7, "vror.vi 1");
         check_varith(32'h5620b0d7, "vror.vi 33");
-        //  vbrev.v (VXUNARY0 vs1=01010) is Zvbb-only, NOT Zvkb -> still traps
+`ifdef KARU_EN_ZVBB
+        check_varith(32'h4a2520d7, "vbrev.v");
+        check_varith(32'h4a2620d7, "vclz.v");
+        check_varith(32'h4a26a0d7, "vctz.v");
+        check_varith(32'h4a2720d7, "vcpop.v");
+        check_varith(32'hd62180d7, "vwsll.vv");
+        check_varith(32'hd621c0d7, "vwsll.vx");
+        check_varith(32'hd623b0d7, "vwsll.vi");
+`else
+        //  These selectors and the widening shift are the Zvbb additions,
+        //  not members of the smaller Zvkb leaf.
         check_trap(32'h4a2520d7, "vbrev.v");
+        check_trap(32'h4a2620d7, "vclz.v");
+        check_trap(32'h4a26a0d7, "vctz.v");
+        check_trap(32'h4a2720d7, "vcpop.v");
+        check_trap(32'hd62180d7, "vwsll.vv");
+        check_trap(32'hd621c0d7, "vwsll.vx");
+        check_trap(32'hd623b0d7, "vwsll.vi");
+`endif
 `else
         check_trap(32'h062180d7, "vandn.vv");
         check_trap(32'h4a2420d7, "vbrev8.v");
@@ -214,7 +231,19 @@ module tb_zvk_decode;
         check_trap(32'h562180d7, "vrol.vv");
         check_trap(32'h522180d7, "vror.vv");
         check_trap(32'h5620b0d7, "vror.vi 33");
+        check_trap(32'h4a2520d7, "vbrev.v");
+        check_trap(32'h4a2620d7, "vclz.v");
+        check_trap(32'h4a26a0d7, "vctz.v");
+        check_trap(32'h4a2720d7, "vcpop.v");
+        check_trap(32'hd62180d7, "vwsll.vv");
+        check_trap(32'hd621c0d7, "vwsll.vx");
+        check_trap(32'hd623b0d7, "vwsll.vi");
 `endif
+
+        //  Reserved holes in the VXUNARY0 selector table must remain traps in
+        //  full Zvbb, Zvkb-only, and vector-bitmanip-off configurations.
+        check_trap(32'h4a25a0d7, "VXUNARY0 sel 01011");
+        check_trap(32'h4a27a0d7, "VXUNARY0 sel 01111");
 
         $display("PASS zvk decode");
         $finish;

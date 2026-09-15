@@ -12,8 +12,9 @@
 //     its 64 bits it processes 64/SEW elements in parallel (e8x8 / e16x4 /
 //     e32x2 / e64x1), carry-killed at SEW boundaries. Covers the element-local,
 //     normal-width ops: ALU, vmerge/vmv.v.*, vid, vmv.s.x, vadc/vsbc, fixed-point
-//     (sat/avg/ssr/vsmul), and combinational mul/mac/div (gated by MUL_COMB/
-//     DIV_COMB -- when the serial multiplier/divider is configured the parent
+//     (sat/avg/ssr/vsmul), Zvkb rotates/reversals, Zvbb element bit-reverse/
+//     count and combinational mul/mac/div (gated by MUL_COMB/DIV_COMB -- when
+//     the serial multiplier/divider is configured the parent
 //     runs those and the lane's mul/div logic constant-folds away). Output:
     //     res_chunk (+ lane_sat). The element expressions match karu_varith's
     //     per-element arithmetic semantics.
@@ -56,6 +57,7 @@ module karu_vlane #(
     input  wire        is_mul, is_div, is_mac, is_mvmerge, is_vid, is_vmvsx,
     input  wire        is_carry_e, is_satadd, is_avg, is_vssr, is_vsmul,
     input  wire        is_brev8, is_rev8,   //  Zvkb VXUNARY0 reversals (0 when no Zvkb)
+    input  wire        is_brev, is_vclz, is_vctz, is_vcpop, //  remaining Zvbb VXUNARY0
     input  wire        mv_is_vv,
     input  wire [63:0] mv_splat,
     //  per-lane predicate context
@@ -113,15 +115,145 @@ module karu_vlane #(
         };
     endfunction
 
-    function [63:0] zvkb_rev8_elem; input [63:0] v; input [6:0] w;
-        case (w)
-            7'd8:    zvkb_rev8_elem = {56'b0, v[7:0]};
-            7'd16:   zvkb_rev8_elem = {48'b0, v[7:0], v[15:8]};
-            7'd32:   zvkb_rev8_elem = {32'b0, v[7:0], v[15:8], v[23:16], v[31:24]};
-            default: zvkb_rev8_elem = {v[7:0], v[15:8], v[23:16], v[31:24],
-                                       v[39:32], v[47:40], v[55:48], v[63:56]};
+    //  Reverse byte order independently within every element in this lane.
+    //  Fixed slices are intentional: variable-width loop versions made the
+    //  Yosys front end expand badly in earlier Zvk synthesis experiments.
+    function [63:0] zvkb_rev8_chunk; input [63:0] v; input [2:0] ew;
+        case (ew)
+            3'd0: zvkb_rev8_chunk = v;
+            3'd1: zvkb_rev8_chunk = {
+                    v[55:48], v[63:56], v[39:32], v[47:40],
+                    v[23:16], v[31:24], v[7:0],   v[15:8]};
+            3'd2: zvkb_rev8_chunk = {
+                    v[39:32], v[47:40], v[55:48], v[63:56],
+                    v[7:0],   v[15:8],  v[23:16], v[31:24]};
+            default: zvkb_rev8_chunk = {
+                    v[7:0],   v[15:8],  v[23:16], v[31:24],
+                    v[39:32], v[47:40], v[55:48], v[63:56]};
         endcase
     endfunction
+`endif
+
+`ifdef KARU_EN_ZVBB
+    //  Bounded 8-bit leaves for the hierarchical count networks below. The
+    //  largest element is assembled from byte/halfword/word results, giving
+    //  logarithmic depth instead of the 64-step loop used by the scalar B unit.
+    function [3:0] zvbb_pop8; input [7:0] v;
+        reg [1:0] p0, p1, p2, p3; reg [2:0] q0, q1;
+        begin
+            p0 = v[0] + v[1]; p1 = v[2] + v[3];
+            p2 = v[4] + v[5]; p3 = v[6] + v[7];
+            q0 = {1'b0,p0} + {1'b0,p1}; q1 = {1'b0,p2} + {1'b0,p3};
+            zvbb_pop8 = {1'b0,q0} + {1'b0,q1};
+        end
+    endfunction
+
+    function [3:0] zvbb_clz8; input [7:0] v;
+        begin
+            casez (v)
+                8'b1???????: zvbb_clz8 = 4'd0;
+                8'b01??????: zvbb_clz8 = 4'd1;
+                8'b001?????: zvbb_clz8 = 4'd2;
+                8'b0001????: zvbb_clz8 = 4'd3;
+                8'b00001???: zvbb_clz8 = 4'd4;
+                8'b000001??: zvbb_clz8 = 4'd5;
+                8'b0000001?: zvbb_clz8 = 4'd6;
+                8'b00000001: zvbb_clz8 = 4'd7;
+                default:     zvbb_clz8 = 4'd8;
+            endcase
+        end
+    endfunction
+
+    function [3:0] zvbb_ctz8; input [7:0] v;
+        begin
+            casez (v)
+                8'b???????1: zvbb_ctz8 = 4'd0;
+                8'b??????10: zvbb_ctz8 = 4'd1;
+                8'b?????100: zvbb_ctz8 = 4'd2;
+                8'b????1000: zvbb_ctz8 = 4'd3;
+                8'b???10000: zvbb_ctz8 = 4'd4;
+                8'b??100000: zvbb_ctz8 = 4'd5;
+                8'b?1000000: zvbb_ctz8 = 4'd6;
+                8'b10000000: zvbb_ctz8 = 4'd7;
+                default:     zvbb_ctz8 = 4'd8;
+            endcase
+        end
+    endfunction
+
+    wire [3:0] zvbb_pc8 [0:7], zvbb_lz8 [0:7], zvbb_tz8 [0:7];
+    wire [4:0] zvbb_pc16[0:3], zvbb_lz16[0:3], zvbb_tz16[0:3];
+    wire [5:0] zvbb_pc32[0:1], zvbb_lz32[0:1], zvbb_tz32[0:1];
+    wire [6:0] zvbb_pc64, zvbb_lz64, zvbb_tz64;
+    genvar ZB8, ZB16, ZB32;
+    generate
+        for (ZB8 = 0; ZB8 < 8; ZB8 = ZB8 + 1) begin : g_zvbb_byte_count
+            assign zvbb_pc8[ZB8] = zvbb_pop8(vs2_chunk[ZB8*8 +: 8]);
+            assign zvbb_lz8[ZB8] = zvbb_clz8(vs2_chunk[ZB8*8 +: 8]);
+            assign zvbb_tz8[ZB8] = zvbb_ctz8(vs2_chunk[ZB8*8 +: 8]);
+        end
+        for (ZB16 = 0; ZB16 < 4; ZB16 = ZB16 + 1) begin : g_zvbb_half_count
+            assign zvbb_pc16[ZB16] = {1'b0,zvbb_pc8[2*ZB16]} + {1'b0,zvbb_pc8[2*ZB16+1]};
+            assign zvbb_lz16[ZB16] = (|vs2_chunk[ZB16*16+8 +: 8])
+                    ? {1'b0,zvbb_lz8[2*ZB16+1]}
+                    : 5'd8 + {1'b0,zvbb_lz8[2*ZB16]};
+            assign zvbb_tz16[ZB16] = (|vs2_chunk[ZB16*16 +: 8])
+                    ? {1'b0,zvbb_tz8[2*ZB16]}
+                    : 5'd8 + {1'b0,zvbb_tz8[2*ZB16+1]};
+        end
+        for (ZB32 = 0; ZB32 < 2; ZB32 = ZB32 + 1) begin : g_zvbb_word_count
+            assign zvbb_pc32[ZB32] = {1'b0,zvbb_pc16[2*ZB32]} + {1'b0,zvbb_pc16[2*ZB32+1]};
+            assign zvbb_lz32[ZB32] = (|vs2_chunk[ZB32*32+16 +: 16])
+                    ? {1'b0,zvbb_lz16[2*ZB32+1]}
+                    : 6'd16 + {1'b0,zvbb_lz16[2*ZB32]};
+            assign zvbb_tz32[ZB32] = (|vs2_chunk[ZB32*32 +: 16])
+                    ? {1'b0,zvbb_tz16[2*ZB32]}
+                    : 6'd16 + {1'b0,zvbb_tz16[2*ZB32+1]};
+        end
+    endgenerate
+    assign zvbb_pc64 = {1'b0,zvbb_pc32[0]} + {1'b0,zvbb_pc32[1]};
+    assign zvbb_lz64 = (|vs2_chunk[63:32]) ? {1'b0,zvbb_lz32[1]}
+                                           : 7'd32 + {1'b0,zvbb_lz32[0]};
+    assign zvbb_tz64 = (|vs2_chunk[31:0])  ? {1'b0,zvbb_tz32[0]}
+                                           : 7'd32 + {1'b0,zvbb_tz32[1]};
+
+    reg [63:0] zvbb_pc_word, zvbb_lz_word, zvbb_tz_word;
+    always @(*) begin
+        zvbb_pc_word = 64'b0; zvbb_lz_word = 64'b0; zvbb_tz_word = 64'b0;
+        case (vsew)
+            3'd0: begin
+                zvbb_pc_word = {{4'b0,zvbb_pc8[7]}, {4'b0,zvbb_pc8[6]},
+                                {4'b0,zvbb_pc8[5]}, {4'b0,zvbb_pc8[4]},
+                                {4'b0,zvbb_pc8[3]}, {4'b0,zvbb_pc8[2]},
+                                {4'b0,zvbb_pc8[1]}, {4'b0,zvbb_pc8[0]}};
+                zvbb_lz_word = {{4'b0,zvbb_lz8[7]}, {4'b0,zvbb_lz8[6]},
+                                {4'b0,zvbb_lz8[5]}, {4'b0,zvbb_lz8[4]},
+                                {4'b0,zvbb_lz8[3]}, {4'b0,zvbb_lz8[2]},
+                                {4'b0,zvbb_lz8[1]}, {4'b0,zvbb_lz8[0]}};
+                zvbb_tz_word = {{4'b0,zvbb_tz8[7]}, {4'b0,zvbb_tz8[6]},
+                                {4'b0,zvbb_tz8[5]}, {4'b0,zvbb_tz8[4]},
+                                {4'b0,zvbb_tz8[3]}, {4'b0,zvbb_tz8[2]},
+                                {4'b0,zvbb_tz8[1]}, {4'b0,zvbb_tz8[0]}};
+            end
+            3'd1: begin
+                zvbb_pc_word = {{11'b0,zvbb_pc16[3]}, {11'b0,zvbb_pc16[2]},
+                                {11'b0,zvbb_pc16[1]}, {11'b0,zvbb_pc16[0]}};
+                zvbb_lz_word = {{11'b0,zvbb_lz16[3]}, {11'b0,zvbb_lz16[2]},
+                                {11'b0,zvbb_lz16[1]}, {11'b0,zvbb_lz16[0]}};
+                zvbb_tz_word = {{11'b0,zvbb_tz16[3]}, {11'b0,zvbb_tz16[2]},
+                                {11'b0,zvbb_tz16[1]}, {11'b0,zvbb_tz16[0]}};
+            end
+            3'd2: begin
+                zvbb_pc_word = {{26'b0,zvbb_pc32[1]}, {26'b0,zvbb_pc32[0]}};
+                zvbb_lz_word = {{26'b0,zvbb_lz32[1]}, {26'b0,zvbb_lz32[0]}};
+                zvbb_tz_word = {{26'b0,zvbb_tz32[1]}, {26'b0,zvbb_tz32[0]}};
+            end
+            default: begin
+                zvbb_pc_word = {57'b0,zvbb_pc64};
+                zvbb_lz_word = {57'b0,zvbb_lz64};
+                zvbb_tz_word = {57'b0,zvbb_tz64};
+            end
+        endcase
+    end
 `endif
 
     integer j, bb;
@@ -140,12 +272,14 @@ module karu_vlane #(
     reg         el_sat;
     reg [63:0]  eres;   reg [31:0] eg;  reg active;
 `ifdef KARU_EN_ZVKB
-    reg [63:0]  zvkb_r, zvkb_ror, zvkb_rol, zvkb_rev;
+    reg [63:0]  zvkb_r, zvkb_ror, zvkb_rol, zvbb_elem;
 `endif
 
     //  KARU_V_LANE_PIPE: 2-stage lane. Stage A extracts the SEW-decoded per-element
-    //  operands + LOCAL sewbP/smaskP/epcP/voldP (killing the high-fanout vsew net in
-    //  stage B); an optional register boundary; stage B does arith + select + assemble.
+    //  operands + LOCAL geometry and ALL stage-B control/predicate inputs;
+    //  an optional register boundary; stage B does arith + select + assemble.
+    //  In particular, raw v0_bits depends on the parent's SEW-dependent mask
+    //  selection. It must not bypass this boundary into the carry arithmetic.
     //  Knob off => the boundary is a wire (single combinational cycle). When on, the
     //  parent (karu_varith S_RUN) samples grp_res one cycle later.
     reg [63:0] auA[0:7], buA[0:7], asA[0:7], bsA[0:7], shA[0:7];
@@ -154,6 +288,31 @@ module karu_vlane #(
     reg [63:0] auP[0:7], buP[0:7], asP[0:7], bsP[0:7], shP[0:7];
     reg [31:0] egP[0:7];  reg actP[0:7];
     reg [6:0]  sewbP;  reg [3:0] epcP;  reg [63:0] smaskP, voldP;
+    reg [5:0] f6P;
+    reg [1:0] vxrmP;
+    reg [4:0] immP;
+    reg [63:0] rs1P, mv_splatP;
+    reg [31:0] vlP;
+    reg [7:0] v0P;
+    reg b_viP, vmP, mv_is_vvP;
+    reg is_mulP, is_divP, is_macP, is_mvmergeP, is_vidP, is_vmvsxP;
+    reg is_carry_eP, is_sataddP, is_avgP, is_vssrP, is_vsmulP;
+`ifdef KARU_EN_ZVKB
+    reg [63:0] zvbbA, zvbbP;
+    reg zvbb_unaryP;
+    wire zvbb_unary = is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop;
+    always @(*) begin
+        zvbbA = 64'b0;
+        if (is_brev8)      zvbbA = zvkb_brev8_word(vs2_chunk);
+        else if (is_rev8)  zvbbA = zvkb_rev8_chunk(vs2_chunk, vsew);
+`ifdef KARU_EN_ZVBB
+        else if (is_brev)  zvbbA = zvkb_rev8_chunk(zvkb_brev8_word(vs2_chunk), vsew);
+        else if (is_vclz)  zvbbA = zvbb_lz_word;
+        else if (is_vctz)  zvbbA = zvbb_tz_word;
+        else if (is_vcpop) zvbbA = zvbb_pc_word;
+`endif
+    end
+`endif
     integer ja, jp;
 
     //  ==================================================================
@@ -177,6 +336,16 @@ module karu_vlane #(
 `ifdef KARU_V_LANE_PIPE
     always @(posedge clk) begin
         sewbP <= sewbA; epcP <= epcA; smaskP <= smaskA; voldP <= voldA;
+        {f6P, vxrmP, immP, rs1P, mv_splatP, vlP, v0P, b_viP, vmP, mv_is_vvP,
+         is_mulP, is_divP, is_macP, is_mvmergeP, is_vidP, is_vmvsxP,
+         is_carry_eP, is_sataddP, is_avgP, is_vssrP, is_vsmulP} <=
+        {f6, vxrm, imm[4:0], rs1_v, mv_splat, vl, v0_bits, b_vi, vm, mv_is_vv,
+         is_mul, is_div, is_mac, is_mvmerge, is_vid, is_vmvsx,
+         is_carry_e, is_satadd, is_avg, is_vssr, is_vsmul};
+`ifdef KARU_EN_ZVKB
+        zvbbP <= zvbbA;
+        zvbb_unaryP <= zvbb_unary;
+`endif
         for (jp = 0; jp < 8; jp = jp + 1) begin
             auP[jp]<=auA[jp]; buP[jp]<=buA[jp]; asP[jp]<=asA[jp]; bsP[jp]<=bsA[jp];
             shP[jp]<=shA[jp]; egP[jp]<=egA[jp]; actP[jp]<=actA[jp];
@@ -185,6 +354,16 @@ module karu_vlane #(
 `else
     always @(*) begin
         sewbP = sewbA; epcP = epcA; smaskP = smaskA; voldP = voldA;
+        {f6P, vxrmP, immP, rs1P, mv_splatP, vlP, v0P, b_viP, vmP, mv_is_vvP,
+         is_mulP, is_divP, is_macP, is_mvmergeP, is_vidP, is_vmvsxP,
+         is_carry_eP, is_sataddP, is_avgP, is_vssrP, is_vsmulP} =
+        {f6, vxrm, imm[4:0], rs1_v, mv_splat, vl, v0_bits, b_vi, vm, mv_is_vv,
+         is_mul, is_div, is_mac, is_mvmerge, is_vid, is_vmvsx,
+         is_carry_e, is_satadd, is_avg, is_vssr, is_vsmul};
+`ifdef KARU_EN_ZVKB
+        zvbbP = zvbbA;
+        zvbb_unaryP = zvbb_unary;
+`endif
         for (jp = 0; jp < 8; jp = jp + 1) begin
             auP[jp]=auA[jp]; buP[jp]=buA[jp]; asP[jp]=asA[jp]; bsP[jp]=bsA[jp];
             shP[jp]=shA[jp]; egP[jp]=egA[jp]; actP[jp]=actA[jp];
@@ -205,25 +384,25 @@ module karu_vlane #(
         sm_prod=0; sm_sh=0; sm_res0=0; sm_res=0; sm_dmsb=0; sm_stk=0; sm_lsb=0;
         sm_rnd=0; sm_sat=0; el_sat=0;
 `ifdef KARU_EN_ZVKB
-        zvkb_r=0; zvkb_ror=0; zvkb_rol=0; zvkb_rev=0;
+        zvkb_r=0; zvkb_ror=0; zvkb_rol=0; zvbb_elem=0;
 `endif
         for (j = 0; j < 8; j = j + 1) begin
             if (j < epcP) begin
                 au = auP[j]; bu = buP[j]; as = asP[j]; bs = bsP[j];
                 shamt = shP[j]; eg = egP[j]; active = actP[j]; smask = smaskP;
 `ifdef KARU_EN_ZVKB
-                //  -- Zvkb rotates + reversals --
-                //  vror.vi carries uimm[5] in f6[0] (funct6 01010x), so the .vi
+                //  -- Zvkb rotates + packed Zvbb unary result --
+                //  vror.vi carries uimm[5] in f6P[0] (funct6 01010x), so the .vi
                 //  rotate amount is 6 bits; .vv/.vx use the element/scalar like
                 //  the shifts. Shift-by-sewbP is well-defined here (<= 64 on a
                 //  64-bit operand -> 0), so the r==0 wrap term vanishes.
-                zvkb_r   = (b_vi ? {58'b0, f6[0], imm[4:0]} : bu) & ({57'b0, sewbP} - 64'd1);
+                zvkb_r   = (b_viP ? {58'b0, f6P[0], immP[4:0]} : bu) & ({57'b0, sewbP} - 64'd1);
                 zvkb_ror = ((au >> zvkb_r) | (au << ({57'b0, sewbP} - zvkb_r))) & ~smask;
                 zvkb_rol = ((au << zvkb_r) | (au >> ({57'b0, sewbP} - zvkb_r))) & ~smask;
-                zvkb_rev = is_rev8 ? zvkb_rev8_elem(au, sewbP) : zvkb_brev8_word(au);
+                zvbb_elem = (zvbbP >> (j*sewbP)) & ~smask;
 `endif
                 //  -- ALU --
-                case (f6)
+                case (f6P)
                     6'b000000: alu = au + bu;                   //  vadd
                     6'b000010: alu = au - bu;                   //  vsub
                     6'b000011: alu = bu - au;                   //  vrsub
@@ -240,7 +419,7 @@ module karu_vlane #(
 `ifdef KARU_EN_ZVKB
                     6'b000001: alu = au & ~bu;                  //  vandn
                     6'b010100: alu = zvkb_ror;                  //  vror (.vi uimm[5]=0)
-                    6'b010101: alu = b_vi ? zvkb_ror : zvkb_rol;    //  vrol; OPIVI = vror.vi uimm[5]=1
+                    6'b010101: alu = b_viP ? zvkb_ror : zvkb_rol;    //  vrol; OPIVI = vror.vi uimm[5]=1
 `endif
                     default:   alu = au;
                 endcase
@@ -249,19 +428,19 @@ module karu_vlane #(
                     pu  = au * bu;
                     ps  = $signed({{64{as[63]}}, as}) * $signed({{64{bs[63]}}, bs});
                     psu = $signed({{64{as[63]}}, as}) * {64'b0, bu};
-                    case (f6[1:0])
+                    case (f6P[1:0])
                         2'b01: mres = pu[63:0];                     //  vmul
                         2'b11: mres = ps  >> sewbP;                 //  vmulh
                         2'b00: mres = pu  >> sewbP;                 //  vmulhu
                         default: mres = psu >> sewbP;               //  vmulhsu
                     endcase
                     cu     = (voldP >> (j*sewbP)) & ~smask;
-                    macmul = f6[2] ? (bu * au) : (bu * cu);
-                    macadd = f6[2] ? cu : au;
-                    macres = f6[1] ? (macadd - macmul) : (macadd + macmul);
+                    macmul = f6P[2] ? (bu * au) : (bu * cu);
+                    macadd = f6P[2] ? cu : au;
+                    macres = f6P[1] ? (macadd - macmul) : (macadd + macmul);
                 end
                 //  -- carry/borrow --
-                cin    = vm ? 1'b0 : v0_bits[j[2:0]];
+                cin    = vmP ? 1'b0 : v0P[j[2:0]];
                 cy_add = {1'b0, au} + {1'b0, bu} + {64'b0, cin};
                 cy_sub = {1'b0, au} - {1'b0, bu} - {64'b0, cin};
                 //  -- divide (combinational only when DIV_COMB) --
@@ -273,10 +452,10 @@ module karu_vlane #(
                     magb  = (dz) ? 64'd1 : (bneg ? (~bs + 64'd1) : bs);
                     quotm = maga / magb;
                     remm  = maga % magb;
-                    divres = f6[1]
-                        ? (f6[0] ? (dz ? au : (aneg ? (~remm + 64'd1) : remm))
+                    divres = f6P[1]
+                        ? (f6P[0] ? (dz ? au : (aneg ? (~remm + 64'd1) : remm))
                                  : (dz ? au : (au % bden)))
-                        : (f6[0] ? (dz ? {64{1'b1}} : ((aneg^bneg) ? (~quotm + 64'd1) : quotm))
+                        : (f6P[0] ? (dz ? {64{1'b1}} : ((aneg^bneg) ? (~quotm + 64'd1) : quotm))
                                  : (dz ? {64{1'b1}} : (au / bden)));
                 end
                 //  -- fixed-point clamp patterns --
@@ -288,9 +467,9 @@ module karu_vlane #(
                 sadd = $signed({as[63], as}) + $signed({bs[63], bs});
                 ssub = $signed({as[63], as}) - $signed({bs[63], bs});
                 sat  = 1'b0;    satres = 64'd0;
-                if (is_satadd) begin
-                    if (!f6[0]) begin
-                        if (!f6[1]) begin           //  vsaddu
+                if (is_sataddP) begin
+                    if (!f6P[0]) begin
+                        if (!f6P[1]) begin           //  vsaddu
                             sat    = usum[sewbP];
                             satres = sat ? umax_pat : usum[63:0];
                         end else begin              //  vssubu
@@ -298,7 +477,7 @@ module karu_vlane #(
                             satres = sat ? 64'd0 : (au - bu);
                         end
                     end else begin
-                        sres = f6[1] ? ssub : sadd;
+                        sres = f6P[1] ? ssub : sadd;
                         if ($signed(sres) > $signed({1'b0, smax_pat}))
                             begin sat=1'b1; satres = smax_pat; end
                         else if ($signed(sres) < $signed(-{1'b0, smin_pat}))
@@ -307,36 +486,36 @@ module karu_vlane #(
                     end
                 end
                 //  -- averaging --
-                if (is_avg) begin
-                    if (!f6[0])
-                        avg_v = (f6[1] ? ({64'b0, au} - {64'b0, bu})
+                if (is_avgP) begin
+                    if (!f6P[0])
+                        avg_v = (f6P[1] ? ({64'b0, au} - {64'b0, bu})
                                         : ({64'b0, au} + {64'b0, bu}))
                                 & ((128'd1 << (sewbP + 7'd1)) - 128'd1);
                     else
-                        avg_v = f6[1]
+                        avg_v = f6P[1]
                             ? ($signed({{64{as[63]}}, as}) - $signed({{64{bs[63]}}, bs}))
                             : ($signed({{64{as[63]}}, as}) + $signed({{64{bs[63]}}, bs}));
                     avg_rb  = avg_v[0];
                     avg_lsb = avg_v[1];
-                    case (vxrm)
+                    case (vxrmP)
                         2'b00: avg_rnd = avg_rb;
                         2'b01: avg_rnd = avg_rb & avg_lsb;
                         2'b10: avg_rnd = 1'b0;
                         default: avg_rnd = ~avg_lsb & avg_rb;
                     endcase
-                    if (f6[0]) avg_res = ($signed(avg_v) >>> 1) + {63'b0, avg_rnd};
+                    if (f6P[0]) avg_res = ($signed(avg_v) >>> 1) + {63'b0, avg_rnd};
                     else       avg_res = (avg_v >> 1) + {63'b0, avg_rnd};
                 end
                 //  -- scaling shift right --
-                if (is_vssr) begin
-                    sh_v   = f6[0] ? as : au;
-                    if (f6[0]) sh_sh = $signed(as) >>> shamt;
+                if (is_vssrP) begin
+                    sh_v   = f6P[0] ? as : au;
+                    if (f6P[0]) sh_sh = $signed(as) >>> shamt;
                     else       sh_sh = au >> shamt;
                     sh_dmsb = (shamt == 0) ? 1'b0 : ((sh_v >> (shamt - 64'd1)) & 64'd1);
                     sh_stk  = (shamt <= 1) ? 1'b0
                             : ((sh_v & ((64'd1 << (shamt - 64'd1)) - 64'd1)) != 0);
                     sh_lsb  = sh_sh[0];
-                    case (vxrm)
+                    case (vxrmP)
                         2'b00: sh_rnd = sh_dmsb;
                         2'b01: sh_rnd = sh_dmsb & (sh_stk | sh_lsb);
                         2'b10: sh_rnd = 1'b0;
@@ -345,44 +524,46 @@ module karu_vlane #(
                     ssr_res = sh_sh + {63'b0, sh_rnd};
                 end
                 //  -- vsmul --
-                if (is_vsmul) begin
+                if (is_vsmulP) begin
                     sm_prod = ps;
                     sm_sh   = $signed(sm_prod) >>> (sewbP - 7'd1);
                     sm_dmsb = (sewbP < 2) ? 1'b0 : ((sm_prod >> (sewbP - 7'd2)) & 128'd1);
                     sm_stk  = (sewbP < 3) ? 1'b0
                             : ((sm_prod & ((128'd1 << (sewbP - 7'd2)) - 128'd1)) != 0);
                     sm_lsb  = sm_sh[0];
-                    case (vxrm)
+                    case (vxrmP)
                         2'b00: sm_rnd = sm_dmsb;
                         2'b01: sm_rnd = sm_dmsb & (sm_stk | sm_lsb);
                         2'b10: sm_rnd = 1'b0;
                         default: sm_rnd = ~sm_lsb & (sm_dmsb | sm_stk);
                     endcase
                     sm_res0 = sm_sh + {63'b0, sm_rnd};
-                    if ($signed(sm_res0) > $signed({1'b0, smax_pat}))
+                    // The sole fractional-multiply overflow is MIN * MIN.
+                    // Test operands before the e64 shifted product can wrap.
+                    if (au == smin_pat && bu == smin_pat)
                         begin sm_sat=1'b1; sm_res = smax_pat; end
                     else begin sm_sat=1'b0; sm_res = sm_res0; end
                 end
                 //  -- result selection --
-                if (is_mul)            eres = mres;
-                else if (is_div)       eres = divres;
-                else if (is_satadd)    eres = satres;
-                else if (is_avg)       eres = avg_res;
-                else if (is_vssr)      eres = ssr_res;
-                else if (is_vsmul)     eres = sm_res;
-                else if (is_mac)       eres = macres;
-                else if (is_carry_e)   eres = f6[1] ? cy_sub[63:0] : cy_add[63:0];
-                else if (is_vmvsx)     eres = rs1_v;
-                else if (is_mvmerge)
-                    eres = (vm || v0_bits[j[2:0]]) ? (mv_is_vv ? bu : mv_splat) : au;
-                else if (is_vid)       eres = {32'b0, eg};
+                if (is_mulP)            eres = mres;
+                else if (is_divP)       eres = divres;
+                else if (is_sataddP)    eres = satres;
+                else if (is_avgP)       eres = avg_res;
+                else if (is_vssrP)      eres = ssr_res;
+                else if (is_vsmulP)     eres = sm_res;
+                else if (is_macP)       eres = macres;
+                else if (is_carry_eP)   eres = f6P[1] ? cy_sub[63:0] : cy_add[63:0];
+                else if (is_vmvsxP)     eres = rs1P;
+                else if (is_mvmergeP)
+                    eres = (vmP || v0P[j[2:0]]) ? (mv_is_vvP ? bu : mv_splatP) : au;
+                else if (is_vidP)       eres = {32'b0, eg};
 `ifdef KARU_EN_ZVKB
-                else if (is_brev8 | is_rev8) eres = zvkb_rev;
+                else if (zvbb_unaryP)    eres = zvbb_elem;
 `endif
                 else                   eres = alu;
-                //  saturation flag: active in-vl elements only
-                el_sat = active && (eg < vl)
-                       && ((is_satadd & sat) | (is_vsmul & sm_sat));
+                //  saturation flag: active in-vlP elements only
+                el_sat = active && (eg < vlP)
+                       && ((is_sataddP & sat) | (is_vsmulP & sm_sat));
                 if (el_sat) lane_sat = 1'b1;
                 //  -- write with mask/tail policy (per byte of the element) --
                 //  Every byte gets the raw element result; tail/masked-off
@@ -403,11 +584,50 @@ module karu_vlane #(
     //  ==================================================================
     //  is_h is the scalar Zfhmin fmv.x.h/fmv.h.x selector; the vector FP path
     //  never issues those, so it is tied low here.
+    //  With lane pipelining, stage the complete FPU request as well. This
+    //  separates parent operand selection / exact widening conversion from
+    //  the FPU's input normalization. One fixed dispatch cycle is added to
+    //  FPU operations; the combinational estimate path remains unchanged.
+    wire fpu_req, fpu_busy;
+    wire [4:0] fpu_sub;
+    wire [2:0] fpu_rm;
+    wire fpu_is_d;
+    wire [63:0] fpu_op1, fpu_op2, fpu_op3;
+`ifdef KARU_V_LANE_PIPE
+    reg fp_reqP;
+    reg [4:0] fp_subP;
+    reg [2:0] fp_rmP;
+    reg fp_is_dP;
+    reg [63:0] fp_op1P, fp_op2P, fp_op3P;
+    always @(posedge clk) begin
+        if (rst) fp_reqP <= 1'b0;
+        else fp_reqP <= fp_req;
+        if (fp_req) begin
+            fp_subP <= fp_sub; fp_rmP <= fp_rm; fp_is_dP <= fp_is_d;
+            fp_op1P <= fp_op1; fp_op2P <= fp_op2; fp_op3P <= fp_op3;
+        end
+    end
+    assign fpu_req = fp_reqP;
+    assign fpu_sub = fp_subP;
+    assign fpu_rm = fp_rmP;
+    assign fpu_is_d = fp_is_dP;
+    assign fpu_op1 = fp_op1P; assign fpu_op2 = fp_op2P; assign fpu_op3 = fp_op3P;
+    // Include the waiting request so the parent's active/busy accounting
+    // has no gap before the FPU accepts it.
+    assign fp_busy = fp_reqP | fpu_busy;
+`else
+    assign fpu_req = fp_req;
+    assign fpu_sub = fp_sub;
+    assign fpu_rm = fp_rm;
+    assign fpu_is_d = fp_is_d;
+    assign fpu_op1 = fp_op1; assign fpu_op2 = fp_op2; assign fpu_op3 = fp_op3;
+    assign fp_busy = fpu_busy;
+`endif
     karu_fpu u_fpu (
         .clk(clk), .rst(rst),
-        .req(fp_req), .busy(fp_busy), .sub(fp_sub), .rm(fp_rm), .is_d(fp_is_d),
+        .req(fpu_req), .busy(fpu_busy), .sub(fpu_sub), .rm(fpu_rm), .is_d(fpu_is_d),
         .is_h(1'b0), .fp_zfa(4'd0), //  scalar-only Zfhmin/Zfa selectors unused in lanes
-        .op1(fp_op1), .op2(fp_op2), .op3(fp_op3),
+        .op1(fpu_op1), .op2(fpu_op2), .op3(fpu_op3),
         .done(fp_done), .res(fp_res), .fflags(fp_flags)
     );
     karu_vest7 u_est (
