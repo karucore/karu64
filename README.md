@@ -4,7 +4,7 @@
  / /|_/ / _ `/ _ \(_-</ -_) / ___/ __/ _ \/ __/ -_|_-<(_-</ _ \/ __(_-<
 /_/  /_/\_,_/_//_/___/\__/ /_/  /_/  \___/\__/\__/___/___/\___/_/ /___/
     __ __                 _____ __ __
-   / //_/___ ________  __/ ___// // /  RVA23U64 User Application Profile
+   / //_/___ ________  __/ ___// // /  RVA23S64 Application Processor
   / ,< / __ `/ ___/ / / / __ \/ // /_  Full RVV 1.0 Vector, VLEN=256
  / /| / /_/ / /  / /_/ / /_/ /__  __/  Full Zvbb + Zvk Vector Features
 /_/ |_\__,_/_/   \__,_/\____/  /_/     + PQC TG Vector Keccak Extension
@@ -12,7 +12,9 @@
 
 # karu64
 
-**`karu64`** is an RV64 core (and FPGA bring-up tree). The Linux baseline is RV64GCV (RV64IMAFDCV + Zicsr + Zifencei, RVV 1.0 with Zvl256b) with full **Zvbb**, M/S/U privilege, Sv39 translation, and generic CLINT/PLIC/NS16550 platform services (interrupts and serial console). We also have the full Zvk vector-cryptography extensions and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`, RISC-V PQC TG, [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc) `src/zvknhk.adoc`) available. We implemented Karu CPU in portable Verilog, and it is released under a permissive (BSD 3-Clause) license.
+**`karu64`** is an RV64 core and FPGA bring-up tree, implemented in portable Verilog under the permissive BSD 3-Clause license. The Linux baseline is **RVA23S64**, selected by `KARU_RVA23S64`, with RVV 1.0 (VLEN=256), full **Zvbb**, H/Sha virtualization and Sv39 translation. ISA features remain configurable for smaller core builds.
+
+The shipping VCU118 configuration also enables full Zvk vector cryptography and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`, RISC-V PQC TG, [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc) `src/zvknhk.adoc`), with CLINT/PLIC interrupts and an NS16550 serial console.
 
 For testing on the [VCU118](https://www.amd.com/en/products/adaptive-socs-and-fpgas/evaluation-boards/vcu118.html) (Xilinx UltraScale+ FPGA) target, we instantiate a SoC with Xilinx DDR4 IP components for 2 GB of memory and [LiteEth/LiteX](https://github.com/enjoy-digital/liteeth) for a basic Gbit Ethernet that supports network boot and a filesystem.
 
@@ -23,11 +25,8 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 ## Documentation
 
-- [Security review](doc/security-review-2026-09-14.md) — September 14 review of
-  the RVA23S64 ASIC configuration, including reset/boot, physical isolation,
-  AXI protection metadata, fault integrity and the limits of the DIEL evidence.
-- [DIEL review](doc/diel-review-2026-09-14.md) — current Zkt/Zvkt and vector
-  crypto source audit plus the reproducible shipping-profile latency probe.
+- [FPGA bring-up](doc/fpga.md) — VCU118 build/programming instructions,
+  UART capture, Linux netboot, memory map and board acceptance.
 - [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 15
   profile measurements, board results and current verification status.
 - [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
@@ -36,10 +35,10 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 - [doc/flows.md](doc/flows.md) — build/run flows, the riscv-tests + TestFloat +
   directed vector/Zvk/RVA23 suites, the Linux/SoC sims, and the spike commit-log
   divergence technique.
-- [doc/fpga.md](doc/fpga.md) — the VCU118 SoC (BRAM and DDR4), NS16550 console,
-  clocking/timing knobs, bitstream variants, and hardware/Linux status.
 - [doc/rva23s64-plan.md](doc/rva23s64-plan.md) — supervisor-profile roadmap,
   implemented mandatory features, deliberate limits and remaining release gates.
+- [DIEL validation](doc/diel-review-2026-09-14.md) — Zkt/Zvkt and vector
+  crypto source audit plus the reproducible shipping-profile latency probe.
 - [doc/keccak-throughput.md](doc/keccak-throughput.md) — ideal Verilator
   absorb/squeeze results at SHAKE128/256 rates, changes and validation.
 - [doc/keccak-software-comparison.md](doc/keccak-software-comparison.md) —
@@ -93,134 +92,36 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 ### Block diagram
 
-Two linked views — the SoC/top level, then the `karu64` core internals. Boxes map
-to `rtl/` modules; the I-cache and DDR crossbar are build-gated paths.
+The shipping Linux configuration on VCU118 (`vcu118_ddr_top`):
 
-```text
-###########################  KARU64 — FIGURE 1: SoC / TOP LEVEL  #############################
-#  sim tops: htif_tb · fpga_tb        hw tops: fpga_top -> vcu118_ddr_top                    #
-#  clk/rst : reset_ctrl (POR stretch + 2-FF sync); BUFGCE_DIV or MIG-derived cpu_clk         #
-##############################################################################################
-
-                              +=====================================+
-                              |          karu64  CORE               |
-                              | RV64GC + V + Zvbb + Zvk + Zvknhk   |
-                              |   single-issue · in-order · Sv39    |
-                              |          ( see Figure 2 )           |
-                              +===+=============================+===+
-                                  |                             |
-                   AXI4 imem (RO) |                             | AXI4 dmem (RW)
-                                  v                             v
-                        +-------------------+        +--------------------------+
-                        | imem fetch (RO)   |        | dmem interconnect        |
-                        |  cached fetch:    |        | (karu_ddr_xbar on DDR;   |
-                        |  cached DRAM:     |        | peels MMIO off main mem) |
-                        |  0x8000_0000..    |        |                          |
-                        |  0xFFFF_FFFF      |        |                          |
-                        |  bootROM @0x1000  |        +--+------+-------+-----+--+
-                        +-------------------+           |      |       |     |
-                                                        v      v       v     v
-                                                   +------+ +-----+ +-----+ +-----------+
-                                                   | DRAM | |CLINT| |PLIC | | NS16550   |
-                                                   | MIG/ | |0200_| |0c00_| | UART      |
-                                                   | BRAM | |0000 | |0000 | | 1000_0000 |
-                                                   |0x8.. | +--+--+ +--+--+ +-----+-----+
-                                                   +------+    |       |          | console
-                                                          timer|   ext |IRQ       | (TX/RX)
-                                                          MTIP |  MEIP/SEIP       |
-                                                               +-----+--+---------+
-                                                                     |  irq lines
-                                                                     v
-                                                          (core CSR / trap logic)
-
-                        +----------------------------------------------------+
-                        | LiteEth MAC + karu_eth bridge (wired) @0x1100_0000 |
-                        |   SGMII PCS/PMA -> VCU118 DP83867 PHY              |
-                        +----------------------------------------------------+
-
-
-###########################  FIGURE 2: karu64 CORE INTERNALS  ################################
-
-   FRONT-END (fetch -> decode)                                 REGISTER FILES
-   ---------------------------                                 --------------
-
-   +-----------+   ifu_w (insn word, to DECODE)    +--------------+   +------------------+
-   | IFU       |=================================> | RVC64 + DEC  |   | x-RF  2R/1W      |
-   | buf0/buf1 |                                   | + bitmanip   |   | f-RF  3R/1W      |
-   | RVC realgn|                                   |  decode pass |   | VRF  (BRAM-backed|
-   +-----+-----+                                   +------+-------+   |  vrf_bram + _wr) |
-         | fetch reads (IFU AXI read master)              | uops      +----+-----+-------+
-         v                                                v                ^ rd  | wb
-   +-----------+    +----------------------+    +====================+     |     |
-   | ICACHE    |==> | imem AXI master (RO) |    | ID/EX packet ex_*  |-----+     |
-   | (opt; DM, |    |  = fetch + IMMU PTW  |    | issue + bypass +   | operands  |
-   |  64B line)|    |    reads  (=> Fig 1) |    | hazard / 1-issue   |<----------+
-   +-----------+    +----------^-----------+    | retire gate        |
-                               | PTW reads      +=========+==========+
-   +------------------------+  |                          |  dispatch
-   | IMMU karu_sv39 (fetch  |==+                          v
-   |  xlate; PTW + TLB)     |
-   +------------------------+
-        SCALAR EXECUTE                                    v          VECTOR EXECUTE
-   +--------+ +--------+ +------+ +------+ +---------+         +--------------------------+
-   | ALU    | |BITMANIP| | M    | | CSR  | | FPU     |         | VLSU (karu_vlsu)         |
-   | 1-cyc  | |Zba/b/s | |mul/  | |M/S/U | | F/D     |         |  unit-stride / whole /   |
-   |        | |        | |div   | |fcsr  | | disp.   |         |  mask / strided /        |
-   +--------+ +--------+ +------+ +------+ +----+----+         |  indexed / segment       |
-                                                |              |  (per-elem pelem engine) |
-                              fmul fadd fdiv    |              +------------+-------------+
-                              fsqrt fcvt fmisc  |                           |
-                              ffma  +D-variants |              +------------v-------------+
-                              +Zfa (karu_fzfa)  |              | VARITH (karu_varith)     |
-                                                |              |  unified vec execute FSM |
-   +------------------------+                   |              | +----------------------+ |
-   | LSU (karu_lsu)         |                   |              | | VLANE x NLANES       | |
-   |  ld/st + A (LR/SC,9AMO)|                   |              | |  SIMD e8/16/32/64    | |
-   |  FLW FSW FLD FSD  flh  |                   |              | |  + rolled-in FPU     | |
-   +-----------+------------+                   |              | |  + vest7 (recip est) | |
-               |                                |              | +----------------------+ |
-               | PA                             |              | | VCRYPTO (rtl/zvk/)   | |
-               v             vxlate_* (shared,  |              | |  AES SHA2 SM4 SM3 GH | |
-   +------------------------+  owner-latched)   |              | +----------------------+ |
-   | DMMU  karu_sv39        |<------------------+--------------| | KECCAK (vkeccak)     | |
-   | PTW + TLB              |     data xlate                   | +----------------------+ |
-   | (LSU + VLSU preflight) |                                  +------------+-------------+
-   +-----------+------------+                                               | 128-bit
-               | PA                                                         v  vec port
-   +========================================================================================+
-   |  karu_mem  -  write-through L1  (scalar LSU port + 128-bit vector port; these two only)|
-   |  page-table walks BYPASS this L1; the core-level dmem arbiter (karu64.v) muxes karu_mem|
-   |  with DMMU PTE reads onto dmem; Svade walkers never write page tables                  |
-   +===================================================+====================================+
-                                                       |
-                                                       v   AXI4 dmem (RW) -> interconnect (Fig 1)
-
-   WRITEBACK  ->  x-RF / f-RF / VRF      (invariant: <=1 FU retires/cycle, one dest class)
-   PASSIVE    :  karu_assert (INV1..35 + hang guards) · karu_vrf_assert · karu_plic_assert
+```mermaid
+flowchart TB
+    subgraph FPGA[VCU118 FPGA]
+        CPU["karu64 · RVA23S64 · 75 MHz<br/>Single-issue, in-order<br/>Scalar integer/FP · RVV · Zvk · Keccak<br/>H/Sha · instruction and data MMUs<br/>I-cache · shared data cache"]
+        BUS["AXI4 interconnect"]
+        MEM["Clock / width conversion<br/>DDR4 controller (MIG)"]
+        BOOT["Boot ROM + scratch RAM<br/>fu-boot · OpenSBI · U-Boot · DTB"]
+        IO["CLINT · PLIC<br/>UART · SPI flash controller"]
+        ETH["LiteEth MAC<br/>SGMII PCS/PMA"]
+        CPU <-->|Instruction and data AXI4| BUS
+        BUS <--> MEM
+        BUS <--> BOOT
+        BUS <--> IO
+        BUS <--> ETH
+    end
+    MEM <--> DDR["2 GiB DDR4<br/>0x80000000–0xffffffff"]
+    ETH <--> PHY["Ethernet PHY / network"]
 ```
 
-A few things the diagram encodes: there is **one data MMU** (`dmmu`), time-shared by
-the scalar LSU and the VLSU preflight via an owner latch (`vxlate_*`); a second
-`karu_sv39` (`immu`) translates fetch. **Vector FP has no separate unit** — it lives
-inside each `VLANE` (a rolled-in `karu_fpu`); the standalone `FPU` box is scalar F/D
-only. `karu_varith` is the umbrella that also runs Zvk (`VCRYPTO`) and `vkeccak` as FSM
-modes. `karu_assert`/`karu_vrf_assert` are passive checkers (testbench-only, not in the
-synth read list).
+The scalar and vector load/store units share the data cache and data MMU;
+a separate MMU translates instruction fetches. Page-table reads bypass the
+I/D caches. Both caches cover the full DRAM range, with MMIO and Svpbmt NC/IO
+accesses bypassed. Core pipelines and register files are detailed in
+[architecture.md](doc/architecture.md); the board memory map, interrupts and
+boot flow are in [fpga.md](doc/fpga.md).
 
-Two things the memory side gets right that are easy to misread: **`karu_mem` is an L1
-for the two real data ports only** — the scalar LSU port and the 128-bit vector port.
-Page-table walks do **not** go through it; the core-level dmem arbiter in `karu64.v`
-muxes `karu_mem` with the DMMU's PTE reads onto the single dmem AXI master;
-the IMMU reads PTEs through the instruction-side arbiter. Both walkers use
-Svade and never write page-table memory. The **DDR address map** uses `pa[31]` to select
-`0x8000_0000..0xFFFF_FFFF`; `karu_mem` and the I-cache cover that full 2 GiB
-range. The `fuboot` boot ROM is a
-low window at `0x0000_1000`; `karu_ddr_xbar` peels CLINT/PLIC/UART/Ethernet/flash off as
-MMIO. The LiteEth MAC/register path and SGMII PCS/PMA connect the VCU118
-DP83867 PHY; its interrupt is PLIC source 2.
-
-`karu64` implements an RV64GC (RV64IMAFDC) target with FLEN=64 f-regs
-(NaN-boxed singles, raw 64-bit doubles):
+The scalar execution units implement RV64GC (RV64IMAFDC), with FLEN=64
+floating-point registers (NaN-boxed singles, raw 64-bit doubles):
 
 - **I**: RV64I integer ALU, loads/stores over a 64-bit data bus, W-suffix
   arithmetic (`addw/subw/sllw/srlw/sraw` and immediate forms)
@@ -278,11 +179,12 @@ DP83867 PHY; its interrupt is PLIC source 2.
   Non-H Sstc adds `stimecmp` and `menvcfg.STCE`; its unsigned 64-bit timer
   comparison is pipelined in two stages. `make sstc-test sstc-test-spike`
   checks direct/legacy delivery and timer CSR permissions.
-- **Opt-in H/Sha**: `KARU_H` adds guest CSR/trap state, H memory and
+- **H/Sha virtualization**: enabled by `KARU_RVA23S64`; `KARU_H` provides
+  guest CSR/trap state, H memory and
   invalidation instructions, and VS Bare/Sv39 plus G Bare/Sv39x4 translation.
   Bare, cached nonidentity two-stage and virtual-timer monitors pass both
   simulator configurations and the pinned reference; see the
-  [H test recipe](doc/flows.md#hypervisor-development-regressions).
+  [H test recipe](doc/flows.md#hypervisor-regressions).
   Software FP/vector/resident-Keccak context switches and directed asynchronous
   preemption pass. The RVA23S64 board configuration boots Linux and passes
   the KVM API probe; guest-test coverage is recorded in the
@@ -295,11 +197,8 @@ DP83867 PHY; its interrupt is PLIC source 2.
 - PC is 64-bit internally for Sv39 high-half kernel/user addresses. The
   current FPGA/sim memory maps still place RAM and MMIO in the low 4 GiB.
 
-**Known limitations:** PMP is absent, the ASIC handoff does not provide an
-immutable boot path, and Ssaia guest-PMU injection is not implemented. These
-are platform or optional-extension limits rather than missing mandatory
-RVA23S64 instructions; see the [profile status](doc/rva23s64-plan.md) and
-[security review](doc/security-review-2026-09-14.md).
+Optional Ssaia guest-PMU injection is not implemented; see the
+[profile status](doc/rva23s64-plan.md) for configuration limits.
 (FP is fully IEEE — gradual underflow, subnormal in/out, fused single-rounding
 FMA — and vector load/store translates through the shared Sv39 DMMU.)
 
@@ -439,7 +338,19 @@ that its fixes are part of the baseline; the maintained tests are the
 regression record.
 
 Rebuild the selected simulator after every RTL change. See
-[doc/flows.md](doc/flows.md#supervisor-development-regressions) for the
+[doc/flows.md](doc/flows.md#supervisor-regressions) for the
 maintained supervisor/H regression targets and
 [the ACT4 instructions](test/act4-karu/README.md#generate-and-run) for current
 reference generation and replay.
+
+## TODO — ASIC integration
+
+- Supply requester-correct AXI protection metadata when integrating an
+  interconnect or firewall that enforces it.
+- Provide the required platform protections: physical isolation (PMP), an
+  immutable boot path, register-state scrubbing and memory fault protection.
+
+The [security review](doc/security-review-2026-09-14.md) records these open
+integration items and their scope. The current VCU118 design does not use
+AXI `ARPROT`/`AWPROT` for access control, so the metadata issue does not affect
+its FPGA operation. The core's MMU and physical access checks remain active.

@@ -1,13 +1,12 @@
 # karu64 — architecture
 
-`karu64` (`rtl/karu64.v`) is a small **RV64GC** soft-core — RV64IMAFDC +
-Zicsr/Zifencei, the full RVV 1.0 **V** vector set and **Zvbb**, optional **Zvk**
-vector-crypto, and the draft **Zvknhk** Vector Keccak extension (`vkeccak.vi`,
-riscv-pqc) — with **M/S/U privilege, H/Sha, Sv39/Svade/Svnapot/Svpbmt paging,
-Svinval, Sstc and trap delegation**. It is **single-issue, in-order**, with a
-registered **ID/EX stage** and a **64-bit PC**. The opt-in `KARU_RVA23S64`
-composition binds the mandatory profile features; validation limits and
-platform obligations are recorded separately.
+`karu64` (`rtl/karu64.v`) is a configurable RV64 core. Its Linux configuration
+selects **RVA23S64** through `KARU_RVA23S64`, including full **RVV 1.0** and
+**Zvbb**, **H/Sha virtualization**, Sv39/Svade/Svnapot/Svpbmt paging, Svinval,
+Sstc and trap delegation. The shipping FPGA build also enables **Zvk** vector
+crypto and draft **Zvknhk** Vector Keccak (`vkeccak.vi`). The core is
+**single-issue, in-order**, with a registered **ID/EX stage** and a **64-bit PC**.
+Validation limits and platform obligations are recorded separately.
 
 This document describes the micro-architecture as implemented. For build/run
 flows see [flows.md](flows.md); for the FPGA SoC and bitstreams see
@@ -247,9 +246,9 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
   software-STIP latch when STCE changes. Interrupt delivery retains normal
   privilege/delegation rules and waits for an in-flight vector operation to
   drain. Opt-in H adds `htimedelta`, `vstimecmp` and virtual timer pending
-  state, covered by CSR tests and the 187-case guest timer monitor; firmware
-  and KVM timer integration remain separate gates. RV32-only high-half CSRs
-  remain absent.
+  state, covered by CSR tests and the 187-case guest timer monitor. Linux/KVM
+  timer results are recorded in the release diagnostics. RV32-only high-half
+  CSRs remain absent.
 - **Svinval and invalidation** — `SINVAL.VMA` uses the conservative full
   TLB/PWC flush and frontend redirect already used by `SFENCE.VMA`. Outstanding
   reads drain, but canceled walks do not repopulate either cache or start
@@ -257,8 +256,9 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
   `SFENCE.W.INVAL`/`SFENCE.INVAL.IR`. All three Svinval instructions require
   S or M privilege; TVM applies to `SINVAL.VMA`, not the ordering-only fences.
   `mret`/`sret`/`sfence.vma` retain their privilege and TVM/TW/TSR checks.
-- **Development H** — opt-in `KARU_H` adds nominal/effective virtualization
-  state, H/VS CSR banks, M/HS/VS trap/return and injected-interrupt routing,
+- **H/Sha virtualization** — `KARU_H`, enabled by `KARU_RVA23S64`, provides
+  nominal/effective virtualization state, H/VS CSR banks, M/HS/VS trap/return
+  and injected-interrupt routing,
   virtual-instruction exceptions and dual host/guest FS/VS gates. HLV/HLVX/HSV
   use forced guest access context; HFENCE/HINVAL conservatively flush both
   walkers. A registered controller translates VS PTE addresses through G
@@ -284,9 +284,10 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
   GEILEN=0 keeps `hgeip/hgeie` and SGEIP zero. A separate 96-case
   fixture proves asynchronous guest FP/vector preemption, including pending
   timer overlap, drained retirement and precise resume, on both pipelines;
-  Linux/KVM preemption and broader Sha assurance remain open. Legacy/default
-  board advertisements exclude H, while the opt-in `rva23s64-ddr` image
-  advertises the bound profile.
+  Linux/KVM preemption and broader Sha assurance remain open. The shipping
+  `rva23s64-ddr` image enables H and advertises the bound profile. Hardware
+  KVM guest execution is validated by `ebreak_test` and `arch_timer`; exact
+  image coverage is in the [release diagnostics](release-diagnostics-2026-09-14.md).
 - **`karu_clint` / `karu_plic`** — single-hart CLINT (`msip`/`mtimecmp`/`mtime`
   at `0x0200_0000`, drives machine-software and machine-timer interrupts)
   and a minimal PLIC (NS16550 = source 1), feeding
@@ -304,8 +305,8 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
 Directed entry points are `make csr-test sv39-test ifu-test
 svinval-decode-test sstc-test sstc-test-spike`, plus the existing scalar/vector MMU and privilege
 firmware. A separate `karu64-sv39` ACT4 configuration selects a privileged-1.13
-development baseline without changing the established M-only regression.
-See [flows.md](flows.md#supervisor-development-regressions) and the
+test configuration alongside the M-only regression.
+See [flows.md](flows.md#supervisor-regressions) and the
 [profile roadmap](rva23s64-plan.md); this is not an exhaustive supervisor audit.
 
 ### Floating point (`karu_fpu`)

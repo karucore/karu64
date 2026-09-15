@@ -211,7 +211,7 @@ second describes the state of `main` it builds on.
   Correct the ACT4 Sm counter-wrap
   generator to avoid a cycles-per-instruction assumption, and update DDR
   protocol assertions for the implemented one/two-beat stores.
-  See [the test flows](doc/flows.md#supervisor-development-regressions).
+  See [the test flows](doc/flows.md#supervisor-regressions).
   These changes are an implementation milestone, **not** full `Ss1p13` or
   RVA23S64 certification; see [the completion roadmap](doc/rva23s64-plan.md).
   The preceding, pre-Sstc/Svnapot supervisor-foundation rerun of all 2600

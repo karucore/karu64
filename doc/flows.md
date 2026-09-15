@@ -192,7 +192,7 @@ or build flags are in doubt, `make -B -j4 _build/Vhtif_fp/Vhtif_tb` forces a
 rebuild without deleting artifacts. Use the corresponding simulator target
 for other configurations.
 
-### Supervisor development regressions
+### Supervisor regressions
 
 Reuse the existing firmware for end-to-end trap/translation checks, with
 small unit benches for precise internal handshake cases:
@@ -260,7 +260,7 @@ certification are different results. Consult the
 for the configuration manifest and verdicts, and the
 [RVA23S64 status](rva23s64-plan.md) for remaining release gates.
 
-### Hypervisor development regressions
+### Hypervisor regressions
 
 Current release evidence: both matched-profile ACT4 checkpoints pass
 2872/2872. The shipping bitstream meets routed timing and passes Linux board
