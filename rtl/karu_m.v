@@ -66,35 +66,48 @@ module karu_m (
     //  ==================================================================
     //  Common combinational setup (same as the single-cycle version)
     //  ==================================================================
-    wire sub_is_div  = sub[2];
-    wire sub_is_rem  = sub[2] & sub[1];
-    wire sub_is_high = !sub[2] & (sub[1] | sub[0]);
-    wire sub_a_signed = (sub == `M_MULH) || (sub == `M_MULHSU)
-                     || (sub == `M_DIV)  || (sub == `M_REM);
-    wire sub_b_signed = (sub == `M_MULH)
-                     || (sub == `M_DIV)  || (sub == `M_REM);
+    wire sub_is_div;
+    assign sub_is_div = sub[2];
+    wire sub_is_rem;
+    assign sub_is_rem = sub[2] & sub[1];
+    wire sub_is_high;
+    assign sub_is_high = !sub[2] & (sub[1] | sub[0]);
+    wire sub_a_signed;
+    assign sub_a_signed = (sub == `M_MULH) || (sub == `M_MULHSU)
+                       || (sub == `M_DIV)  || (sub == `M_REM);
+    wire sub_b_signed;
+    assign sub_b_signed = (sub == `M_MULH)
+                       || (sub == `M_DIV)  || (sub == `M_REM);
 
-    wire [63:0] op1_ext = is_w
-        ? (sub_a_signed ? {{32{op1[31]}}, op1[31:0]} : {32'b0, op1[31:0]})
-        : op1;
-    wire [63:0] op2_ext = is_w
-        ? (sub_b_signed ? {{32{op2[31]}}, op2[31:0]} : {32'b0, op2[31:0]})
-        : op2;
+    wire [63:0] op1_ext;
+    assign op1_ext = is_w
+   ? (sub_a_signed ? {{32{op1[31]}}, op1[31:0]} : {32'b0, op1[31:0]})
+   : op1;
+    wire [63:0] op2_ext;
+    assign op2_ext = is_w
+   ? (sub_b_signed ? {{32{op2[31]}}, op2[31:0]} : {32'b0, op2[31:0]})
+   : op2;
 
-    wire a_neg = sub_a_signed & op1_ext[63];
-    wire b_neg = sub_b_signed & op2_ext[63];
+    wire a_neg;
+    assign a_neg = sub_a_signed & op1_ext[63];
+    wire b_neg;
+    assign b_neg = sub_b_signed & op2_ext[63];
 
-    wire [63:0] mag_a_in = a_neg ? (~op1_ext + 64'b1) : op1_ext;
-    wire [63:0] mag_b_in = b_neg ? (~op2_ext + 64'b1) : op2_ext;
+    wire [63:0] mag_a_in;
+    assign mag_a_in = a_neg ? (~op1_ext + 64'b1) : op1_ext;
+    wire [63:0] mag_b_in;
+    assign mag_b_in = b_neg ? (~op2_ext + 64'b1) : op2_ext;
 
-    wire neg_in =
+    wire neg_in;
+    assign neg_in =
         sub_is_div
             ? (sub_is_rem ? a_neg : (a_neg ^ b_neg))
             : (sub == `M_MULH)   ? (a_neg ^ b_neg)
             : (sub == `M_MULHSU) ? a_neg
                                   : 1'b0;
 
-    wire div_by_zero_in = sub_is_div && (op2_ext == 64'b0);
+    wire div_by_zero_in;
+    assign div_by_zero_in = sub_is_div && (op2_ext == 64'b0);
 
     //  ==================================================================
     //  Combinational results
@@ -119,22 +132,29 @@ module karu_m (
         end
     endgenerate
 
-    wire [127:0] mul_neg128_comb  = ~mul_full_comb + 128'b1;
-    wire [127:0] mul_signed_comb  = neg_in ? mul_neg128_comb : mul_full_comb;
-    wire [63:0]  quot_signed_comb = neg_in ? (~quot_mag_comb + 64'b1) : quot_mag_comb;
-    wire [63:0]  rem_signed_comb  = neg_in ? (~rem_mag_comb  + 64'b1) : rem_mag_comb;
+    wire [127:0] mul_neg128_comb;
+    assign mul_neg128_comb = ~mul_full_comb + 128'b1;
+    wire [127:0] mul_signed_comb;
+    assign mul_signed_comb = neg_in ? mul_neg128_comb : mul_full_comb;
+    wire [63:0]  quot_signed_comb;
+    assign quot_signed_comb = neg_in ? (~quot_mag_comb + 64'b1) : quot_mag_comb;
+    wire [63:0]  rem_signed_comb;
+    assign rem_signed_comb = neg_in ? (~rem_mag_comb  + 64'b1) : rem_mag_comb;
 
-    wire [63:0] base_result_comb =
+    wire [63:0] base_result_comb;
+    assign base_result_comb =
         sub_is_div ? (sub_is_rem ? rem_signed_comb : quot_signed_comb)
                    : (sub_is_high ? mul_signed_comb[127:64]
                                   : mul_full_comb[63:0]);
 
-    wire [63:0] edge_result_comb =
+    wire [63:0] edge_result_comb;
+    assign edge_result_comb =
         div_by_zero_in
             ? (sub_is_rem ? op1_ext : 64'hFFFF_FFFF_FFFF_FFFF)
             : base_result_comb;
 
-    wire [63:0] final_result_comb =
+    wire [63:0] final_result_comb;
+    assign final_result_comb =
         is_w ? {{32{edge_result_comb[31]}}, edge_result_comb[31:0]} : edge_result_comb;
 
     //  ==================================================================
@@ -159,45 +179,65 @@ module karu_m (
         //  mul_partial fits in K+64 bits (K-bit times 64-bit = at most K+64).
         //  mul_sum width is K+64 too: max(acc[127:64]) + max(mul_partial) =
         //  (2^64 - 1) + (2^(64+K) - 2^64) = 2^(64+K) - 1, fits.
-        wire [MUL_K+63:0] mul_partial = mag_a * acc[MUL_K-1:0];
-        wire [MUL_K+63:0] mul_sum     = acc[127:64] + mul_partial;
-        wire [127:0]      mul_next    = { mul_sum, acc[63:MUL_K] };
+        wire [MUL_K+63:0] mul_partial;
+        assign mul_partial = mag_a * acc[MUL_K-1:0];
+        wire [MUL_K+63:0] mul_sum;
+        assign mul_sum = acc[127:64] + mul_partial;
+        wire [127:0]      mul_next;
+        assign mul_next = { mul_sum, acc[63:MUL_K] };
 
         //  ---- div step (1 bit/cycle, restoring) ----
-        wire [64:0]  div_top  = { acc[127:64], acc[63] };
-        wire [64:0]  div_sub  = div_top - { 1'b0, mag_b };
-        wire         div_take = !div_sub[64];
-        wire [127:0] div_next = div_take
-            ? { div_sub[63:0], acc[62:0], 1'b1 }
-            : { div_top[63:0], acc[62:0], 1'b0 };
+        wire [64:0]  div_top;
+        assign div_top = { acc[127:64], acc[63] };
+        wire [64:0]  div_sub;
+        assign div_sub = div_top - { 1'b0, mag_b };
+        wire         div_take;
+        assign div_take = !div_sub[64];
+        wire [127:0] div_next;
+        assign div_next = div_take
+      ? { div_sub[63:0], acc[62:0], 1'b1 }
+      : { div_top[63:0], acc[62:0], 1'b0 };
 
-        wire [127:0] acc_next = op_is_div_q ? div_next : mul_next;
+        wire [127:0] acc_next;
+        assign acc_next = op_is_div_q ? div_next : mul_next;
 
         //  ---- result formation ----
-        wire [127:0] acc_neg128 = ~acc_next + 128'b1;
-        wire [127:0] acc_signed = neg_result_q ? acc_neg128 : acc_next;
+        wire [127:0] acc_neg128;
+        assign acc_neg128 = ~acc_next + 128'b1;
+        wire [127:0] acc_signed;
+        assign acc_signed = neg_result_q ? acc_neg128 : acc_next;
 
-        wire [63:0] mul_low      = acc_next[63:0];
-        wire [63:0] mul_high     = acc_signed[127:64];
-        wire [63:0] q_mag        = acc_next[63:0];
-        wire [63:0] r_mag        = acc_next[127:64];
-        wire [63:0] div_quot_out = neg_result_q ? (~q_mag + 64'b1) : q_mag;
-        wire [63:0] div_rem_out  = neg_result_q ? (~r_mag + 64'b1) : r_mag;
+        wire [63:0] mul_low;
+        assign mul_low = acc_next[63:0];
+        wire [63:0] mul_high;
+        assign mul_high = acc_signed[127:64];
+        wire [63:0] q_mag;
+        assign q_mag = acc_next[63:0];
+        wire [63:0] r_mag;
+        assign r_mag = acc_next[127:64];
+        wire [63:0] div_quot_out;
+        assign div_quot_out = neg_result_q ? (~q_mag + 64'b1) : q_mag;
+        wire [63:0] div_rem_out;
+        assign div_rem_out = neg_result_q ? (~r_mag + 64'b1) : r_mag;
 
-        wire [63:0] base_result =
+        wire [63:0] base_result;
+        assign base_result =
             op_is_div_q ? (op_is_rem_q ? div_rem_out : div_quot_out)
                        : (op_is_high_q ? mul_high : mul_low);
 
-        wire [63:0] edge_result =
+        wire [63:0] edge_result;
+        assign edge_result =
             edge_zero_q
                 ? (op_is_rem_q ? dividend_q : 64'hFFFF_FFFF_FFFF_FFFF)
                 : base_result;
 
-        wire [63:0] iter_final_result =
+        wire [63:0] iter_final_result;
+        assign iter_final_result =
             op_is_w_q ? {{32{edge_result[31]}}, edge_result[31:0]} : edge_result;
 
         //  Does the current request need the state machine?
-        wire op_needs_iter = sub_is_div ? (DIV_C != 1) : (MUL_C != 1);
+        wire op_needs_iter;
+        assign op_needs_iter = sub_is_div ? (DIV_C != 1) : (MUL_C != 1);
 
         always @(posedge clk) begin
             if (rst) begin
@@ -262,5 +302,6 @@ module karu_m (
     end
     endgenerate
 
-    wire _unused = &{1'b0};
+    wire _unused;
+    assign _unused = &{1'b0};
 endmodule

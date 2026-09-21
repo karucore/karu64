@@ -34,25 +34,41 @@ module karu_dec (
     output reg  [2:0]   vfunct3,    //  OP-V funct3 (forwarded to karu_vpu)
     output reg  [5:0]   vfunct6     //  OP-V funct6 = ins[31:26]
 );
-    wire [6:0]  op   = ins[6:0];
-    wire [4:0]  opc  = ins[6:2];
-    wire [4:0]  rd_w = ins[11:7];
-    wire [2:0]  fn3  = ins[14:12];
-    wire [4:0]  rs1_w= ins[19:15];
-    wire [4:0]  rs2_w= ins[24:20];
-    wire [4:0]  rs3_w= ins[31:27];  //  FMA third source
-    wire [6:0]  fn7  = ins[31:25];
-    wire [5:0]  fn6  = ins[31:26];  //  for RV64 SLLI/SRLI/SRAI
-    wire [1:0]  fmt  = ins[26:25];  //  FP format: 00=S, 01=D, 10=H, 11=Q
+    wire [6:0]  op;
+    assign op = ins[6:0];
+    wire [4:0]  opc;
+    assign opc = ins[6:2];
+    wire [4:0]  rd_w;
+    assign rd_w = ins[11:7];
+    wire [2:0]  fn3;
+    assign fn3 = ins[14:12];
+    wire [4:0]  rs1_w;
+    assign rs1_w = ins[19:15];
+    wire [4:0]  rs2_w;
+    assign rs2_w = ins[24:20];
+    wire [4:0]  rs3_w;  //  FMA third source
+    assign rs3_w = ins[31:27];
+    wire [6:0]  fn7;
+    assign fn7 = ins[31:25];
+    wire [5:0]  fn6;  //  for RV64 SLLI/SRLI/SRAI
+    assign fn6 = ins[31:26];
+    wire [1:0]  fmt;  //  FP format: 00=S, 01=D, 10=H, 11=Q
+    assign fmt = ins[26:25];
 
     //  -- immediates --
-    wire [63:0] imm_i = { {52{ins[31]}}, ins[31:20] };
-    wire [63:0] imm_s = { {52{ins[31]}}, ins[31:25], ins[11:7] };
-    wire [63:0] imm_b = { {52{ins[31]}}, ins[7], ins[30:25], ins[11:8], 1'b0 };
-    wire [63:0] imm_u = { {32{ins[31]}}, ins[31:12], 12'b0 };
-    wire [63:0] imm_j = { {44{ins[31]}}, ins[19:12], ins[20], ins[30:21], 1'b0 };
+    wire [63:0] imm_i;
+    assign imm_i = { {52{ins[31]}}, ins[31:20] };
+    wire [63:0] imm_s;
+    assign imm_s = { {52{ins[31]}}, ins[31:25], ins[11:7] };
+    wire [63:0] imm_b;
+    assign imm_b = { {52{ins[31]}}, ins[7], ins[30:25], ins[11:8], 1'b0 };
+    wire [63:0] imm_u;
+    assign imm_u = { {32{ins[31]}}, ins[31:12], 12'b0 };
+    wire [63:0] imm_j;
+    assign imm_j = { {44{ins[31]}}, ins[19:12], ins[20], ins[30:21], 1'b0 };
     //  5-bit zero-extended for CSR I-form (immediate is in rs1 field)
-    wire [63:0] imm_csri = { 59'b0, rs1_w };
+    wire [63:0] imm_csri;
+    assign imm_csri = { 59'b0, rs1_w };
 
     always @(*) begin
         //  defaults

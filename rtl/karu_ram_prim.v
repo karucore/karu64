@@ -73,7 +73,8 @@ module karu_tdp_be_ram #(
 // synthesis translate_off
     // A zero-enable write must preserve the addressed storage, even when a
     // fractional vector group's unused address wraps to register zero.
-    reg az_q = 0, bz_q = 0;
+    reg az_q, bz_q;
+    initial begin az_q = 1'b0; bz_q = 1'b0; end   //  sim-only (translate_off region)
     reg [ADDR_W-1:0] az_addr, bz_addr;
     reg [DATA_W-1:0] az_data, bz_data;
     always @(posedge clk) begin

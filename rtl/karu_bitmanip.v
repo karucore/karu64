@@ -16,26 +16,40 @@ module karu_bitmanip (
     output wire [63:0]  out
 );
     //  ---- shift amounts ----
-    wire [5:0] sh6 = op2[5:0];  //  rotate/bit amount (64-bit)
-    wire [4:0] sh5 = op2[4:0];  //  rotate amount (32-bit W)
+    wire [5:0] sh6;  //  rotate/bit amount (64-bit)
+    assign sh6 = op2[5:0];
+    wire [4:0] sh5;  //  rotate amount (32-bit W)
+    assign sh5 = op2[4:0];
 
     //  ---- Zbb logical-with-negate ----
-    wire [63:0] r_andn = op1 & ~op2;
-    wire [63:0] r_orn  = op1 | ~op2;
-    wire [63:0] r_xnor = ~(op1 ^ op2);
+    wire [63:0] r_andn;
+    assign r_andn = op1 & ~op2;
+    wire [63:0] r_orn;
+    assign r_orn = op1 | ~op2;
+    wire [63:0] r_xnor;
+    assign r_xnor = ~(op1 ^ op2);
 
     //  ---- Zbb min/max (signed + unsigned) ----
-    wire signed [63:0] s1 = op1;
-    wire signed [63:0] s2 = op2;
-    wire [63:0] r_max  = (s1 > s2)   ? op1 : op2;
-    wire [63:0] r_min  = (s1 < s2)   ? op1 : op2;
-    wire [63:0] r_maxu = (op1 > op2) ? op1 : op2;
-    wire [63:0] r_minu = (op1 < op2) ? op1 : op2;
+    wire signed [63:0] s1;
+    assign s1 = op1;
+    wire signed [63:0] s2;
+    assign s2 = op2;
+    wire [63:0] r_max;
+    assign r_max = (s1 > s2)   ? op1 : op2;
+    wire [63:0] r_min;
+    assign r_min = (s1 < s2)   ? op1 : op2;
+    wire [63:0] r_maxu;
+    assign r_maxu = (op1 > op2) ? op1 : op2;
+    wire [63:0] r_minu;
+    assign r_minu = (op1 < op2) ? op1 : op2;
 
     //  ---- Zbb sext/zext ----
-    wire [63:0] r_sextb = {{56{op1[7]}},  op1[7:0]};
-    wire [63:0] r_sexth = {{48{op1[15]}}, op1[15:0]};
-    wire [63:0] r_zexth = {48'b0, op1[15:0]};
+    wire [63:0] r_sextb;
+    assign r_sextb = {{56{op1[7]}},  op1[7:0]};
+    wire [63:0] r_sexth;
+    assign r_sexth = {{48{op1[15]}}, op1[15:0]};
+    wire [63:0] r_zexth;
+    assign r_zexth = {48'b0, op1[15:0]};
 
     //  ---- Zbb count leading/trailing zeros, popcount (64- and 32-bit) ----
     function [7:0] f_clz; input [63:0] v; input is32; integer i; reg done;
@@ -62,22 +76,34 @@ module karu_bitmanip (
             f_cpop = c;
         end
     endfunction
-    wire [63:0] r_clz  = {56'b0, f_clz (op1, is_w)};
-    wire [63:0] r_ctz  = {56'b0, f_ctz (op1, is_w)};
-    wire [63:0] r_cpop = {56'b0, f_cpop(op1, is_w)};
+    wire [63:0] r_clz;
+    assign r_clz = {56'b0, f_clz (op1, is_w)};
+    wire [63:0] r_ctz;
+    assign r_ctz = {56'b0, f_ctz (op1, is_w)};
+    wire [63:0] r_cpop;
+    assign r_cpop = {56'b0, f_cpop(op1, is_w)};
 
     //  ---- Zbb rotate (64-bit; W rotates the low 32 then sign-extends) ----
     //  sh==0 is guarded (a 64-/32-wide right shift by the width is 0 in Verilog,
     //  so the OR'd halves would otherwise drop the value).
-    wire [6:0] csh6 = 7'd64 - {1'b0, sh6};  //  complement amount (guarded sh6!=0)
-    wire [5:0] csh5 = 6'd32 - {1'b0, sh5};
-    wire [63:0] rol64 = sh6 == 6'd0 ? op1 : ((op1 << sh6) | (op1 >> csh6));
-    wire [63:0] ror64 = sh6 == 6'd0 ? op1 : ((op1 >> sh6) | (op1 << csh6));
-    wire [31:0] w32   = op1[31:0];
-    wire [31:0] rolw  = sh5 == 5'd0 ? w32 : ((w32 << sh5) | (w32 >> csh5));
-    wire [31:0] rorw  = sh5 == 5'd0 ? w32 : ((w32 >> sh5) | (w32 << csh5));
-    wire [63:0] r_rol = is_w ? {{32{rolw[31]}}, rolw} : rol64;
-    wire [63:0] r_ror = is_w ? {{32{rorw[31]}}, rorw} : ror64;
+    wire [6:0] csh6;  //  complement amount (guarded sh6!=0)
+    assign csh6 = 7'd64 - {1'b0, sh6};
+    wire [5:0] csh5;
+    assign csh5 = 6'd32 - {1'b0, sh5};
+    wire [63:0] rol64;
+    assign rol64 = sh6 == 6'd0 ? op1 : ((op1 << sh6) | (op1 >> csh6));
+    wire [63:0] ror64;
+    assign ror64 = sh6 == 6'd0 ? op1 : ((op1 >> sh6) | (op1 << csh6));
+    wire [31:0] w32;
+    assign w32 = op1[31:0];
+    wire [31:0] rolw;
+    assign rolw = sh5 == 5'd0 ? w32 : ((w32 << sh5) | (w32 >> csh5));
+    wire [31:0] rorw;
+    assign rorw = sh5 == 5'd0 ? w32 : ((w32 >> sh5) | (w32 << csh5));
+    wire [63:0] r_rol;
+    assign r_rol = is_w ? {{32{rolw[31]}}, rolw} : rol64;
+    wire [63:0] r_ror;
+    assign r_ror = is_w ? {{32{rorw[31]}}, rorw} : ror64;
 
     //  ---- Zbb orc.b: each byte -> 0xFF if any bit set, else 0x00 ----
     wire [63:0] r_orcb;
@@ -87,26 +113,41 @@ module karu_bitmanip (
     end endgenerate
 
     //  ---- Zbb rev8: reverse byte order ----
-    wire [63:0] r_rev8 = {op1[7:0],   op1[15:8],  op1[23:16], op1[31:24],
-                          op1[39:32], op1[47:40], op1[55:48], op1[63:56]};
+    wire [63:0] r_rev8;
+    assign r_rev8 = {op1[7:0],   op1[15:8],  op1[23:16], op1[31:24],
+                     op1[39:32], op1[47:40], op1[55:48], op1[63:56]};
 
     //  ---- Zba shifted-add + unsigned-word forms ----
-    wire [63:0] uw = {32'b0, op1[31:0]};    //  zext.w(rs1)
-    wire [63:0] r_sh1add   = op2 + (op1 << 1);
-    wire [63:0] r_sh2add   = op2 + (op1 << 2);
-    wire [63:0] r_sh3add   = op2 + (op1 << 3);
-    wire [63:0] r_adduw    = op2 + uw;
-    wire [63:0] r_sh1adduw = op2 + (uw << 1);
-    wire [63:0] r_sh2adduw = op2 + (uw << 2);
-    wire [63:0] r_sh3adduw = op2 + (uw << 3);
-    wire [63:0] r_slliuw   = uw << sh6;     //  slli.uw: shamt in op2 (6-bit)
+    wire [63:0] uw;    //  zext.w(rs1)
+    assign uw = {32'b0, op1[31:0]};
+    wire [63:0] r_sh1add;
+    assign r_sh1add = op2 + (op1 << 1);
+    wire [63:0] r_sh2add;
+    assign r_sh2add = op2 + (op1 << 2);
+    wire [63:0] r_sh3add;
+    assign r_sh3add = op2 + (op1 << 3);
+    wire [63:0] r_adduw;
+    assign r_adduw = op2 + uw;
+    wire [63:0] r_sh1adduw;
+    assign r_sh1adduw = op2 + (uw << 1);
+    wire [63:0] r_sh2adduw;
+    assign r_sh2adduw = op2 + (uw << 2);
+    wire [63:0] r_sh3adduw;
+    assign r_sh3adduw = op2 + (uw << 3);
+    wire [63:0] r_slliuw;     //  slli.uw: shamt in op2 (6-bit)
+    assign r_slliuw = uw << sh6;
 
     //  ---- Zbs single-bit (index = op2[5:0]) ----
-    wire [63:0] onehot = 64'd1 << sh6;
-    wire [63:0] r_bclr = op1 & ~onehot;
-    wire [63:0] r_bext = {63'b0, op1[sh6]};
-    wire [63:0] r_binv = op1 ^ onehot;
-    wire [63:0] r_bset = op1 | onehot;
+    wire [63:0] onehot;
+    assign onehot = 64'd1 << sh6;
+    wire [63:0] r_bclr;
+    assign r_bclr = op1 & ~onehot;
+    wire [63:0] r_bext;
+    assign r_bext = {63'b0, op1[sh6]};
+    wire [63:0] r_binv;
+    assign r_binv = op1 ^ onehot;
+    wire [63:0] r_bset;
+    assign r_bset = op1 | onehot;
 
     assign out =
         (sub == `BM_ANDN)     ? r_andn :

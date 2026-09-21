@@ -126,11 +126,15 @@ module karu_sv39 #(
 
     //  Same-cycle flush+completion must suppress fills immediately;
     //  waiting for the registered poison bit would be one cycle too late.
-    wire        poison_eff = walk_poison || ((flush || cancel) && (state != S_IDLE));
+    wire        poison_eff;
+    assign poison_eff = walk_poison || ((flush || cancel) && (state != S_IDLE));
 
-    wire bare_mode = (priv == PRIV_M) || (satp[63:60] != 4'd8);
-    wire va_canon = (va[63:39] == {25{va[38]}});
-    wire [26:0] va_vpn = va[38:12];
+    wire bare_mode;
+    assign bare_mode = (priv == PRIV_M) || (satp[63:60] != 4'd8);
+    wire va_canon;
+    assign va_canon = (va[63:39] == {25{va[38]}});
+    wire [26:0] va_vpn;
+    assign va_vpn = va[38:12];
 
     reg [TLB_ENTRIES-1:0]       tlb_v;
     reg [26:0]                  tlb_vpn [0:TLB_ENTRIES-1];
@@ -151,8 +155,9 @@ module karu_sv39 #(
     // implicit VS-PTE reads: a change must rewalk to recover their exact
     // fault GPA/tinst, not merely recheck the final leaves' attributes.
     // HGATP[59:58] and PPN[1:0] are reserved/fixed zero, not context bits.
-    wire [125:0] guest_context = {vsatp_q, hgatp_q[63:60], hgatp_q[57:2],
-                                 pbmte_q, vs_pbmte_q};
+    wire [125:0] guest_context;
+    assign guest_context = {vsatp_q, hgatp_q[63:60], hgatp_q[57:2],
+                           pbmte_q, vs_pbmte_q};
     reg [125:0] gtlb_context;
     reg [3:0] gtlb_v;
     reg [28:0] gtlb_vpn [0:3];
@@ -160,15 +165,19 @@ module karu_sv39 #(
     reg [7:0] gtlb_vsperm [0:3], gtlb_gperm [0:3];
     reg [1:0] gtlb_vspbmt [0:3], gtlb_gpbmt [0:3];
     reg [1:0] gtlb_replace, gtlb_hit_i_q;
-    wire gtlb_context_match = gtlb_context == guest_context;
-    wire [1:0] gtlb_fill_i = gtlb_context_match ? gtlb_replace : 2'b00;
+    wire gtlb_context_match;
+    assign gtlb_context_match = gtlb_context == guest_context;
+    wire [1:0] gtlb_fill_i;
+    assign gtlb_fill_i = gtlb_context_match ? gtlb_replace : 2'b00;
     // Shortened VPN tags are safe only after full address/mode validation.
     // Both Bare stages remain uncached and retain full-width PMA checks.
-    wire guest_cache_addr_ok = (hgatp_q[63:60] == 0 || hgatp_q[63:60] == 8) &&
-        ((vsatp_q[63:60] == 8 && va_q[63:39] == {25{va_q[38]}}) ||
-         (vsatp_q[63:60] == 0 && hgatp_q[63:60] == 8 && va_q[63:41] == 0));
+    wire guest_cache_addr_ok;
+    assign guest_cache_addr_ok = (hgatp_q[63:60] == 0 || hgatp_q[63:60] == 8) &&
+          ((vsatp_q[63:60] == 8 && va_q[63:39] == {25{va_q[38]}}) ||
+           (vsatp_q[63:60] == 0 && hgatp_q[63:60] == 8 && va_q[63:41] == 0));
     reg gtlb_hit_raw;
-    wire gtlb_hit = GUEST_TLB_ENABLE ? gtlb_hit_raw : 1'b0;
+    wire gtlb_hit;
+    assign gtlb_hit = GUEST_TLB_ENABLE ? gtlb_hit_raw : 1'b0;
     reg [1:0] gtlb_hit_i;
     integer gi;
     always @(*) begin
@@ -318,9 +327,11 @@ module karu_sv39 #(
     reg [1:0] pwc_hit_i;
     reg [63:0] pte_from_cache;
     wire [511:0] pwc_hit_line;
-    wire [511:0] pwc_fill_next = line_put(pwc_fill_line, fill_beat_q, rdata);
-    wire         pwc_data_we = (state == S_R) && !exact_read_q &&
-                               rvalid && rready && !poison_eff;
+    wire [511:0] pwc_fill_next;
+    assign pwc_fill_next = line_put(pwc_fill_line, fill_beat_q, rdata);
+    wire         pwc_data_we;
+    assign pwc_data_we = (state == S_R) && !exact_read_q &&
+                         rvalid && rready && !poison_eff;
 
     karu_1w1r_async_ram #(
         .DATA_W(512), .DEPTH(PWC_LINES), .ADDR_W(2)
@@ -393,29 +404,39 @@ module karu_sv39 #(
     `include "karu_pma.vh"
 
     // TLB entries contain resolved PPNs, including 4 KiB NAPOT subpages.
-    wire [63:0] tlb_hit_pa = leaf_pa(va, {10'b0, tlb_ppn[tlb_hit_i], 10'b0}, tlb_level[tlb_hit_i]);
-    wire tlb_hit_pma_ok = karu_pma_ok(tlb_hit_pa, access) &&
-                         (!hlvx || karu_pma_ok(tlb_hit_pa, ACC_FETCH));
-    wire pte_is_io = pte_pbmt_q == 2'b10 ||
-                    (pte_pbmt_q == 2'b00 && karu_pma_io(pte_addr_q));
+    wire [63:0] tlb_hit_pa;
+    assign tlb_hit_pa = leaf_pa(va, {10'b0, tlb_ppn[tlb_hit_i], 10'b0}, tlb_level[tlb_hit_i]);
+    wire tlb_hit_pma_ok;
+    assign tlb_hit_pma_ok = karu_pma_ok(tlb_hit_pa, access) &&
+                           (!hlvx || karu_pma_ok(tlb_hit_pa, ACC_FETCH));
+    wire pte_is_io;
+    assign pte_is_io = pte_pbmt_q == 2'b10 ||
+                      (pte_pbmt_q == 2'b00 && karu_pma_io(pte_addr_q));
     // Only standard-map DRAM supports a PWC line burst. Boot ROM and
     // scratch SRAM are readable PMA regions but have single-beat slaves.
     // PMA validation below still checks the full PA before AXI truncation.
-    wire exact_pte_read = virt_q || pte_is_io || !pte_addr_q[31];
+    wire exact_pte_read;
+    assign exact_pte_read = virt_q || pte_is_io || !pte_addr_q[31];
     assign pte_io_pending = (state == S_AR || state == S_R) && pte_is_io;
 
-    wire [63:0] guest_hit_pa = {8'b0, gtlb_hppn[gtlb_hit_i_q], va_q[11:0]};
-    wire [63:0] guest_hit_gpa = {8'b0, gtlb_gppn[gtlb_hit_i_q], va_q[11:0]};
-    wire guest_hit_vs_fault = vsatp_q[63:60] != 0 &&
-        (pbmt_invalid(gtlb_vspbmt[gtlb_hit_i_q], vs_pbmte_q) ||
-         perm_fault(gtlb_vsperm[gtlb_hit_i_q], access_q, priv_q,
-                    vs_sum_q, mxr_q || vs_mxr_q, hlvx_q));
-    wire guest_hit_g_fault = hgatp_q[63:60] != 0 &&
-        (pbmt_invalid(gtlb_gpbmt[gtlb_hit_i_q], pbmte_q) ||
-         perm_fault(gtlb_gperm[gtlb_hit_i_q], access_q, PRIV_U, 1'b0, mxr_q, hlvx_q));
-    wire guest_hit_pma_fault = !karu_pma_ok(guest_hit_pa, access_q) ||
-                               (hlvx_q && !karu_pma_ok(guest_hit_pa, ACC_FETCH));
-    wire guest_hit_fault = guest_hit_vs_fault || guest_hit_g_fault || guest_hit_pma_fault;
+    wire [63:0] guest_hit_pa;
+    assign guest_hit_pa = {8'b0, gtlb_hppn[gtlb_hit_i_q], va_q[11:0]};
+    wire [63:0] guest_hit_gpa;
+    assign guest_hit_gpa = {8'b0, gtlb_gppn[gtlb_hit_i_q], va_q[11:0]};
+    wire guest_hit_vs_fault;
+    assign guest_hit_vs_fault = vsatp_q[63:60] != 0 &&
+          (pbmt_invalid(gtlb_vspbmt[gtlb_hit_i_q], vs_pbmte_q) ||
+           perm_fault(gtlb_vsperm[gtlb_hit_i_q], access_q, priv_q,
+                      vs_sum_q, mxr_q || vs_mxr_q, hlvx_q));
+    wire guest_hit_g_fault;
+    assign guest_hit_g_fault = hgatp_q[63:60] != 0 &&
+          (pbmt_invalid(gtlb_gpbmt[gtlb_hit_i_q], pbmte_q) ||
+           perm_fault(gtlb_gperm[gtlb_hit_i_q], access_q, PRIV_U, 1'b0, mxr_q, hlvx_q));
+    wire guest_hit_pma_fault;
+    assign guest_hit_pma_fault = !karu_pma_ok(guest_hit_pa, access_q) ||
+                                 (hlvx_q && !karu_pma_ok(guest_hit_pa, ACC_FETCH));
+    wire guest_hit_fault;
+    assign guest_hit_fault = guest_hit_vs_fault || guest_hit_g_fault || guest_hit_pma_fault;
 
     task automatic raise_access_fault;
         begin
@@ -828,5 +849,6 @@ module karu_sv39 #(
         end
     end
 
-    wire _unused = &{rid, bid, awready, wready, bresp, bvalid, satp_q[0], 1'b0};
+    wire _unused;
+    assign _unused = &{rid, bid, awready, wready, bresp, bvalid, satp_q[0], 1'b0};
 endmodule

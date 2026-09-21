@@ -90,16 +90,21 @@ module karu_ifu (
     reg         r_discard;      //  the next R is stale (post-redirect drain)
     reg         xlate_discard;  //  an in-flight sv39 walk predates a redirect; drop its result
 
-    wire [3:0]  rel_pc = pc[3:0] - buf0_a[3:0]; //  0..15 byte offset within buf0
+    wire [3:0]  rel_pc; //  0..15 byte offset within buf0
+    assign rel_pc = pc[3:0] - buf0_a[3:0];
 
     //  Assemble the 32 instruction bits at pc.
     //  (rel_pc <= 4): all 32 bits in buf0
     //  (rel_pc == 6 && buf1_v): low 16 from buf0, high 16 from buf1
-    wire same_q = buf0_v && (pc[63:3] == buf0_a[63:3]);
-    wire next_q = buf1_v && (pc[63:3] == buf1_a[63:3]);
-    wire tail_is_c = (buf0_d[49:48] != 2'b11);
-    wire xline  = buf0_v && buf1_v && pc[2:0] == 3'b110 &&
-                  buf1_a == (buf0_a + 64'd8);
+    wire same_q;
+    assign same_q = buf0_v && (pc[63:3] == buf0_a[63:3]);
+    wire next_q;
+    assign next_q = buf1_v && (pc[63:3] == buf1_a[63:3]);
+    wire tail_is_c;
+    assign tail_is_c = (buf0_d[49:48] != 2'b11);
+    wire xline;
+    assign xline = buf0_v && buf1_v && pc[2:0] == 3'b110 &&
+                   buf1_a == (buf0_a + 64'd8);
 
     //  32-bit window into buf0/buf1 at pc[2:1]
     reg [31:0] in_buf0, in_buf1;
@@ -118,7 +123,8 @@ module karu_ifu (
         endcase
     end
     //  Cross boundary: low 16 from buf0[63:48], high 16 from buf1[15:0]
-    wire [31:0] in_xline = {buf1_d[15:0], buf0_d[63:48]};
+    wire [31:0] in_xline;
+    assign in_xline = {buf1_d[15:0], buf0_d[63:48]};
 
     assign ins_pc = pc;
     assign ins_w  = xline  ? in_xline :
@@ -133,10 +139,13 @@ module karu_ifu (
     //  Maintain invariant: if buf0_v, buf0 is "current" (contains pc).
     //  If pc moves out of buf0 (rel_pc >= 8), shift buf1 -> buf0.
     //  Then fetch into buf1 the next quadword.
-    wire need_buf1 = same_q && !buf1_v && pc[2:0] == 3'b110 && !tail_is_c;
-    wire need_buf0 = !buf0_v;
+    wire need_buf1;
+    assign need_buf1 = same_q && !buf1_v && pc[2:0] == 3'b110 && !tail_is_c;
+    wire need_buf0;
+    assign need_buf0 = !buf0_v;
 
-    wire [63:0] next_ar_addr =
+    wire [63:0] next_ar_addr;
+    assign next_ar_addr =
         need_buf0 ? { pc[63:3], 3'b000 } :
         need_buf1 ? buf0_a + 64'd8     :
                     ar_addr;
@@ -144,20 +153,26 @@ module karu_ifu (
     //  Consumed length is derived locally from the assembled instruction
     //  (compressed iff low 2 bits != 2'b11) -- no need to round-trip is_c out
     //  through karu64 and back as c_flag, which spread this cone across the die.
-    wire consume_is_c = (ins_w[1:0] != 2'b11);
+    wire consume_is_c;
+    assign consume_is_c = (ins_w[1:0] != 2'b11);
 
     //  Narrow PC advance: the consume step is +2/+4, so only pc[2:0] plus a
     //  single carry into pc[63:3] change. Precompute the high +1 path and mux
     //  it with pc_cross so the compressed-length decision does not drive a
     //  61-bit carry chain.
-    wire [3:0]  pc_lo_inc = {1'b0, pc[2:0]} + (consume_is_c ? 4'd2 : 4'd4);
-    wire        pc_cross  = pc_lo_inc[3];   //  1 = consume crosses the 8-byte quad
-    wire [60:0] pc_hi_inc = pc[63:3] + 61'd1;
-    wire [63:0] next_pc   = {pc_cross ? pc_hi_inc : pc[63:3], pc_lo_inc[2:0]};
+    wire [3:0]  pc_lo_inc;
+    assign pc_lo_inc = {1'b0, pc[2:0]} + (consume_is_c ? 4'd2 : 4'd4);
+    wire        pc_cross;   //  1 = consume crosses the 8-byte quad
+    assign pc_cross = pc_lo_inc[3];
+    wire [60:0] pc_hi_inc;
+    assign pc_hi_inc = pc[63:3] + 61'd1;
+    wire [63:0] next_pc;
+    assign next_pc = {pc_cross ? pc_hi_inc : pc[63:3], pc_lo_inc[2:0]};
     //  post_out_of_buf0 is only consulted under buf0_v, where the module
     //  invariant pc[63:3]==buf0_a[63:3] holds, so "left buf0's quad" == the
     //  low-bit carry -- no 64-bit post_pc / 61-bit compare needed.
-    wire post_out_of_buf0 = pc_cross;
+    wire post_out_of_buf0;
+    assign post_out_of_buf0 = pc_cross;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -355,5 +370,6 @@ module karu_ifu (
     end
 
     //  silence unused
-    wire _unused = &{rid, rlast, xlate_fault_va[2:0], 1'b0};
+    wire _unused;
+    assign _unused = &{rid, rlast, xlate_fault_va[2:0], 1'b0};
 endmodule

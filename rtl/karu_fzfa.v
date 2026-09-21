@@ -17,27 +17,42 @@ module karu_fcvtmod_wd (
     output wire [63:0]  res,
     output wire [4:0]   flags
 );
-    wire        s     = a[63];
-    wire [10:0] e     = a[62:52];
-    wire [51:0] m     = a[51:0];
-    wire        is_nan = (e == 11'h7FF) && (m != 52'h0);
-    wire        is_inf = (e == 11'h7FF) && (m == 52'h0);
-    wire        is_zero= (e == 11'h0)   && (m == 52'h0);
-    wire        is_sub = (e == 11'h0)   && (m != 52'h0);
-    wire signed [12:0]  E = $signed({2'b0, e}) - 13'sd1023;
-    wire [52:0] sig = {1'b1, m};        //  implicit-1 significand (normal)
+    wire        s;
+    assign s = a[63];
+    wire [10:0] e;
+    assign e = a[62:52];
+    wire [51:0] m;
+    assign m = a[51:0];
+    wire        is_nan;
+    assign is_nan = (e == 11'h7FF) && (m != 52'h0);
+    wire        is_inf;
+    assign is_inf = (e == 11'h7FF) && (m == 52'h0);
+    wire        is_zero;
+    assign is_zero = (e == 11'h0)   && (m == 52'h0);
+    wire        is_sub;
+    assign is_sub = (e == 11'h0)   && (m != 52'h0);
+    wire signed [12:0]  E;
+    assign E = $signed({2'b0, e}) - 13'sd1023;
+    wire [52:0] sig;        //  implicit-1 significand (normal)
+    assign sig = {1'b1, m};
 
     //  ---- 0 <= E < 52 path (right-shift out the fractional bits) ----
-    wire [5:0]  shift     = 6'd52 - E[5:0];     //  valid only when 0<=E<52
-    wire [52:0] intpart   = sig >> shift;       //  integer magnitude (< 2^52)
-    wire [52:0] frac_mask = (53'b1 << shift) - 53'b1;
-    wire        frac_lo_nz = (sig & frac_mask) != 53'b0;
-    wire        oor_lo = (!s && (intpart > 53'h0000_7FFF_FFFF)) //  > 2^31-1 (pos)
-                       || ( s && (intpart > 53'h0000_8000_0000));   //  > 2^31   (neg)
+    wire [5:0]  shift;     //  valid only when 0<=E<52
+    assign shift = 6'd52 - E[5:0];
+    wire [52:0] intpart;       //  integer magnitude (< 2^52)
+    assign intpart = sig >> shift;
+    wire [52:0] frac_mask;
+    assign frac_mask = (53'b1 << shift) - 53'b1;
+    wire        frac_lo_nz;
+    assign frac_lo_nz = (sig & frac_mask) != 53'b0;
+    wire        oor_lo;   //  > 2^31   (neg)
+    assign oor_lo = (!s && (intpart > 53'h0000_7FFF_FFFF)) //  > 2^31-1 (pos)
+                  || ( s && (intpart > 53'h0000_8000_0000));
 
     //  ---- E >= 52 path (already integer, |int| >= 2^52 -> out of range) ----
-    wire [31:0] mag32_hi = (E - 13'sd52 >= 13'sd32) ? 32'b0
-                           : (sig[31:0] << (E - 13'sd52));  //  (sig<<k) mod 2^32
+    wire [31:0] mag32_hi;  //  (sig<<k) mod 2^32
+    assign mag32_hi = (E - 13'sd52 >= 13'sd32) ? 32'b0
+                      : (sig[31:0] << (E - 13'sd52));
 
     //  magnitude reduced mod 2^32, the discarded-fraction flag, and whether the
     //  true |integer| exceeds the signed-32 range.
@@ -59,7 +74,8 @@ module karu_fcvtmod_wd (
     end
 
     //  2's-complement mod 2^32, then sign-extend bit 31.
-    wire [31:0] res32 = s ? (~mag32 + 32'd1) : mag32;
+    wire [31:0] res32;
+    assign res32 = s ? (~mag32 + 32'd1) : mag32;
     assign res = (is_nan || is_inf) ? 64'd0 : {{32{res32[31]}}, res32};
 
     assign flags =

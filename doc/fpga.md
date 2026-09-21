@@ -17,20 +17,17 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Current profile candidate — 2026-09-15
+## Current profile image — 2026-09-22
 
-The current RVA23S64 DDR/SGMII ROM bitstream was built with Vivado 2026.1 from
-the corrected RTL. Routed 75 MHz CPU setup/hold slack is +0.046/+0.010 ns;
-whole-design worst setup/hold is +0.009/+0.010 ns. All timing constraints and
-all 14 bus-skew constraints pass. Utilization is 366,098 LUTs, 86,857
-registers, 317.5 BRAM tiles and 29 DSPs. Bitgen and its prerequisite DRC
-completed with zero errors. Both matched ACT4 configurations passed 2872/2872
-tests with the maintained local
-[dependency patches](../test/act4-karu/README.md#dependencies).
+The RVA23S64 DDR/SGMII ROM image `03eeb088…e73d2` was built with Vivado
+2026.1 after the Genus declaration-order cleanup. It boots Linux 7.2.6-zvk
+and passes board acceptance plus the thorough crypto, vector ABI, cache and
+KVM guest tests. OpenSSL has 92/92 known-answer and scalar-reference matches;
+both `ebreak_test` and `arch_timer` exit zero.
 
-The current image (`c61da577…ed0da`) boots Linux 7.2.4-zvk and passes karudeb
-board acceptance, including vector ABI, memory and crypto checks.
-See [diagnostics and constraint coverage](release-diagnostics-2026-09-14.md)
+The latest transferred artifacts are the `.bit` and `.ltx` only. Retained
+routed timing/utilization reports belong to the September 15 reference build.
+See [diagnostics and result hashes](release-diagnostics-2026-09-14.md)
 and the [matching boot selection](#opt-in-rva23s64-boot-selection).
 
 ## Tool environment
@@ -327,21 +324,17 @@ and thread count (`VIVADO_THREADS`) for the available resources. Full-vector
 implementation requires substantially more memory than scalar synthesis.
 An address-space limit is not a resident-memory limit.
 
-## Hardware status and remaining board work
+## Hardware status and repeat-build checks
 
-VCU118 bring-up has validated MIG calibration, 2 GiB DDR tests, the baked
-fu-boot/OpenSBI/U-Boot chain, NFS-root Linux and LiteEth networking. The first
-RVA23S64 profile image also booted Linux 7.2.4-zvk and passed the initial KVM
-`ebreak_test` and `arch_timer` guests.
+The current image passes Linux/NFS-root boot, memory and cache probes,
+OpenSSL/riscv-pqc checks, vector ABI selftests and both KVM exception/timer
+guests. Detailed counts and evidence are in the release diagnostics.
 
-Those results predate later RTL fixes. The current release image must repeat:
-
-- routed setup and hold checks for every constrained clock group;
-- `board_accept.sh`, including all vector ABI and ptrace cases;
-- cache/CPI tests with code placed throughout the 2 GiB DRAM window;
-- OpenSSL, riscv-pqc, multi-group vector-crypto `.vs`, and resident Keccak
-  absorb/squeeze tests; and
-- the KVM exception and timer guests.
+For each new build, retain its routed timing reports, rerun `board_accept.sh`
+as root with `perf_run`-enabled cache counters, and record crypto and KVM
+guest completion logs against the bitstream hash. Dedicated multi-group
+vector-crypto and resident-Keccak firmware suites remain separate from the
+OpenSSL and instruction-vector checks.
 
 QSPI configuration-flash reads and LiteEth throughput tuning remain platform
 enhancements, not CPU-profile gates. Linux/rootfs/DTB/kernel artifacts come

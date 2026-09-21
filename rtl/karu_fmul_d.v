@@ -46,31 +46,52 @@ module karu_fmul_d (
                         //  RESULT time (cycle req+53), by when the live `rm` reflects
                         //  a later instruction (issue advances).
     always @(posedge clk) if (req) begin a_q <= a; b_q <= b; rm_q <= rm; end
-    wire [63:0] opa = (D_MUL_CYCLES == 1) ? a : a_q;
-    wire [63:0] opb = (D_MUL_CYCLES == 1) ? b : b_q;
-    wire [2:0]  orm = (D_MUL_CYCLES == 1) ? rm : rm_q;
+    wire [63:0] opa;
+    assign opa = (D_MUL_CYCLES == 1) ? a : a_q;
+    wire [63:0] opb;
+    assign opb = (D_MUL_CYCLES == 1) ? b : b_q;
+    wire [2:0]  orm;
+    assign orm = (D_MUL_CYCLES == 1) ? rm : rm_q;
 
     //  ---- unpack ----
-    wire        a_sign = opa[63];
-    wire [10:0] a_exp  = opa[62:52];
-    wire [51:0] a_man  = opa[51:0];
-    wire        a_zero = (a_exp == 11'h000) && (a_man == 52'h0);
-    wire        a_sub  = (a_exp == 11'h000) && (a_man != 52'h0);
-    wire        a_inf  = (a_exp == 11'h7FF) && (a_man == 52'h0);
-    wire        a_nan  = (a_exp == 11'h7FF) && (a_man != 52'h0);
-    wire        a_snan = a_nan && !a_man[51];
+    wire        a_sign;
+    assign a_sign = opa[63];
+    wire [10:0] a_exp;
+    assign a_exp = opa[62:52];
+    wire [51:0] a_man;
+    assign a_man = opa[51:0];
+    wire        a_zero;
+    assign a_zero = (a_exp == 11'h000) && (a_man == 52'h0);
+    wire        a_sub;
+    assign a_sub = (a_exp == 11'h000) && (a_man != 52'h0);
+    wire        a_inf;
+    assign a_inf = (a_exp == 11'h7FF) && (a_man == 52'h0);
+    wire        a_nan;
+    assign a_nan = (a_exp == 11'h7FF) && (a_man != 52'h0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a_man[51];
 
-    wire        b_sign = opb[63];
-    wire [10:0] b_exp  = opb[62:52];
-    wire [51:0] b_man  = opb[51:0];
-    wire        b_zero = (b_exp == 11'h000) && (b_man == 52'h0);
-    wire        b_sub  = (b_exp == 11'h000) && (b_man != 52'h0);
-    wire        b_inf  = (b_exp == 11'h7FF) && (b_man == 52'h0);
-    wire        b_nan  = (b_exp == 11'h7FF) && (b_man != 52'h0);
-    wire        b_snan = b_nan && !b_man[51];
+    wire        b_sign;
+    assign b_sign = opb[63];
+    wire [10:0] b_exp;
+    assign b_exp = opb[62:52];
+    wire [51:0] b_man;
+    assign b_man = opb[51:0];
+    wire        b_zero;
+    assign b_zero = (b_exp == 11'h000) && (b_man == 52'h0);
+    wire        b_sub;
+    assign b_sub = (b_exp == 11'h000) && (b_man != 52'h0);
+    wire        b_inf;
+    assign b_inf = (b_exp == 11'h7FF) && (b_man == 52'h0);
+    wire        b_nan;
+    assign b_nan = (b_exp == 11'h7FF) && (b_man != 52'h0);
+    wire        b_snan;
+    assign b_snan = b_nan && !b_man[51];
 
-    wire        a_is_zero = a_zero;     //  true zero only; subnormals normalized
-    wire        b_is_zero = b_zero;
+    wire        a_is_zero;     //  true zero only; subnormals normalized
+    assign a_is_zero = a_zero;
+    wire        b_is_zero;
+    assign b_is_zero = b_zero;
 
     function [5:0] clz52;
         input [51:0] v; integer i; reg fnd;
@@ -80,35 +101,51 @@ module karu_fmul_d (
                 if (!fnd && v[i]) begin clz52 = 6'd51 - i[5:0]; fnd = 1'b1; end
         end
     endfunction
-    wire [5:0]  a_clz = a_sub ? clz52(a_man) : 6'd0;
-    wire [5:0]  b_clz = b_sub ? clz52(b_man) : 6'd0;
-    wire [51:0] a_man_n = a_sub ? (a_man << (a_clz + 6'd1)) : a_man;
-    wire [51:0] b_man_n = b_sub ? (b_man << (b_clz + 6'd1)) : b_man;
-    wire [52:0] a_mfull = {1'b1, a_man_n};
-    wire [52:0] b_mfull = {1'b1, b_man_n};
-    wire signed [12:0] a_exp_eff = a_sub ? (13'sd0 - {{7{1'b0}}, a_clz}) : $signed({2'b0, a_exp});
-    wire signed [12:0] b_exp_eff = b_sub ? (13'sd0 - {{7{1'b0}}, b_clz}) : $signed({2'b0, b_exp});
+    wire [5:0]  a_clz;
+    assign a_clz = a_sub ? clz52(a_man) : 6'd0;
+    wire [5:0]  b_clz;
+    assign b_clz = b_sub ? clz52(b_man) : 6'd0;
+    wire [51:0] a_man_n;
+    assign a_man_n = a_sub ? (a_man << (a_clz + 6'd1)) : a_man;
+    wire [51:0] b_man_n;
+    assign b_man_n = b_sub ? (b_man << (b_clz + 6'd1)) : b_man;
+    wire [52:0] a_mfull;
+    assign a_mfull = {1'b1, a_man_n};
+    wire [52:0] b_mfull;
+    assign b_mfull = {1'b1, b_man_n};
+    wire signed [12:0] a_exp_eff;
+    assign a_exp_eff = a_sub ? (13'sd0 - {{7{1'b0}}, a_clz}) : $signed({2'b0, a_exp});
+    wire signed [12:0] b_exp_eff;
+    assign b_exp_eff = b_sub ? (13'sd0 - {{7{1'b0}}, b_clz}) : $signed({2'b0, b_exp});
 
     //  ---- special cases ----
-    wire any_nan      = a_nan || b_nan;
-    wire any_snan     = a_snan || b_snan;
-    wire inv_inf_zero = (a_inf && b_is_zero) || (b_inf && a_is_zero);
-    wire res_sign     = a_sign ^ b_sign;
+    wire any_nan;
+    assign any_nan = a_nan || b_nan;
+    wire any_snan;
+    assign any_snan = a_snan || b_snan;
+    wire inv_inf_zero;
+    assign inv_inf_zero = (a_inf && b_is_zero) || (b_inf && a_is_zero);
+    wire res_sign;
+    assign res_sign = a_sign ^ b_sign;
 
-    wire special_active = any_nan || inv_inf_zero
-                         || a_inf || b_inf
-                         || a_is_zero || b_is_zero;
-    wire [63:0] special_res =
+    wire special_active;
+    assign special_active = any_nan || inv_inf_zero
+                           || a_inf || b_inf
+                           || a_is_zero || b_is_zero;
+    wire [63:0] special_res;
+    assign special_res =
         any_nan         ? `FP_D_QNAN :
         inv_inf_zero    ? `FP_D_QNAN :
         (a_inf || b_inf) ? {res_sign, 11'h7FF, 52'h0} :
                            {res_sign, 63'b0};
-    wire [4:0]  special_flags =
+    wire [4:0]  special_flags;
+    assign special_flags =
         (any_snan     ? (5'b1 << `FF_NV) : 5'b0) |
         (inv_inf_zero ? (5'b1 << `FF_NV) : 5'b0);
 
     //  ---- normal multiply ----
-    wire signed [12:0] exp_sum_pre = a_exp_eff + b_exp_eff - 13'sd1023;
+    wire signed [12:0] exp_sum_pre;
+    assign exp_sum_pre = a_exp_eff + b_exp_eff - 13'sd1023;
 
     //  Fast-path pipeline depth (>=2 -> pipelined; clamped to >=3 inside g_fastp).
     localparam D_MUL_PIPE = `KARU_D_MUL_PIPE;
@@ -142,8 +179,10 @@ module karu_fmul_d (
         reg [105:0]     sacc;
         reg [52:0]      sma;
 
-        wire [53:0]     smul_sum  = sacc[105:53] + (sacc[0] ? sma : 53'b0);
-        wire [105:0]    smul_next = { smul_sum, sacc[52:1] };
+        wire [53:0]     smul_sum;
+        assign smul_sum = sacc[105:53] + (sacc[0] ? sma : 53'b0);
+        wire [105:0]    smul_next;
+        assign smul_next = { smul_sum, sacc[52:1] };
 
         assign eff_prod = sacc;
         assign sm_busy  = (sstate != SS_IDLE);
@@ -258,28 +297,44 @@ module karu_fmul_d (
                      (D_MUL_PIPE <= 1)   ? 5'd2  : NP_LAT[4:0];
 
     //  ---- Normalize / round / pack (subnormal-aware) ---- driven by eff_*
-    wire        nshift = eff_prod[105];
-    wire [52:0] sig53  = nshift ? eff_prod[105:53] : eff_prod[104:52];  //  leading at [52]
-    wire        g_in   = nshift ? eff_prod[52]      : eff_prod[51];
-    wire        r_in   = nshift ? eff_prod[51]      : eff_prod[50];
-    wire        s_in   = nshift ? (|eff_prod[50:0]) : (|eff_prod[49:0]);
-    wire signed [12:0] exp_n = eff_exp_sum_pre + {{12{1'b0}}, nshift};
+    wire        nshift;
+    assign nshift = eff_prod[105];
+    wire [52:0] sig53;  //  leading at [52]
+    assign sig53 = nshift ? eff_prod[105:53] : eff_prod[104:52];
+    wire        g_in;
+    assign g_in = nshift ? eff_prod[52]      : eff_prod[51];
+    wire        r_in;
+    assign r_in = nshift ? eff_prod[51]      : eff_prod[50];
+    wire        s_in;
+    assign s_in = nshift ? (|eff_prod[50:0]) : (|eff_prod[49:0]);
+    wire signed [12:0] exp_n;
+    assign exp_n = eff_exp_sum_pre + {{12{1'b0}}, nshift};
 
-    wire [56:0] norm = {sig53, g_in, r_in, 1'b0, s_in}; //  leading 1 at bit56
+    wire [56:0] norm; //  leading 1 at bit56
+    assign norm = {sig53, g_in, r_in, 1'b0, s_in};
 
-    wire signed [12:0] dshift_s = (exp_n <= 0) ? (13'sd1 - exp_n) : 13'sd0;
-    wire [12:0] dshift  = dshift_s[12:0];
-    wire [56:0] dn      = (dshift >= 13'd57) ? 57'b0 : (norm >> dshift);
-    wire        dn_lost = (dshift == 0) ? 1'b0 :
-                          (dshift >= 13'd57) ? (|norm) :
-                          (|(norm & (~({57{1'b1}} << dshift))));
+    wire signed [12:0] dshift_s;
+    assign dshift_s = (exp_n <= 0) ? (13'sd1 - exp_n) : 13'sd0;
+    wire [12:0] dshift;
+    assign dshift = dshift_s[12:0];
+    wire [56:0] dn;
+    assign dn = (dshift >= 13'd57) ? 57'b0 : (norm >> dshift);
+    wire        dn_lost;
+    assign dn_lost = (dshift == 0) ? 1'b0 :
+                     (dshift >= 13'd57) ? (|norm) :
+                     (|(norm & (~({57{1'b1}} << dshift))));
 
-    wire [52:0] dsig  = dn[56:4];
-    wire        round_bit = dn[3];
-    wire        sticky    = dn[2] | (|dn[1:0]) | dn_lost;
-    wire        subnormal_region = (exp_n <= 0);
+    wire [52:0] dsig;
+    assign dsig = dn[56:4];
+    wire        round_bit;
+    assign round_bit = dn[3];
+    wire        sticky;
+    assign sticky = dn[2] | (|dn[1:0]) | dn_lost;
+    wire        subnormal_region;
+    assign subnormal_region = (exp_n <= 0);
 
-    wire round_up =
+    wire round_up;
+    assign round_up =
         (eff_orm == `FRM_RNE) ? (round_bit && (sticky || dsig[0])) :
         (eff_orm == `FRM_RTZ) ? 1'b0 :
         (eff_orm == `FRM_RDN) ? (eff_res_sign  && (round_bit || sticky)) :
@@ -287,49 +342,64 @@ module karu_fmul_d (
         (eff_orm == `FRM_RMM) ? round_bit :
                            1'b0;
 
-    wire [53:0] mant_rnd  = {1'b0, dsig} + {53'b0, round_up};
-    wire        rnd_carry = mant_rnd[53];
-    wire        promote   = mant_rnd[52];
-    wire        inexact   = round_bit || sticky;
+    wire [53:0] mant_rnd;
+    assign mant_rnd = {1'b0, dsig} + {53'b0, round_up};
+    wire        rnd_carry;
+    assign rnd_carry = mant_rnd[53];
+    wire        promote;
+    assign promote = mant_rnd[52];
+    wire        inexact;
+    assign inexact = round_bit || sticky;
 
-    wire signed [12:0] exp_norm_final = exp_n + (rnd_carry ? 13'sd1 : 13'sd0);
-    wire        over = !subnormal_region && (exp_norm_final >= 13'sd2047);
+    wire signed [12:0] exp_norm_final;
+    assign exp_norm_final = exp_n + (rnd_carry ? 13'sd1 : 13'sd0);
+    wire        over;
+    assign over = !subnormal_region && (exp_norm_final >= 13'sd2047);
 
-    wire nr_up =
+    wire nr_up;
+    assign nr_up =
         (eff_orm == `FRM_RNE) ? (g_in && (r_in || s_in || sig53[0])) :
         (eff_orm == `FRM_RTZ) ? 1'b0 :
         (eff_orm == `FRM_RDN) ? (eff_res_sign  && (g_in || r_in || s_in)) :
         (eff_orm == `FRM_RUP) ? (!eff_res_sign && (g_in || r_in || s_in)) :
         (eff_orm == `FRM_RMM) ? g_in :
                            1'b0;
-    wire reaches_normal = (({1'b0, sig53} + {53'b0, nr_up}) >= 54'h20_0000_0000_0000);
-    wire tiny_before = subnormal_region && ((exp_n <= -13'sd1) || !reaches_normal);
+    wire reaches_normal;
+    assign reaches_normal = (({1'b0, sig53} + {53'b0, nr_up}) >= 54'h20_0000_0000_0000);
+    wire tiny_before;
+    assign tiny_before = subnormal_region && ((exp_n <= -13'sd1) || !reaches_normal);
 
-    wire [63:0] over_res =
+    wire [63:0] over_res;
+    assign over_res =
         ((eff_orm == `FRM_RTZ) ||
          (eff_orm == `FRM_RDN && !eff_res_sign) ||
          (eff_orm == `FRM_RUP &&  eff_res_sign))
             ? {eff_res_sign, 11'h7FE, 52'hF_FFFF_FFFF_FFFF}
             : {eff_res_sign, 11'h7FF, 52'h0};
 
-    wire [63:0] normal_res =
+    wire [63:0] normal_res;
+    assign normal_res =
         over ? over_res :
         subnormal_region ? {eff_res_sign, (promote ? 11'd1 : 11'd0), mant_rnd[51:0]} :
                            {eff_res_sign, exp_norm_final[10:0], (rnd_carry ? 52'b0 : mant_rnd[51:0])};
 
-    wire [4:0] normal_flags =
+    wire [4:0] normal_flags;
+    assign normal_flags =
         (over                   ? ((5'b1 << `FF_OF) | (5'b1 << `FF_NX)) : 5'b0) |
         (tiny_before && inexact ? (5'b1 << `FF_UF)                      : 5'b0) |
         (inexact && !over       ? (5'b1 << `FF_NX)                      : 5'b0);
 
-    wire [63:0] res_w   = eff_special_active ? eff_special_res   : normal_res;
-    wire [4:0]  flags_w = eff_special_active ? eff_special_flags : normal_flags;
+    wire [63:0] res_w;
+    assign res_w = eff_special_active ? eff_special_res   : normal_res;
+    wire [4:0]  flags_w;
+    assign flags_w = eff_special_active ? eff_special_flags : normal_flags;
 
     //  ---- unified output register ----
     //  out_fire = the cycle res_w is valid to latch: `req` for the 1-cycle
     //  combinational fast path, else the variant's internal done strobe
     //  (bit-serial SS_FIN or the pipeline's last valid stage).
-    wire out_fire = (D_MUL_CYCLES == 1 && D_MUL_PIPE <= 1) ? req : sm_done;
+    wire out_fire;
+    assign out_fire = (D_MUL_CYCLES == 1 && D_MUL_PIPE <= 1) ? req : sm_done;
     always @(posedge clk) begin
         if (rst) begin
             done <= 1'b0;
@@ -342,5 +412,6 @@ module karu_fmul_d (
         end
     end
 
-    wire _unused = &{1'b0};
+    wire _unused;
+    assign _unused = &{1'b0};
 endmodule

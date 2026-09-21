@@ -2,10 +2,34 @@
 
 All notable changes to `karu64`. Format follows
 [Keep a Changelog](https://keepachangelog.com/); the repository has no tags
-yet, so the first section is the pending release from `dev-mjos`, and the
-second describes the state of `main` it builds on.
+yet; unreleased changes appear first, followed by merged checkpoints.
 
-## [Unreleased] — `dev-mjos` (2026-09-10 … 2026-09-15)
+## [Unreleased]
+
+### Board validation — 2026-09-22
+
+- The Genus-cleanup VCU118 image `03eeb088` passes Linux 7.2.6-zvk acceptance:
+  OpenSSL 92/92 known answers and scalar comparisons (including forced vector
+  SM4), both KVM guest tests, 39/39 Keccak vectors, vector ABI and cache checks.
+  No regression observed against `c61da577`; detailed results and evidence
+  locations are in the [release diagnostics](doc/release-diagnostics-2026-09-14.md).
+
+### Changed — strict declare-before-use, no declaration-assignments (Genus)
+
+- Every `wire x = expr;` in the ASIC manifest plus `karu_clint`/`karu_plic`
+  (2,453 statements across 43 files) is now `wire x;` + `assign x = expr;`,
+  and the seven remaining use-before-declare cases in `karu64.v` (instance
+  port connections and cache/VLSU fault wires read before their declaration)
+  have their declarations hoisted. The five sim-only `reg x = 0;` initialisers
+  (commit-log and translate_off regions) became `initial` statements. No
+  functional change: per-file Yosys RTLIL is identical before and after,
+  strict `iverilog -g2001` parses clean in eight configurations, and the
+  simulation regressions and Vivado elaboration pass.
+- New `flow/asic/lint_decl.py` (declaration-order lint, exit 1 on findings)
+  and `flow/asic/fix_decl.py` (the mechanical rewrite); see
+  `flow/asic/README.md`, *Coding rules for the Genus front-end*.
+
+## RVA23S64 — 2026-09-10 … 2026-09-15
 
 ### Profile implementation and handoff — 2026-09-14 … 2026-09-15
 

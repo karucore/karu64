@@ -66,14 +66,20 @@ module karu_fpu (
         end
     endfunction
 
-    wire [31:0] f_op1 = unbox(op1);
-    wire [31:0] f_op2 = unbox(op2);
-    wire [31:0] f_op3 = unbox(op3);
+    wire [31:0] f_op1;
+    assign f_op1 = unbox(op1);
+    wire [31:0] f_op2;
+    assign f_op2 = unbox(op2);
+    wire [31:0] f_op3;
+    assign f_op3 = unbox(op3);
 
     //  D-precision operand views (raw 64-bit, no boxing).
-    wire [63:0] d_op1 = op1;
-    wire [63:0] d_op2 = op2;
-    wire [63:0] d_op3 = op3;
+    wire [63:0] d_op1;
+    assign d_op1 = op1;
+    wire [63:0] d_op2;
+    assign d_op2 = op2;
+    wire [63:0] d_op3;
+    assign d_op3 = op3;
 
     //  ==================================================================
     //  Sub-op classification (precision-agnostic except for cross-cvt).
@@ -82,41 +88,65 @@ module karu_fpu (
     //  fround/froundnx/fcvtmod) carry sub=FOP_ADD as a placeholder; suppress the
     //  sub classifications for them so the FPU routes purely on fp_zfa.
     //  (fminm/fmaxm/fleq/fltq DO reuse min/max/cmp and are not overridden.)
-    wire zfa_override = (fp_zfa == `FPZ_FLI) || (fp_zfa == `FPZ_FROUND)
-                     || (fp_zfa == `FPZ_FROUNDNX) || (fp_zfa == `FPZ_FCVTMOD);
+    wire zfa_override;
+    assign zfa_override = (fp_zfa == `FPZ_FLI) || (fp_zfa == `FPZ_FROUND)
+                       || (fp_zfa == `FPZ_FROUNDNX) || (fp_zfa == `FPZ_FCVTMOD);
 
-    wire is_add  = ((sub == `FOP_ADD)  || (sub == `FOP_SUB)) && !zfa_override;
-    wire is_sub  = (sub == `FOP_SUB);
-    wire is_mul  = (sub == `FOP_MUL);
-    wire is_div  = (sub == `FOP_DIV);
-    wire is_sqrt = (sub == `FOP_SQRT);
-    wire is_minmax = (sub == `FOP_MIN) || (sub == `FOP_MAX);
-    wire is_max  = (sub == `FOP_MAX);
-    wire is_sgnj_fam = (sub == `FOP_SGNJ) || (sub == `FOP_SGNJN) || (sub == `FOP_SGNJX);
-    wire [1:0] sgnj_sub = (sub == `FOP_SGNJ)  ? 2'd0 :
-                          (sub == `FOP_SGNJN) ? 2'd1 :
-                          (sub == `FOP_SGNJX) ? 2'd2 : 2'd0;
-    wire is_cmp = (sub == `FOP_EQ) || (sub == `FOP_LT) || (sub == `FOP_LE);
-    wire [1:0] cmp_sub = (sub == `FOP_LE) ? 2'd0 :
-                         (sub == `FOP_LT) ? 2'd1 : 2'd2;
-    wire is_class = (sub == `FOP_CLASS);
-    wire is_mvxw  = (sub == `FOP_MV_X_W);       //  FMV.X.W or FMV.X.D
-    wire is_mvwx  = (sub == `FOP_MV_W_X);       //  FMV.W.X or FMV.D.X
-    wire is_f2i   = (sub == `FOP_CVT_W_S) || (sub == `FOP_CVT_WU_S)
+    wire is_add;
+    assign is_add = ((sub == `FOP_ADD)  || (sub == `FOP_SUB)) && !zfa_override;
+    wire is_sub;
+    assign is_sub = (sub == `FOP_SUB);
+    wire is_mul;
+    assign is_mul = (sub == `FOP_MUL);
+    wire is_div;
+    assign is_div = (sub == `FOP_DIV);
+    wire is_sqrt;
+    assign is_sqrt = (sub == `FOP_SQRT);
+    wire is_minmax;
+    assign is_minmax = (sub == `FOP_MIN) || (sub == `FOP_MAX);
+    wire is_max;
+    assign is_max = (sub == `FOP_MAX);
+    wire is_sgnj_fam;
+    assign is_sgnj_fam = (sub == `FOP_SGNJ) || (sub == `FOP_SGNJN) || (sub == `FOP_SGNJX);
+    wire [1:0] sgnj_sub;
+    assign sgnj_sub = (sub == `FOP_SGNJ)  ? 2'd0 :
+                      (sub == `FOP_SGNJN) ? 2'd1 :
+                      (sub == `FOP_SGNJX) ? 2'd2 : 2'd0;
+    wire is_cmp;
+    assign is_cmp = (sub == `FOP_EQ) || (sub == `FOP_LT) || (sub == `FOP_LE);
+    wire [1:0] cmp_sub;
+    assign cmp_sub = (sub == `FOP_LE) ? 2'd0 :
+                     (sub == `FOP_LT) ? 2'd1 : 2'd2;
+    wire is_class;
+    assign is_class = (sub == `FOP_CLASS);
+    wire is_mvxw;       //  FMV.X.W or FMV.X.D
+    assign is_mvxw = (sub == `FOP_MV_X_W);
+    wire is_mvwx;       //  FMV.W.X or FMV.D.X
+    assign is_mvwx = (sub == `FOP_MV_W_X);
+    wire is_f2i;
+    assign is_f2i = (sub == `FOP_CVT_W_S) || (sub == `FOP_CVT_WU_S)
                  || (sub == `FOP_CVT_L_S) || (sub == `FOP_CVT_LU_S);
-    wire is_i2f   = (sub == `FOP_CVT_S_W) || (sub == `FOP_CVT_S_WU)
+    wire is_i2f;
+    assign is_i2f = (sub == `FOP_CVT_S_W) || (sub == `FOP_CVT_S_WU)
                  || (sub == `FOP_CVT_S_L) || (sub == `FOP_CVT_S_LU);
-    wire cvt_long     = (sub == `FOP_CVT_L_S)  || (sub == `FOP_CVT_LU_S)
-                     || (sub == `FOP_CVT_S_L)  || (sub == `FOP_CVT_S_LU);
-    wire cvt_unsigned = (sub == `FOP_CVT_WU_S) || (sub == `FOP_CVT_LU_S)
-                     || (sub == `FOP_CVT_S_WU) || (sub == `FOP_CVT_S_LU);
-    wire is_cvt_sd = (sub == `FOP_CVT_S_D);     //  D -> S (combinational+round)
-    wire is_cvt_ds = (sub == `FOP_CVT_D_S);     //  S -> D (exact)
+    wire cvt_long;
+    assign cvt_long = (sub == `FOP_CVT_L_S)  || (sub == `FOP_CVT_LU_S)
+                   || (sub == `FOP_CVT_S_L)  || (sub == `FOP_CVT_S_LU);
+    wire cvt_unsigned;
+    assign cvt_unsigned = (sub == `FOP_CVT_WU_S) || (sub == `FOP_CVT_LU_S)
+                       || (sub == `FOP_CVT_S_WU) || (sub == `FOP_CVT_S_LU);
+    wire is_cvt_sd;     //  D -> S (combinational+round)
+    assign is_cvt_sd = (sub == `FOP_CVT_S_D);
+    wire is_cvt_ds;     //  S -> D (exact)
+    assign is_cvt_ds = (sub == `FOP_CVT_D_S);
     //  Zfhmin H<->{S,D} conversions. is_d picks the non-half side.
-    wire is_cvt_from_h = (sub == `FOP_CVT_FROM_H);  //  H -> S/D (exact widen)
-    wire is_cvt_to_h   = (sub == `FOP_CVT_TO_H);    //  S/D -> H (rounds)
-    wire is_fma = (sub == `FOP_MADD)  || (sub == `FOP_MSUB)
-               || (sub == `FOP_NMSUB) || (sub == `FOP_NMADD);
+    wire is_cvt_from_h;  //  H -> S/D (exact widen)
+    assign is_cvt_from_h = (sub == `FOP_CVT_FROM_H);
+    wire is_cvt_to_h;    //  S/D -> H (rounds)
+    assign is_cvt_to_h = (sub == `FOP_CVT_TO_H);
+    wire is_fma;
+    assign is_fma = (sub == `FOP_MADD)  || (sub == `FOP_MSUB)
+                 || (sub == `FOP_NMSUB) || (sub == `FOP_NMADD);
 
     //  ==================================================================
     //  Combinational F sub-units
@@ -126,8 +156,10 @@ module karu_fpu (
 
     //  Zfa flag-modes: fminm/fmaxm (canonical-NaN) reuse min/max; fleq/fltq
     //  (quiet compare) reuse the comparator. is_max / cmp_sub come from sub.
-    wire        zfa_m     = (fp_zfa == `FPZ_FMINM) || (fp_zfa == `FPZ_FMAXM);
-    wire        zfa_quiet = (fp_zfa == `FPZ_FLEQ)  || (fp_zfa == `FPZ_FLTQ);
+    wire        zfa_m;
+    assign zfa_m = (fp_zfa == `FPZ_FMINM) || (fp_zfa == `FPZ_FMAXM);
+    wire        zfa_quiet;
+    assign zfa_quiet = (fp_zfa == `FPZ_FLEQ)  || (fp_zfa == `FPZ_FLTQ);
 
     wire [31:0] mm_res_s; wire [4:0] mm_flags_s;
     karu_fminmax u_mm_s (.is_max(is_max), .is_m(zfa_m), .a(f_op1), .b(f_op2),
@@ -159,7 +191,8 @@ module karu_fpu (
     reg         cvt_f2i_q, cvt_i2f_q, cvt_sd_q, cvt_ds_q, cvt_isd_q;
     reg         cvt_fromh_q, cvt_toh_q;     //  Zfhmin H conversions in flight
     reg [3:0]   cvt_zfa_q;                  //  Zfa cvt-path op in flight (FPZ_*)
-    wire [31:0] cf_op1q = unbox(cvt_op1_q);
+    wire [31:0] cf_op1q;
+    assign cf_op1q = unbox(cvt_op1_q);
 
     wire [63:0] f2i_res; wire [4:0] f2i_flags;
     karu_f2i u_f2i (.rm(cvt_rm_q), .is_long(cvt_long_q), .is_unsigned(cvt_unsigned_q),
@@ -171,7 +204,8 @@ module karu_fpu (
 
     //  ---- Zfhmin FP16 conversions (combinational, on the registered operand) ----
     //  ch_op1q = NaN-box-checked half view of the registered operand.
-    wire [15:0] ch_op1q = unbox16(cvt_op1_q);
+    wire [15:0] ch_op1q;
+    assign ch_op1q = unbox16(cvt_op1_q);
     //  fcvt.s.h (and stage 1 of fcvt.d.h): H -> S, exact.
     wire [31:0] hs_res; wire [4:0] hs_flags;
     karu_fcvt_hs u_cvt_hs (.a(ch_op1q), .res(hs_res), .flags(hs_flags));
@@ -223,8 +257,10 @@ module karu_fpu (
             5'd30: fli_d_rom = 64'h7ff0000000000000; 5'd31: fli_d_rom = 64'h7ff8000000000000;
         endcase
     end endfunction
-    wire [31:0] fli_s_val = fli_s_rom(op1[4:0]);
-    wire [63:0] fli_d_val = fli_d_rom(op1[4:0]);
+    wire [31:0] fli_s_val;
+    assign fli_s_val = fli_s_rom(op1[4:0]);
+    wire [63:0] fli_d_val;
+    assign fli_d_val = fli_d_rom(op1[4:0]);
 
     //  fround.s / froundnx.s: compose f2i (rtz/rm) -> i2f, reusing the
     //  TestFloat-validated converters; special-case NaN/zero/already-integer.
@@ -238,20 +274,30 @@ module karu_fpu (
     wire [31:0] frs_i2f_res;
     karu_i2f u_fr_i2f_s (.rm(cvt_rm_q), .is_long(1'b0), .is_unsigned(1'b0),
                          .x(fround_int_q), .res(frs_i2f_res), .flags());
-    wire        frs_sign = cf_op1q[31];
-    wire [7:0]  frs_e    = cf_op1q[30:23];
-    wire        frs_nan  = (frs_e == 8'hFF) && (cf_op1q[22:0] != 23'h0);
-    wire        frs_snan = frs_nan && !cf_op1q[22];
-    wire        frs_zero = (frs_e == 8'h00) && (cf_op1q[22:0] == 23'h0);
-    wire signed [9:0] frs_E = $signed({2'b0, frs_e}) - 10'sd127;
-    wire        frs_intq = (frs_E >= 10'sd23);              //  already integer (incl inf)
-    wire        frs_compose0 = (fround_int_q[31:0] == 32'h0);    //  rounds to zero
-    wire [31:0] fround_s_res =
+    wire        frs_sign;
+    assign frs_sign = cf_op1q[31];
+    wire [7:0]  frs_e;
+    assign frs_e = cf_op1q[30:23];
+    wire        frs_nan;
+    assign frs_nan = (frs_e == 8'hFF) && (cf_op1q[22:0] != 23'h0);
+    wire        frs_snan;
+    assign frs_snan = frs_nan && !cf_op1q[22];
+    wire        frs_zero;
+    assign frs_zero = (frs_e == 8'h00) && (cf_op1q[22:0] == 23'h0);
+    wire signed [9:0] frs_E;
+    assign frs_E = $signed({2'b0, frs_e}) - 10'sd127;
+    wire        frs_intq;              //  already integer (incl inf)
+    assign frs_intq = (frs_E >= 10'sd23);
+    wire        frs_compose0;    //  rounds to zero
+    assign frs_compose0 = (fround_int_q[31:0] == 32'h0);
+    wire [31:0] fround_s_res;
+    assign fround_s_res =
         frs_nan  ? `FP_S_QNAN :
         frs_zero ? cf_op1q :
         frs_intq ? cf_op1q :
         frs_compose0 ? {frs_sign, 31'b0} : frs_i2f_res;
-    wire        fround_s_nx = !frs_nan && !frs_zero && !frs_intq && frs_f2i_fl[`FF_NX];
+    wire        fround_s_nx;
+    assign fround_s_nx = !frs_nan && !frs_zero && !frs_intq && frs_f2i_fl[`FF_NX];
 
     //  ==================================================================
     //  Combinational D sub-units
@@ -306,21 +352,32 @@ module karu_fpu (
     wire [63:0] frd_i2f_res;
     karu_i2f_d u_fr_i2f_d (.rm(cvt_rm_q), .is_long(1'b1), .is_unsigned(1'b0),
                            .x(fround_int_q), .res(frd_i2f_res), .flags());
-    wire        frd_sign = cvt_op1_q[63];
-    wire [10:0] frd_e    = cvt_op1_q[62:52];
-    wire        frd_nan  = (frd_e == 11'h7FF) && (cvt_op1_q[51:0] != 52'h0);
-    wire        frd_snan = frd_nan && !cvt_op1_q[51];
-    wire        frd_zero = (frd_e == 11'h0)   && (cvt_op1_q[51:0] == 52'h0);
-    wire signed [12:0] frd_E = $signed({2'b0, frd_e}) - 13'sd1023;
-    wire        frd_intq = (frd_E >= 13'sd52);
-    wire        frd_compose0 = (fround_int_q == 64'h0);
-    wire [63:0] fround_d_res =
+    wire        frd_sign;
+    assign frd_sign = cvt_op1_q[63];
+    wire [10:0] frd_e;
+    assign frd_e = cvt_op1_q[62:52];
+    wire        frd_nan;
+    assign frd_nan = (frd_e == 11'h7FF) && (cvt_op1_q[51:0] != 52'h0);
+    wire        frd_snan;
+    assign frd_snan = frd_nan && !cvt_op1_q[51];
+    wire        frd_zero;
+    assign frd_zero = (frd_e == 11'h0)   && (cvt_op1_q[51:0] == 52'h0);
+    wire signed [12:0] frd_E;
+    assign frd_E = $signed({2'b0, frd_e}) - 13'sd1023;
+    wire        frd_intq;
+    assign frd_intq = (frd_E >= 13'sd52);
+    wire        frd_compose0;
+    assign frd_compose0 = (fround_int_q == 64'h0);
+    wire [63:0] fround_d_res;
+    assign fround_d_res =
         frd_nan  ? `FP_D_QNAN :
         frd_zero ? cvt_op1_q :
         frd_intq ? cvt_op1_q :
         frd_compose0 ? {frd_sign, 63'b0} : frd_i2f_res;
-    wire        fround_d_nx = !frd_nan && !frd_zero && !frd_intq && frd_f2i_fl[`FF_NX];
-    wire        frd_snan_w = frd_snan;
+    wire        fround_d_nx;
+    assign fround_d_nx = !frd_nan && !frd_zero && !frd_intq && frd_f2i_fl[`FF_NX];
+    wire        frd_snan_w;
+    assign frd_snan_w = frd_snan;
 
     //  fcvtmod.w.d (D -> int32 mod 2^32, rtz). Writes the integer regfile.
     wire [63:0] fcvtmod_res; wire [4:0] fcvtmod_flags;
@@ -329,22 +386,36 @@ module karu_fpu (
     //  D disabled: no double-precision combinational units. The decoder
     //  traps every D op so is_d is permanently 0 and these never feed an
     //  output; tie them off so the is_d? muxes below pick the S path.
-    wire [63:0] sgnj_res_d = 64'b0;
-    wire [63:0] mm_res_d = 64'b0;   wire [4:0] mm_flags_d  = 5'b0;
-    wire [63:0] cmp_res_d = 64'b0;  wire [4:0] cmp_flags_d = 5'b0;
-    wire [63:0] cls_res_d = 64'b0;
-    wire [63:0] mvxd_res = 64'b0;   wire [63:0] mvdx_res = 64'b0;
-    wire [63:0] f2i_d_res = 64'b0;  wire [4:0] f2i_d_flags = 5'b0;
-    wire [63:0] i2f_d_res = 64'b0;  wire [4:0] i2f_d_flags = 5'b0;
-    wire [31:0] cvt_sd_res = 32'b0; wire [4:0] cvt_sd_flags = 5'b0;
-    wire [63:0] cvt_ds_res = 64'b0; wire [4:0] cvt_ds_flags = 5'b0;
+    wire [63:0] sgnj_res_d;
+    assign sgnj_res_d = 64'b0;
+    wire [63:0] mm_res_d; assign mm_res_d = 64'b0;   wire [4:0] mm_flags_d;
+    assign mm_flags_d = 5'b0;
+    wire [63:0] cmp_res_d; assign cmp_res_d = 64'b0;  wire [4:0] cmp_flags_d;
+    assign cmp_flags_d = 5'b0;
+    wire [63:0] cls_res_d;
+    assign cls_res_d = 64'b0;
+    wire [63:0] mvxd_res; assign mvxd_res = 64'b0;   wire [63:0] mvdx_res;
+    assign mvdx_res = 64'b0;
+    wire [63:0] f2i_d_res; assign f2i_d_res = 64'b0;  wire [4:0] f2i_d_flags;
+    assign f2i_d_flags = 5'b0;
+    wire [63:0] i2f_d_res; assign i2f_d_res = 64'b0;  wire [4:0] i2f_d_flags;
+    assign i2f_d_flags = 5'b0;
+    wire [31:0] cvt_sd_res; assign cvt_sd_res = 32'b0; wire [4:0] cvt_sd_flags;
+    assign cvt_sd_flags = 5'b0;
+    wire [63:0] cvt_ds_res; assign cvt_ds_res = 64'b0; wire [4:0] cvt_ds_flags;
+    assign cvt_ds_flags = 5'b0;
     //  D disabled: fcvt.d.h / fcvt.h.d are trapped in decode, so these are dead.
-    wire [63:0] hd_res = 64'b0;
-    wire [15:0] dh_res = 16'b0;     wire [4:0] dh_flags = 5'b0;
+    wire [63:0] hd_res;
+    assign hd_res = 64'b0;
+    wire [15:0] dh_res; assign dh_res = 16'b0;     wire [4:0] dh_flags;
+    assign dh_flags = 5'b0;
     //  D disabled: fround.d / fcvtmod.w.d (D ops) are trapped in decode.
-    wire [63:0] frd_f2i_res = 64'b0;
-    wire [63:0] fround_d_res = 64'b0;   wire fround_d_nx = 1'b0; wire frd_snan_w = 1'b0;
-    wire [63:0] fcvtmod_res = 64'b0;    wire [4:0] fcvtmod_flags = 5'b0;
+    wire [63:0] frd_f2i_res;
+    assign frd_f2i_res = 64'b0;
+    wire [63:0] fround_d_res; assign fround_d_res = 64'b0;   wire fround_d_nx; assign fround_d_nx = 1'b0; wire frd_snan_w;
+    assign frd_snan_w = 1'b0;
+    wire [63:0] fcvtmod_res; assign fcvtmod_res = 64'b0;    wire [4:0] fcvtmod_flags;
+    assign fcvtmod_flags = 5'b0;
 `endif
 
     //  ==================================================================
@@ -380,8 +451,10 @@ module karu_fpu (
 
     //  Fused multiply-add (single rounding). np = negate product, nc =
     //  negate addend: fmadd 00, fmsub 01, fnmsub 10, fnmadd 11.
-    wire        fma_np = (sub == `FOP_NMSUB) || (sub == `FOP_NMADD);
-    wire        fma_nc = (sub == `FOP_MSUB)  || (sub == `FOP_NMADD);
+    wire        fma_np;
+    assign fma_np = (sub == `FOP_NMSUB) || (sub == `FOP_NMADD);
+    wire        fma_nc;
+    assign fma_nc = (sub == `FOP_MSUB)  || (sub == `FOP_NMADD);
     reg         s_fma_req;
     wire        s_fma_done; wire [31:0] s_fma_res; wire [4:0] s_fma_flags;
     karu_ffma u_ffma (.clk(clk), .rst(rst), .req(s_fma_req), .busy(),
@@ -405,9 +478,10 @@ module karu_fpu (
     //  regs exist even under KARU_NO_D, so this needs no `ifdef.
     //  (Declared after the d_*_req regs above so iverilog 14's strict
     //  use-before-declare check is satisfied; verilator/Vivado tolerate either.)
-    wire [9:0]  dbg_fpu_sub_req = {s_mul_req, s_add_req, s_div_req, s_sqrt_req,
-                                   s_fma_req, d_mul_req, d_add_req, d_div_req,
-                                   d_sqrt_req, d_fma_req};
+    wire [9:0]  dbg_fpu_sub_req;
+    assign dbg_fpu_sub_req = {s_mul_req, s_add_req, s_div_req, s_sqrt_req,
+                              s_fma_req, d_mul_req, d_add_req, d_div_req,
+                              d_sqrt_req, d_fma_req};
     reg         d_add_is_sub;
     reg [63:0]  d_mul_a, d_mul_b, d_add_a, d_add_b;
 
@@ -445,10 +519,23 @@ module karu_fpu (
     //  D disabled: no multi-cycle double units. is_d/is_d_q are always 0,
     //  so the FSM never asserts d_*_req and the is_d_q? muxes pick the S
     //  path; these done/res/flags just need defined (constant) values.
-    wire        d_fma_done = 1'b0; wire [63:0] d_fma_res = 64'b0; wire [4:0] d_fma_flags = 5'b0;
-    wire        d_mul_done = 1'b0, d_add_done = 1'b0, d_div_done = 1'b0, d_sqrt_done = 1'b0;
-    wire [63:0] d_mul_res = 64'b0, d_add_res = 64'b0, d_div_res = 64'b0, d_sqrt_res = 64'b0;
-    wire [4:0]  d_mul_flags = 5'b0, d_add_flags = 5'b0, d_div_flags = 5'b0, d_sqrt_flags = 5'b0;
+    wire        d_fma_done; assign d_fma_done = 1'b0; wire [63:0] d_fma_res; assign d_fma_res = 64'b0; wire [4:0] d_fma_flags;
+    assign d_fma_flags = 5'b0;
+    wire        d_mul_done, d_add_done, d_div_done, d_sqrt_done;
+    assign d_mul_done = 1'b0;
+    assign d_add_done = 1'b0;
+    assign d_div_done = 1'b0;
+    assign d_sqrt_done = 1'b0;
+    wire [63:0] d_mul_res, d_add_res, d_div_res, d_sqrt_res;
+    assign d_mul_res = 64'b0;
+    assign d_add_res = 64'b0;
+    assign d_div_res = 64'b0;
+    assign d_sqrt_res = 64'b0;
+    wire [4:0]  d_mul_flags, d_add_flags, d_div_flags, d_sqrt_flags;
+    assign d_mul_flags = 5'b0;
+    assign d_add_flags = 5'b0;
+    assign d_div_flags = 5'b0;
+    assign d_sqrt_flags = 5'b0;
 `endif
 
     //  ==================================================================
@@ -508,14 +595,20 @@ module karu_fpu (
     //  FROM_H: dest S (is_d=0) NaN-boxed single, or D (is_d=1) raw 64.
     //  TO_H:   dest H always -> NaN-boxed half (upper 48 = 1s).
     //  Zfa cvt-path ops (registered in cvt_zfa_q): fround/froundnx/fcvtmod.
-    wire        cvt_fround_q  = (cvt_zfa_q == `FPZ_FROUND) || (cvt_zfa_q == `FPZ_FROUNDNX);
-    wire        cvt_fcvtmod_q = (cvt_zfa_q == `FPZ_FCVTMOD);
-    wire        fround_snan = cvt_isd_q ? frd_snan_w : frs_snan;
-    wire        fround_nx_v = cvt_isd_q ? fround_d_nx : fround_s_nx;
-    wire [4:0]  fround_flags = (fround_snan ? (5'b1 << `FF_NV) : 5'b0)
-                    | (((cvt_zfa_q == `FPZ_FROUNDNX) && fround_nx_v) ? (5'b1 << `FF_NX) : 5'b0);
+    wire        cvt_fround_q;
+    assign cvt_fround_q = (cvt_zfa_q == `FPZ_FROUND) || (cvt_zfa_q == `FPZ_FROUNDNX);
+    wire        cvt_fcvtmod_q;
+    assign cvt_fcvtmod_q = (cvt_zfa_q == `FPZ_FCVTMOD);
+    wire        fround_snan;
+    assign fround_snan = cvt_isd_q ? frd_snan_w : frs_snan;
+    wire        fround_nx_v;
+    assign fround_nx_v = cvt_isd_q ? fround_d_nx : fround_s_nx;
+    wire [4:0]  fround_flags;
+    assign fround_flags = (fround_snan ? (5'b1 << `FF_NV) : 5'b0)
+               | (((cvt_zfa_q == `FPZ_FROUNDNX) && fround_nx_v) ? (5'b1 << `FF_NX) : 5'b0);
 
-    wire [63:0] cvt_res =
+    wire [63:0] cvt_res;
+    assign cvt_res =
         cvt_f2i_q   ? (cvt_isd_q ? f2i_d_res : f2i_res) :
         cvt_i2f_q   ? (cvt_isd_q ? i2f_d_res : {32'hFFFF_FFFF, i2f_res}) :
         cvt_sd_q    ? {32'hFFFF_FFFF, cvt_sd_res} :
@@ -525,7 +618,8 @@ module karu_fpu (
         cvt_fround_q ? (cvt_isd_q ? fround_d_res : {32'hFFFF_FFFF, fround_s_res}) :
         cvt_fcvtmod_q ? fcvtmod_res :
                       64'b0;
-    wire [4:0]  cvt_flags =
+    wire [4:0]  cvt_flags;
+    assign cvt_flags =
         cvt_f2i_q   ? (cvt_isd_q ? f2i_d_flags : f2i_flags) :
         cvt_i2f_q   ? (cvt_isd_q ? i2f_d_flags : i2f_flags) :
         cvt_sd_q    ? cvt_sd_flags :
@@ -535,14 +629,18 @@ module karu_fpu (
         cvt_fround_q ? fround_flags :
         cvt_fcvtmod_q ? fcvtmod_flags :
                       5'b0;
-    wire        cvt_is_x = cvt_f2i_q || cvt_fcvtmod_q;  //  these target the integer regfile
-    wire        zfa_cvt = (fp_zfa == `FPZ_FROUND) || (fp_zfa == `FPZ_FROUNDNX)
-                       || (fp_zfa == `FPZ_FCVTMOD);
-    wire        is_cvt = is_f2i || is_i2f || is_cvt_sd || is_cvt_ds
-                 || is_cvt_from_h || is_cvt_to_h || zfa_cvt;
+    wire        cvt_is_x;  //  these target the integer regfile
+    assign cvt_is_x = cvt_f2i_q || cvt_fcvtmod_q;
+    wire        zfa_cvt;
+    assign zfa_cvt = (fp_zfa == `FPZ_FROUND) || (fp_zfa == `FPZ_FROUNDNX)
+                  || (fp_zfa == `FPZ_FCVTMOD);
+    wire        is_cvt;
+    assign is_cvt = is_f2i || is_i2f || is_cvt_sd || is_cvt_ds
+            || is_cvt_from_h || is_cvt_to_h || zfa_cvt;
 
-    wire is_immediate = is_sgnj_fam || is_minmax || is_cmp || is_class
-                     || is_mvxw || is_mvwx || (fp_zfa == `FPZ_FLI);
+    wire is_immediate;
+    assign is_immediate = is_sgnj_fam || is_minmax || is_cmp || is_class
+                       || is_mvxw || is_mvwx || (fp_zfa == `FPZ_FLI);
 
     //  ===== sub-unit req strobes =====
     always @(*) begin
@@ -665,7 +763,8 @@ module karu_fpu (
         end
     end
 
-    wire _unused = &{result_is_x, 1'b0};
+    wire _unused;
+    assign _unused = &{result_is_x, 1'b0};
 
 // synthesis translate_off
     //  #4 (FPU single-issue): sub-unit req strobes fire ONLY in the dispatch cycle

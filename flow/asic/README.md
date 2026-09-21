@@ -26,6 +26,33 @@ setup; they cannot be inferred from this RTL.
 | [memories.md](memories.md) | Readable inventory |
 | [audit.py](audit.py) | Reproduce hierarchy, inventory, initialization checks and source hashes with Yosys |
 | [check.py](check.py) | Four-state memory checks and core regressions with randomized startup |
+| [lint_decl.py](lint_decl.py) | Declaration-order lint: flags `wire x = expr;` style declaration-assignments, use-before-declare, and undeclared names, per module (exit 1 on findings) |
+| [fix_decl.py](fix_decl.py) | Mechanical rewrite for the two lint classes: splits declaration-assignments into `wire x;` + `assign x = expr;` and hoists declarations in front of their first use |
+
+## Coding rules for the Genus front-end
+
+Genus requires every net and variable to be declared before its first use
+(port connections included) and does not accept declaration-assignments
+(`wire x = expr;`) or variable initialisers (`reg x = 0;`). The manifest is
+clean against both rules and `lint_decl.py` keeps it that way:
+
+```sh
+python3 flow/asic/lint_decl.py              # the manifest; exit 1 on findings
+python3 flow/asic/fix_decl.py               # rewrite the manifest in place
+```
+
+The lint treats all `ifdef` branches as present and is exact on this code
+base (zero `undeclared` names, its self-check for parser blind spots). The
+fixer moves expression text verbatim, keeps every preprocessor line, places a
+hoisted declaration in front of any `ifdef` construct that the original was
+not inside of, and reports the one shape it does not rewrite (a shared
+`wire x =` head with one body per `ifdef` branch). The 2026-09-21 rewrite was
+verified equivalent by a per-file Yosys RTLIL diff before/after, strict
+`iverilog -g2001` parses in eight configurations, the simulation
+regressions, and the Vivado elaboration check. The rebuilt FPGA image
+`03eeb088` also passes the September 22 Linux, KVM guest, crypto, vector ABI
+and cache checks; forced vector SM4 matches reference and scalar outputs.
+See the [board results](../../doc/release-diagnostics-2026-09-14.md#board-acceptance--2026-09-22).
 
 Use the definitions as well as the file list. **`KARU_ASIC` is required** to
 exclude FPGA power-up initialization. Do not define `SIM_TB`,

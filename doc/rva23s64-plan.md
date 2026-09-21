@@ -35,10 +35,11 @@ Configuration and execution recipes are in [flows.md](flows.md),
   counter filtering, Shlcofideleg, guest FP/vector context switches and
   asynchronous preemption. The current Sail and Spike adjustments are isolated
   under their test directories.
-- The corrected VCU118 profile image meets every routed timing and bus-skew
-  constraint at 75 MHz and passes Linux 7.2.4-zvk board acceptance, including
-  vector ABI, memory, crypto and KVM API checks. Exact board coverage is
-  recorded in the release diagnostics.
+- The September 22 VCU118 profile image passes Linux 7.2.6-zvk board
+  acceptance at 75 MHz, including vector ABI, memory, cache, crypto and
+  both KVM guest tests. Exact board coverage and the separately dated
+  synthesis measurements are in the
+  [release diagnostics](release-diagnostics-2026-09-14.md).
 - Optional vector crypto and `vkeccak.vi` are outside the ACT4 profile
   selection. Their known-answer, decode, Spike and multi-element-group tests
   are documented in [rtl/zvk/README.md](../rtl/zvk/README.md).

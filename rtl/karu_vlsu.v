@@ -165,11 +165,16 @@ module karu_vlsu #(
             assign act_last[AB] = act_valid[2*AB+1] ? act_last[2*AB+1] : act_last[2*AB];
         end
     endgenerate
-    wire act_any = act_valid[1];
-    wire [31:0] act_lo = act_any ? {{(32-ACT_IW){1'b0}},act_first[1]} : 32'd0;
-    wire [31:0] act_hi = act_any ? {{(32-ACT_IW){1'b0}},act_last[1]} : 32'd0;
-    wire [31:0] vst_b_w = act_any ? (act_lo << eew) : 32'd0;
-    wire [31:0] nb_w    = act_any ? ((act_hi + 32'd1) << eew) : 32'd0;
+    wire act_any;
+    assign act_any = act_valid[1];
+    wire [31:0] act_lo;
+    assign act_lo = act_any ? {{(32-ACT_IW){1'b0}},act_first[1]} : 32'd0;
+    wire [31:0] act_hi;
+    assign act_hi = act_any ? {{(32-ACT_IW){1'b0}},act_last[1]} : 32'd0;
+    wire [31:0] vst_b_w;
+    assign vst_b_w = act_any ? (act_lo << eew) : 32'd0;
+    wire [31:0] nb_w;
+    assign nb_w = act_any ? ((act_hi + 32'd1) << eew) : 32'd0;
     reg [3:0]   boff;           //  base & 15
     reg [63:0]  base_al;        //  base & ~15
     reg [5:0]   n_mg;           //  memory granules covering [boff, boff+nbytes)
@@ -179,8 +184,10 @@ module karu_vlsu #(
 
     wire [127:0] asm_gran;
     wire [15:0] asm_be;
-    wire [5:0] rg_next = rg + 6'd1;
-    wire [5:0] rg_ahead = rg + 6'd2;
+    wire [5:0] rg_next;
+    assign rg_next = rg + 6'd1;
+    wire [5:0] rg_ahead;
+    assign rg_ahead = rg + 6'd2;
     wire [127:0] st_wdata;
     wire [15:0]  st_strb;
 
@@ -209,8 +216,10 @@ module karu_vlsu #(
 // synthesis translate_on
 
     //  per-granule VRF register/offset for the global granule index `rg`
-    wire [4:0]      rg_reg = vd_q + rg[5:GW];   //  vd + (rg / GRAN)
-    wire [GW-1:0]   rg_off = rg[GW-1:0];        //  rg % GRAN
+    wire [4:0]      rg_reg;   //  vd + (rg / GRAN)
+    assign rg_reg = vd_q + rg[5:GW];
+    wire [GW-1:0]   rg_off;        //  rg % GRAN
+    assign rg_off = rg[GW-1:0];
 
     //  ================= per-element engine (strided/indexed/segment) =========
     localparam integer MAXB = 8 * `KARU_VLENB;      //  register-group bytes at the 8-reg max
@@ -227,10 +236,14 @@ module karu_vlsu #(
     reg [127:0] g0d, g1d;       //  captured memory granules (element may straddle)
     wire [63:0] idxv;
 
-    wire [31:0] eewb   = 32'd1 << eew_q;                    //  data element bytes
-    wire [31:0] fld_rb = {28'b0, nregf_q} * `KARU_VLENB;    //  bytes per field register-group
-    wire [4:0]  idx_rreg = idx_vs_q + rg[5:GW];
-    wire [GW-1:0] idx_roff = rg[GW-1:0];
+    wire [31:0] eewb;                    //  data element bytes
+    assign eewb = 32'd1 << eew_q;
+    wire [31:0] fld_rb;    //  bytes per field register-group
+    assign fld_rb = {28'b0, nregf_q} * `KARU_VLENB;
+    wire [4:0]  idx_rreg;
+    assign idx_rreg = idx_vs_q + rg[5:GW];
+    wire [GW-1:0] idx_roff;
+    assign idx_roff = rg[GW-1:0];
 
     // Pointer Masking v1.0: first generate the XLEN-wide effective address,
     // then ignore its tag bits. Applying PM to the base alone would leave
@@ -249,44 +262,68 @@ module karu_vlsu #(
     //  current element address + geometry (64-bit VA arithmetic, V1: strided
     //  offsets wrap in 64 bits like the scalar XLEN stride; indexed offsets
     //  are zero-extended per the spec)
-    wire [63:0] eaddr_raw = base_q
-                       + (idx_mode_q ? idxv : ({32'b0, pe_i} * stride_q))
-                       + ({60'b0, pe_f} * {32'b0, eewb});
-    wire [63:0] eaddr = pm_addr(eaddr_raw);
-    wire [3:0]  pe_off = eaddr[3:0];
-    wire [63:0] g0abs  = {eaddr[63:4], 4'b0};
-    wire        straddle = ({2'b0, pe_off} + eewb[5:0]) > 6'd16;
+    wire [63:0] eaddr_raw;
+    assign eaddr_raw = base_q
+                  + (idx_mode_q ? idxv : ({32'b0, pe_i} * stride_q))
+                  + ({60'b0, pe_f} * {32'b0, eewb});
+    wire [63:0] eaddr;
+    assign eaddr = pm_addr(eaddr_raw);
+    wire [3:0]  pe_off;
+    assign pe_off = eaddr[3:0];
+    wire [63:0] g0abs;
+    assign g0abs = {eaddr[63:4], 4'b0};
+    wire        straddle;
+    assign straddle = ({2'b0, pe_off} + eewb[5:0]) > 6'd16;
     //  V2 translation geometry. Contiguous: the first/last ACCESSED bytes
     //  (prestart excluded -- RVV 5.4) bound the <=2 pages to translate; each
     //  granule's PA is its VA offset under pp0/pp1. Pelem: the element's
     //  granule pair needs page(g0abs) and, when the pair crosses a 4 KiB
     //  boundary, page(g0abs+16).
-    wire [63:0] va_first_raw = base_q + {32'b0, vst_b};
-    wire [63:0] va_first = pm_addr(va_first_raw);
-    wire [63:0] va_last  = pm_addr(base_q + {32'b0, nbytes} - 64'd1);
-    wire [63:0] g_raw = base_al + ({58'b0, mg} << 4);
-    wire [63:0] g_va = pm_addr(g_raw);
-    wire [63:0] g_pa = {(g_va[63:12] == vp0) ? pp0 : pp1, g_va[11:0]};
-    wire [1:0] g_pbmt = (g_va[63:12] == vp0) ? pbmt0 : pbmt1;
+    wire [63:0] va_first_raw;
+    assign va_first_raw = base_q + {32'b0, vst_b};
+    wire [63:0] va_first;
+    assign va_first = pm_addr(va_first_raw);
+    wire [63:0] va_last;
+    assign va_last = pm_addr(base_q + {32'b0, nbytes} - 64'd1);
+    wire [63:0] g_raw;
+    assign g_raw = base_al + ({58'b0, mg} << 4);
+    wire [63:0] g_va;
+    assign g_va = pm_addr(g_raw);
+    wire [63:0] g_pa;
+    assign g_pa = {(g_va[63:12] == vp0) ? pp0 : pp1, g_va[11:0]};
+    wire [1:0] g_pbmt;
+    assign g_pbmt = (g_va[63:12] == vp0) ? pbmt0 : pbmt1;
     // Naturally aligned IO elements remain single transfers. Misaligned
     // elements may be decomposed into exact bytes, with no inactive reads.
-    wire [2:0] elem_low = pelem_q ? eaddr[2:0] : base_q[2:0];
-    wire [2:0] elem_align_mask = eew_q == 2'd0 ? 3'b000 :
-                                eew_q == 2'd1 ? 3'b001 :
-                                eew_q == 2'd2 ? 3'b011 : 3'b111;
+    wire [2:0] elem_low;
+    assign elem_low = pelem_q ? eaddr[2:0] : base_q[2:0];
+    wire [2:0] elem_align_mask;
+    assign elem_align_mask = eew_q == 2'd0 ? 3'b000 :
+                            eew_q == 2'd1 ? 3'b001 :
+                            eew_q == 2'd2 ? 3'b011 : 3'b111;
     assign vmem_size = (|(elem_low & elem_align_mask)) ? 2'd0 : eew_q;
-    wire [51:0] pgA      = g0abs[63:12];
-    wire [63:0] g1va     = pm_addr({eaddr_raw[63:4], 4'b0} + 64'd16);
-    wire        need_hi  = straddle && (g1va[63:12] != pgA);
+    wire [51:0] pgA;
+    assign pgA = g0abs[63:12];
+    wire [63:0] g1va;
+    assign g1va = pm_addr({eaddr_raw[63:4], 4'b0} + 64'd16);
+    wire        need_hi;
+    assign need_hi = straddle && (g1va[63:12] != pgA);
     //  fault-only-first trim geometry (contiguous): elements wholly below
     //  the faulting second page survive; 0 survivors = element-0 fault.
-    wire [63:0] pg1_raw = {va_first_raw[63:12] + 52'd1, 12'b0};
-    wire [63:0] pg1_base = pm_addr(pg1_raw);
-    wire [63:0] ff_bytes = pg1_raw - base_q;
-    wire [31:0] ff_vl    = ff_bytes[31:0] >> eew_q;
-    wire [31:0] ff_nb    = ff_vl << eew_q;
-    wire        pe_act = vm_q || v0_q[pe_i[7:0]];
-    wire [31:0] rbyte0 = ({28'b0, pe_f} * fld_rb) + (pe_i * eewb);  //  flat dest/src byte base
+    wire [63:0] pg1_raw;
+    assign pg1_raw = {va_first_raw[63:12] + 52'd1, 12'b0};
+    wire [63:0] pg1_base;
+    assign pg1_base = pm_addr(pg1_raw);
+    wire [63:0] ff_bytes;
+    assign ff_bytes = pg1_raw - base_q;
+    wire [31:0] ff_vl;
+    assign ff_vl = ff_bytes[31:0] >> eew_q;
+    wire [31:0] ff_nb;
+    assign ff_nb = ff_vl << eew_q;
+    wire        pe_act;
+    assign pe_act = vm_q || v0_q[pe_i[7:0]];
+    wire [31:0] rbyte0;  //  flat dest/src byte base
+    assign rbyte0 = ({28'b0, pe_f} * fld_rb) + (pe_i * eewb);
 
     //  store/writeback data assembled from the isolated scratch buffer.
     wire [127:0] pe_wd0, pe_wd1, pe_wbgran;
@@ -301,7 +338,8 @@ module karu_vlsu #(
                S_PE_WR1=6'd20, S_PE_WR1W=6'd21, S_PE_NEXT=6'd22, S_PE_WB=6'd23;
     //  post-translate destination for the current pelem element (derived from
     //  the S_PE_* states above; moved below the enum so it follows its decls).
-    wire [5:0]  pe_run   = pe_pass1 ? S_PE_NEXT : (st_q ? S_PE_WR0 : S_PE_RD0);
+    wire [5:0]  pe_run;
+    assign pe_run = pe_pass1 ? S_PE_NEXT : (st_q ? S_PE_WR0 : S_PE_RD0);
     //  Extra +1 wait states: the macro-VRF granule read is registered, so each
     //  VRF-read issue state needs one bubble before its capture state. See
     //  doc/architecture.md.
@@ -319,8 +357,10 @@ module karu_vlsu #(
     // The group spans at most a page and PM never changes these low bits.
     // Modular subtraction therefore recovers its byte offset even across
     // XLEN/tag wrap; a negative result is only the unaligned head granule.
-    wire [31:0] err_delta = vmem_fault_va[31:0] - base_q[31:0];
-    wire [31:0] err_first = err_delta[31] ? 32'd0 : (err_delta >> eew_q);
+    wire [31:0] err_delta;
+    assign err_delta = vmem_fault_va[31:0] - base_q[31:0];
+    wire [31:0] err_first;
+    assign err_first = err_delta[31] ? 32'd0 : (err_delta >> eew_q);
     integer ei;
     reg err_found;
     reg [31:0] err_index, err_candidate;
@@ -335,15 +375,18 @@ module karu_vlsu #(
             end
         end
     end
-    wire [63:0] err_elem_va = pm_addr(base_q + ({32'b0, err_index} << eew_q));
-    wire [63:0] err_access_va = pelem_q ? eaddr : err_elem_va;
+    wire [63:0] err_elem_va;
+    assign err_elem_va = pm_addr(base_q + ({32'b0, err_index} << eew_q));
+    wire [63:0] err_access_va;
+    assign err_access_va = pelem_q ? eaddr : err_elem_va;
     // Coarse errors identify a granule; IO errors identify the exact failed
     // constituent. Never move an exact byte address back to the element start.
     // Do not use live vmem_pbmt here: a queued request can have a different
     // type from the preceding posted store whose error is now arriving.
-    wire [63:0] err_tval = (vmem_fault_va[63:4] == err_access_va[63:4])
-                        && (vmem_fault_va[3:0] < err_access_va[3:0])
-                        ? err_access_va : vmem_fault_va;
+    wire [63:0] err_tval;
+    assign err_tval = (vmem_fault_va[63:4] == err_access_va[63:4])
+                   && (vmem_fault_va[3:0] < err_access_va[3:0])
+                   ? err_access_va : vmem_fault_va;
 
     karu_vlsu_buf #(.GRAN(GRAN), .GW(GW)) buf_u (
         .clk(clk),

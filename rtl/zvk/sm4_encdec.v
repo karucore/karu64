@@ -7,35 +7,51 @@ module sm4_encdec
     output wire [127:0] rnd_state_o
 );
 
-    wire [31:0] rk0 = rnd_key_i[ 31:  0];
-    wire [31:0] rk1 = rnd_key_i[ 63: 32];
-    wire [31:0] rk2 = rnd_key_i[ 95: 64];
-    wire [31:0] rk3 = rnd_key_i[127: 96];
+    wire [31:0] rk0;
+    assign rk0 = rnd_key_i[ 31:  0];
+    wire [31:0] rk1;
+    assign rk1 = rnd_key_i[ 63: 32];
+    wire [31:0] rk2;
+    assign rk2 = rnd_key_i[ 95: 64];
+    wire [31:0] rk3;
+    assign rk3 = rnd_key_i[127: 96];
 
-    wire [31:0] x0 = rnd_state_i[ 31:  0];
-    wire [31:0] x1 = rnd_state_i[ 63: 32];
-    wire [31:0] x2 = rnd_state_i[ 95: 64];
-    wire [31:0] x3 = rnd_state_i[127: 96];
+    wire [31:0] x0;
+    assign x0 = rnd_state_i[ 31:  0];
+    wire [31:0] x1;
+    assign x1 = rnd_state_i[ 63: 32];
+    wire [31:0] x2;
+    assign x2 = rnd_state_i[ 95: 64];
+    wire [31:0] x3;
+    assign x3 = rnd_state_i[127: 96];
 
-    wire [31:0] b0 = x1 ^ x2 ^ x3 ^ rk0;
+    wire [31:0] b0;
+    assign b0 = x1 ^ x2 ^ x3 ^ rk0;
     wire [31:0] s0;
     sm4_subword i_sub0 (.word_o(s0), .word_i(b0));
-    wire [31:0] x4 = sm4_round(x0, s0);
+    wire [31:0] x4;
+    assign x4 = sm4_round(x0, s0);
 
-    wire [31:0] b1 = x2 ^ x3 ^ x4 ^ rk1;
+    wire [31:0] b1;
+    assign b1 = x2 ^ x3 ^ x4 ^ rk1;
     wire [31:0] s1;
     sm4_subword i_sub1 (.word_o(s1), .word_i(b1));
-    wire [31:0] x5 = sm4_round(x1, s1);
+    wire [31:0] x5;
+    assign x5 = sm4_round(x1, s1);
 
-    wire [31:0] b2 = x3 ^ x4 ^ x5 ^ rk2;
+    wire [31:0] b2;
+    assign b2 = x3 ^ x4 ^ x5 ^ rk2;
     wire [31:0] s2;
     sm4_subword i_sub2 (.word_o(s2), .word_i(b2));
-    wire [31:0] x6 = sm4_round(x2, s2);
+    wire [31:0] x6;
+    assign x6 = sm4_round(x2, s2);
 
-    wire [31:0] b3 = x4 ^ x5 ^ x6 ^ rk3;
+    wire [31:0] b3;
+    assign b3 = x4 ^ x5 ^ x6 ^ rk3;
     wire [31:0] s3;
     sm4_subword i_sub3 (.word_o(s3), .word_i(b3));
-    wire [31:0] x7 = sm4_round(x3, s3);
+    wire [31:0] x7;
+    assign x7 = sm4_round(x3, s3);
 
     assign rnd_state_o = {x7, x6, x5, x4};
 

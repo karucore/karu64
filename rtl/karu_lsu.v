@@ -106,71 +106,102 @@ module karu_lsu (
     reg [63:0]  reserve_addr;
 
     //  ---- Sub-op decoding ----
-    wire is_lr_in  = (sub_in == `LSU_LR);
-    wire is_sc_in  = (sub_in == `LSU_SC);
-    wire is_amo_in = (sub_in >= `LSU_AMOSWAP) && (sub_in <= `LSU_AMOMAXU);
-    wire is_cboz_in = (sub_in == `LSU_CBOZERO);
+    wire is_lr_in;
+    assign is_lr_in = (sub_in == `LSU_LR);
+    wire is_sc_in;
+    assign is_sc_in = (sub_in == `LSU_SC);
+    wire is_amo_in;
+    assign is_amo_in = (sub_in >= `LSU_AMOSWAP) && (sub_in <= `LSU_AMOMAXU);
+    wire is_cboz_in;
+    assign is_cboz_in = (sub_in == `LSU_CBOZERO);
     //  cbo.clean/flush/inval: the address was already translated (fault would
     //  have trapped before req); on a write-through L1 there is nothing to do,
     //  so they retire with no AXI transaction.
-    wire is_cbonop_in = (sub_in == `LSU_CBOCF) || (sub_in == `LSU_CBOINVAL);
-    wire is_lr_q   = (sub_q == `LSU_LR);
-    wire is_sc_q   = (sub_q == `LSU_SC);
-    wire is_amo_q  = (sub_q >= `LSU_AMOSWAP) && (sub_q <= `LSU_AMOMAXU);
+    wire is_cbonop_in;
+    assign is_cbonop_in = (sub_in == `LSU_CBOCF) || (sub_in == `LSU_CBOINVAL);
+    wire is_lr_q;
+    assign is_lr_q = (sub_q == `LSU_LR);
+    wire is_sc_q;
+    assign is_sc_q = (sub_q == `LSU_SC);
+    wire is_amo_q;
+    assign is_amo_q = (sub_q >= `LSU_AMOSWAP) && (sub_q <= `LSU_AMOMAXU);
 
     //  SC success at issue: reservation valid AND addr matches.
-    wire sc_pass_i = is_sc_in && reserve_valid && (reserve_addr == addr);
+    wire sc_pass_i;
+    assign sc_pass_i = is_sc_in && reserve_valid && (reserve_addr == addr);
 
-    wire [2:0]  low3 = addr_q[2:0];
+    wire [2:0]  low3;
+    assign low3 = addr_q[2:0];
 
-    wire [3:0]  size_bytes_q =
+    wire [3:0]  size_bytes_q;
+    assign size_bytes_q =
         (size_q == `LS_B) ? 4'd1 :
         (size_q == `LS_H) ? 4'd2 :
         (size_q == `LS_W) ? 4'd4 : 4'd8;
-    wire [7:0]  full_mask_q =
+    wire [7:0]  full_mask_q;
+    assign full_mask_q =
         (size_q == `LS_B) ? 8'h01 :
         (size_q == `LS_H) ? 8'h03 :
         (size_q == `LS_W) ? 8'h0f : 8'hff;
-    wire [3:0]  bytes_lo_q = 4'd8 - {1'b0, low3};
-    wire [6:0]  shift_lo_q = {bytes_lo_q, 3'b000};
-    wire [6:0]  addr_shift_q = {low3, 3'b000};
-    wire [7:0]  strb_hi_q = full_mask_q >> bytes_lo_q;
-    wire [63:0] wdata_hi_q = wdata_q >> shift_lo_q;
+    wire [3:0]  bytes_lo_q;
+    assign bytes_lo_q = 4'd8 - {1'b0, low3};
+    wire [6:0]  shift_lo_q;
+    assign shift_lo_q = {bytes_lo_q, 3'b000};
+    wire [6:0]  addr_shift_q;
+    assign addr_shift_q = {low3, 3'b000};
+    wire [7:0]  strb_hi_q;
+    assign strb_hi_q = full_mask_q >> bytes_lo_q;
+    wire [63:0] wdata_hi_q;
+    assign wdata_hi_q = wdata_q >> shift_lo_q;
 
-    wire [3:0]  size_bytes_i =
+    wire [3:0]  size_bytes_i;
+    assign size_bytes_i =
         (size == `LS_B) ? 4'd1 :
         (size == `LS_H) ? 4'd2 :
         (size == `LS_W) ? 4'd4 : 4'd8;
     //  Zicbom/Zicboz name the aligned cache block containing addr. Their
     //  unaligned operand is not a scalar access spanning addr and addr2.
-    wire        cross_i = !is_cbonop_in && !is_cboz_in &&
-                          ({1'b0, addr[2:0]} + size_bytes_i) > 4'd8;
+    wire        cross_i;
+    assign cross_i = !is_cbonop_in && !is_cboz_in &&
+                     ({1'b0, addr[2:0]} + size_bytes_i) > 4'd8;
 
     //  == load formatting ==
-    wire [127:0] rd_pair = {rdata, rd_lo_q};
-    wire [63:0] rd_sh  = cross_q ? (rd_pair >> addr_shift_q) :
-                                   (rdata >> addr_shift_q);
-    wire [63:0] ld_b   = sign_q ? {{56{rd_sh[ 7]}}, rd_sh[ 7:0]} : {56'b0, rd_sh[ 7:0]};
-    wire [63:0] ld_h   = sign_q ? {{48{rd_sh[15]}}, rd_sh[15:0]} : {48'b0, rd_sh[15:0]};
-    wire [63:0] ld_w   = sign_q ? {{32{rd_sh[31]}}, rd_sh[31:0]} : {32'b0, rd_sh[31:0]};
-    wire [63:0] ld_d   = rd_sh;
+    wire [127:0] rd_pair;
+    assign rd_pair = {rdata, rd_lo_q};
+    wire [63:0] rd_sh;
+    assign rd_sh = cross_q ? (rd_pair >> addr_shift_q) :
+                             (rdata >> addr_shift_q);
+    wire [63:0] ld_b;
+    assign ld_b = sign_q ? {{56{rd_sh[ 7]}}, rd_sh[ 7:0]} : {56'b0, rd_sh[ 7:0]};
+    wire [63:0] ld_h;
+    assign ld_h = sign_q ? {{48{rd_sh[15]}}, rd_sh[15:0]} : {48'b0, rd_sh[15:0]};
+    wire [63:0] ld_w;
+    assign ld_w = sign_q ? {{32{rd_sh[31]}}, rd_sh[31:0]} : {32'b0, rd_sh[31:0]};
+    wire [63:0] ld_d;
+    assign ld_d = rd_sh;
 
     //  ==================================================================
     //  AMO ALU. amo_loaded is the 64-bit beat read from memory; for .W
     //  we extract the right word based on addr_q[2]. Result is written
     //  back into the same byte-lane of a new 64-bit beat.
     //  ==================================================================
-    wire [31:0] amo_loaded_w_lane = addr_q[2] ? amo_loaded[63:32] : amo_loaded[31:0];
-    wire [63:0] amo_op_a = (size_q == `LS_W)
-        ? {{32{amo_loaded_w_lane[31]}}, amo_loaded_w_lane}  //  sign-ext for signed cmp
-        : amo_loaded;
-    wire [63:0] amo_op_b = (size_q == `LS_W)
-        ? {{32{wdata_q[31]}}, wdata_q[31:0]}
-        : wdata_q;
-    wire signed [63:0] amo_a_s = amo_op_a;
-    wire signed [63:0] amo_b_s = amo_op_b;
+    wire [31:0] amo_loaded_w_lane;
+    assign amo_loaded_w_lane = addr_q[2] ? amo_loaded[63:32] : amo_loaded[31:0];
+    wire [63:0] amo_op_a;
+    assign amo_op_a = (size_q == `LS_W)
+   ? {{32{amo_loaded_w_lane[31]}}, amo_loaded_w_lane}  //  sign-ext for signed cmp
+   : amo_loaded;
+    wire [63:0] amo_op_b;
+    assign amo_op_b = (size_q == `LS_W)
+   ? {{32{wdata_q[31]}}, wdata_q[31:0]}
+   : wdata_q;
+    wire signed [63:0] amo_a_s;
+    assign amo_a_s = amo_op_a;
+    wire signed [63:0] amo_b_s;
+    assign amo_b_s = amo_op_b;
 
-    wire [63:0] amo_result =
+    wire [63:0] amo_result;
+    assign amo_result =
         (sub_q == `LSU_AMOSWAP) ? amo_op_b :
         (sub_q == `LSU_AMOADD)  ? (amo_op_a + amo_op_b) :
         (sub_q == `LSU_AMOXOR)  ? (amo_op_a ^ amo_op_b) :
@@ -183,35 +214,47 @@ module karu_lsu (
         64'b0;
 
     //  Pack the result back into a 64-bit beat at the right lane.
-    wire [63:0] amo_write_beat = (size_q == `LS_W)
-        ? (addr_q[2] ? {amo_result[31:0], 32'b0} : {32'b0, amo_result[31:0]})
-        : amo_result;
-    wire [7:0]  amo_wstrb = (size_q == `LS_W)
-        ? (addr_q[2] ? 8'hF0 : 8'h0F)
-        : 8'hFF;
+    wire [63:0] amo_write_beat;
+    assign amo_write_beat = (size_q == `LS_W)
+   ? (addr_q[2] ? {amo_result[31:0], 32'b0} : {32'b0, amo_result[31:0]})
+   : amo_result;
+    wire [7:0]  amo_wstrb;
+    assign amo_wstrb = (size_q == `LS_W)
+   ? (addr_q[2] ? 8'hF0 : 8'h0F)
+   : 8'hFF;
     //  rd_v from AMO: sign-extended original value (the "old" memory contents).
-    wire [63:0] amo_rd = (size_q == `LS_W) ? amo_op_a : amo_loaded;
+    wire [63:0] amo_rd;
+    assign amo_rd = (size_q == `LS_W) ? amo_op_a : amo_loaded;
 
     `include "karu_pma.vh"
     //  All three Zicbom management operations accept load-or-store access;
     //  unlike ZERO, INVAL does not require physical write permission.
-    wire [1:0] pma_acc = (is_store || is_sc_in || is_amo_in || is_cboz_in)
-                         ? 2'd2 : is_cbonop_in ? 2'd3 : 2'd1;
-    wire pma_first = karu_pma_ok(addr, pma_acc);
-    wire pma_second = !cross_i || karu_pma_ok(addr2, pma_acc);
+    wire [1:0] pma_acc;
+    assign pma_acc = (is_store || is_sc_in || is_amo_in || is_cboz_in)
+                     ? 2'd2 : is_cbonop_in ? 2'd3 : 2'd1;
+    wire pma_first;
+    assign pma_first = karu_pma_ok(addr, pma_acc);
+    wire pma_second;
+    assign pma_second = !cross_i || karu_pma_ok(addr2, pma_acc);
     // IO uses native widths; LR/SC/AMO require natural alignment everywhere.
     // Reject these unsupported accesses with an access fault before AXI.
-    wire access_misaligned = !is_cbonop_in && !is_cboz_in &&
-                             (({1'b0, addr[2:0]} & (size_bytes_i - 4'd1)) != 0);
-    wire io_first = pbmt == 2'b10 || (pbmt == 0 && karu_pma_io(addr));
-    wire io_second = pbmt2 == 2'b10 || (pbmt2 == 0 && karu_pma_io(addr2));
-    wire io_bad_first = io_first && access_misaligned;
-    wire io_bad_second = cross_i && io_second && access_misaligned;
+    wire access_misaligned;
+    assign access_misaligned = !is_cbonop_in && !is_cboz_in &&
+                               (({1'b0, addr[2:0]} & (size_bytes_i - 4'd1)) != 0);
+    wire io_first;
+    assign io_first = pbmt == 2'b10 || (pbmt == 0 && karu_pma_io(addr));
+    wire io_second;
+    assign io_second = pbmt2 == 2'b10 || (pbmt2 == 0 && karu_pma_io(addr2));
+    wire io_bad_first;
+    assign io_bad_first = io_first && access_misaligned;
+    wire io_bad_second;
+    assign io_bad_second = cross_i && io_second && access_misaligned;
     // Physical devices have neither atomic bus operations nor device-write
     // reservation invalidation. PBMT cannot grant these PMA capabilities;
     // an NC/IO alias of ordinary RAM retains aligned atomic support.
-    wire atomic_bad = (is_lr_in || is_sc_in || is_amo_in) &&
-                      (access_misaligned || karu_pma_io(addr));
+    wire atomic_bad;
+    assign atomic_bad = (is_lr_in || is_sc_in || is_amo_in) &&
+                        (access_misaligned || karu_pma_io(addr));
 
     always @(posedge clk) begin
         if (rst) begin
@@ -480,5 +523,6 @@ module karu_lsu (
     assign busy = (state != S_IDLE);
 
     //  silence unused
-    wire _unused = &{rid, rlast, bid, 1'b0};
+    wire _unused;
+    assign _unused = &{rid, rlast, bid, 1'b0};
 endmodule

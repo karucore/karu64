@@ -26,15 +26,24 @@ module karu_fsqrt (
     //  ==================================================================
     //  Unpack + special-case classification
     //  ==================================================================
-    wire        a_sign = a[31];
-    wire [7:0]  a_exp  = a[30:23];
-    wire [22:0] a_man  = a[22:0];
-    wire        a_zero = (a_exp == 0) && (a_man == 0);
-    wire        a_sub  = (a_exp == 0) && (a_man != 0);
-    wire        a_inf  = (a_exp == 8'hFF) && (a_man == 0);
-    wire        a_nan  = (a_exp == 8'hFF) && (a_man != 0);
-    wire        a_snan = a_nan && !a_man[22];
-    wire        a_iz   = a_zero;        //  true zero only; subnormals normalized
+    wire        a_sign;
+    assign a_sign = a[31];
+    wire [7:0]  a_exp;
+    assign a_exp = a[30:23];
+    wire [22:0] a_man;
+    assign a_man = a[22:0];
+    wire        a_zero;
+    assign a_zero = (a_exp == 0) && (a_man == 0);
+    wire        a_sub;
+    assign a_sub = (a_exp == 0) && (a_man != 0);
+    wire        a_inf;
+    assign a_inf = (a_exp == 8'hFF) && (a_man == 0);
+    wire        a_nan;
+    assign a_nan = (a_exp == 8'hFF) && (a_man != 0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a_man[22];
+    wire        a_iz;        //  true zero only; subnormals normalized
+    assign a_iz = a_zero;
 
     function [4:0] clz23;
         input [22:0] v;
@@ -46,24 +55,30 @@ module karu_fsqrt (
                 if (!fnd && v[i]) begin clz23 = 5'd22 - i[4:0]; fnd = 1'b1; end
         end
     endfunction
-    wire [4:0]  a_clz   = a_sub ? clz23(a_man) : 5'd0;
-    wire [22:0] a_man_n = a_sub ? (a_man << (a_clz + 5'd1)) : a_man;
+    wire [4:0]  a_clz;
+    assign a_clz = a_sub ? clz23(a_man) : 5'd0;
+    wire [22:0] a_man_n;
+    assign a_man_n = a_sub ? (a_man << (a_clz + 5'd1)) : a_man;
 
     //  sqrt(-x) for x>0 is invalid -> qNaN, NV
     //  sqrt(-0)  = -0 (spec)
     //  sqrt(+0)  = +0
     //  sqrt(+inf)= +inf
     //  sqrt(-inf)= qNaN, NV
-    wire neg_value = a_sign && !a_iz && !a_nan;
+    wire neg_value;
+    assign neg_value = a_sign && !a_iz && !a_nan;
 
-    wire special_active = a_nan || a_iz || a_inf || neg_value;
-    wire [31:0] special_res =
+    wire special_active;
+    assign special_active = a_nan || a_iz || a_inf || neg_value;
+    wire [31:0] special_res;
+    assign special_res =
         a_nan      ? `FP_S_QNAN :
         neg_value  ? `FP_S_QNAN :
         a_iz       ? a :                    //  signed zero preserved
         a_inf      ? (a_sign ? `FP_S_QNAN : a) :
                      32'b0;
-    wire [4:0]  special_flags =
+    wire [4:0]  special_flags;
+    assign special_flags =
         (a_snan    ? (5'b1 << `FF_NV) : 5'b0) |
         (neg_value ? (5'b1 << `FF_NV) : 5'b0) |
         ((a_inf && a_sign) ? (5'b1 << `FF_NV) : 5'b0);
@@ -83,10 +98,12 @@ module karu_fsqrt (
     //                                            = (a_exp + 127 + odd) / 2 (rounded).
     //  Effective unbiased exponent. A normalized subnormal (leading 1
     //  shifted up by a_clz+1) has unbiased exponent -127 - a_clz.
-    wire signed [10:0] exp_unb_s = a_sub
-        ? (-11'sd127 - {{6{1'b0}}, a_clz})
-        : ($signed({3'b0, a_exp}) - 11'sd127);
-    wire        exp_odd = exp_unb_s[0];
+    wire signed [10:0] exp_unb_s;
+    assign exp_unb_s = a_sub
+? (-11'sd127 - {{6{1'b0}}, a_clz})
+: ($signed({3'b0, a_exp}) - 11'sd127);
+    wire        exp_odd;
+    assign exp_odd = exp_unb_s[0];
 
     //  Build the 48-bit normalized operand for the sqrt loop:
     //    if exp_odd: m = {1, a_man, 24'b0} >> 0 = {01.mantissa, ...} (no, 2x = 1.mantissa shifted left by 1)
@@ -110,16 +127,20 @@ module karu_fsqrt (
     //  bit-serial sqrt yields a 24-bit Q with the leading 1 at bit 23.
     //    exp_odd=0 (even E): X = mant_full * 2^23 (47-bit, top bit at 46)
     //    exp_odd=1 (odd  E): X = mant_full * 2^24 (48-bit, top bit at 47)
-    wire [23:0] a_mfull = {1'b1, a_man_n};
-    wire [47:0] m_norm  = exp_odd ? {a_mfull, 24'b0}
-                                   : {1'b0, a_mfull, 23'b0};
+    wire [23:0] a_mfull;
+    assign a_mfull = {1'b1, a_man_n};
+    wire [47:0] m_norm;
+    assign m_norm = exp_odd ? {a_mfull, 24'b0}
+                             : {1'b0, a_mfull, 23'b0};
 
     //  Result exp (biased):
     //    even: (a_exp + 127) / 2
     //    odd : (a_exp + 126) / 2
     //  Result unbiased exp = floor(exp_unb / 2); rebias by +127.
-    wire signed [10:0] res_unb = (exp_unb_s - (exp_odd ? 11'sd1 : 11'sd0)) >>> 1;
-    wire [7:0] res_exp_pre = res_unb[7:0] + 8'd127;
+    wire signed [10:0] res_unb;
+    assign res_unb = (exp_unb_s - (exp_odd ? 11'sd1 : 11'sd0)) >>> 1;
+    wire [7:0] res_exp_pre;
+    assign res_exp_pre = res_unb[7:0] + 8'd127;
 
     localparam S_IDLE = 2'd0, S_RUN = 2'd1, S_FIN = 2'd2;
     reg [1:0]   state;
@@ -135,12 +156,18 @@ module karu_fsqrt (
     reg [2:0]   rm_q;
 
     //  per-iteration combinational step
-    wire [51:0] R_shifted = {R, M[47:46]};  //  (R << 2) | top 2 bits of M
-    wire [51:0] trial     = {Q, 2'b01};     //  (Q << 2) | 01 = Q*4 + 1
-    wire        take      = (R_shifted >= trial);
-    wire [49:0] R_next    = take ? R_shifted[49:0] - trial[49:0] : R_shifted[49:0];
-    wire [25:0] Q_next    = take ? {Q[24:0], 1'b1} : {Q[24:0], 1'b0};
-    wire [47:0] M_next    = {M[45:0], 2'b00};
+    wire [51:0] R_shifted;  //  (R << 2) | top 2 bits of M
+    assign R_shifted = {R, M[47:46]};
+    wire [51:0] trial;     //  (Q << 2) | 01 = Q*4 + 1
+    assign trial = {Q, 2'b01};
+    wire        take;
+    assign take = (R_shifted >= trial);
+    wire [49:0] R_next;
+    assign R_next = take ? R_shifted[49:0] - trial[49:0] : R_shifted[49:0];
+    wire [25:0] Q_next;
+    assign Q_next = take ? {Q[24:0], 1'b1} : {Q[24:0], 1'b0};
+    wire [47:0] M_next;
+    assign M_next = {M[45:0], 2'b00};
 
     assign busy    = (state != S_IDLE);
     assign latency = 5'd28;                 //  ~1 setup + 25 iter + 2 fin
@@ -149,11 +176,15 @@ module karu_fsqrt (
     //  After 25 iterations, Q has 25 bits of result. Leading bit Q[24]
     //  is the implicit 1 of the mantissa. Bits Q[23:1] are the 23-bit
     //  mantissa fraction. Q[0] is the round bit. Sticky = (R != 0).
-    wire [22:0] m_field    = Q[23:1];
-    wire        round_bit  = Q[0];
-    wire        sticky_bit = |R;
+    wire [22:0] m_field;
+    assign m_field = Q[23:1];
+    wire        round_bit;
+    assign round_bit = Q[0];
+    wire        sticky_bit;
+    assign sticky_bit = |R;
 
-    wire round_up =
+    wire round_up;
+    assign round_up =
         (rm_q == `FRM_RNE) ? (round_bit && (sticky_bit || m_field[0])) :
         (rm_q == `FRM_RTZ) ? 1'b0 :
         (rm_q == `FRM_RDN) ? (sign_q  && (round_bit || sticky_bit)) :
@@ -161,14 +192,21 @@ module karu_fsqrt (
         (rm_q == `FRM_RMM) ? round_bit :
                              1'b0;
 
-    wire [24:0] m_rnd     = {1'b0, 1'b1, m_field} + {24'b0, round_up};
-    wire        m_carry   = m_rnd[24];
-    wire [22:0] m_final   = m_carry ? 23'b0 : m_rnd[22:0];
-    wire [8:0]  exp_final = {1'b0, exp_q} + {8'b0, m_carry};
-    wire        inexact   = round_bit || sticky_bit;
+    wire [24:0] m_rnd;
+    assign m_rnd = {1'b0, 1'b1, m_field} + {24'b0, round_up};
+    wire        m_carry;
+    assign m_carry = m_rnd[24];
+    wire [22:0] m_final;
+    assign m_final = m_carry ? 23'b0 : m_rnd[22:0];
+    wire [8:0]  exp_final;
+    assign exp_final = {1'b0, exp_q} + {8'b0, m_carry};
+    wire        inexact;
+    assign inexact = round_bit || sticky_bit;
 
-    wire [31:0] normal_res = {sign_q, exp_final[7:0], m_final};
-    wire [4:0]  normal_flags = inexact ? (5'b1 << `FF_NX) : 5'b0;
+    wire [31:0] normal_res;
+    assign normal_res = {sign_q, exp_final[7:0], m_final};
+    wire [4:0]  normal_flags;
+    assign normal_flags = inexact ? (5'b1 << `FF_NX) : 5'b0;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -207,5 +245,6 @@ module karu_fsqrt (
         end
     end
 
-    wire _unused = &{1'b0};
+    wire _unused;
+    assign _unused = &{1'b0};
 endmodule

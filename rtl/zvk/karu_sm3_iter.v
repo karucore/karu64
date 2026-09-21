@@ -19,12 +19,18 @@ module karu_sm3_iter
     reg [31:0] ss_pre, a12, ff_pre, gg_pre;
     reg [31:0] rnd0, rnd1;
 
-    wire [31:0] ss1 = sm_ROL32(ss_pre, 7);
-    wire [31:0] ss2 = ss1 ^ a12;
-    wire [31:0] next_a = ff_pre + ss2;
-    wire [31:0] next_e = sm_p_0(gg_pre + ss1);
-    wire [31:0] next_c = sm_ROL32(B, 9);
-    wire [31:0] next_g = sm_ROL32(F, 19);
+    wire [31:0] ss1;
+    assign ss1 = sm_ROL32(ss_pre, 7);
+    wire [31:0] ss2;
+    assign ss2 = ss1 ^ a12;
+    wire [31:0] next_a;
+    assign next_a = ff_pre + ss2;
+    wire [31:0] next_e;
+    assign next_e = sm_p_0(gg_pre + ss1);
+    wire [31:0] next_c;
+    assign next_c = sm_ROL32(B, 9);
+    wire [31:0] next_g;
+    assign next_g = sm_ROL32(F, 19);
 
     always @(posedge clk) begin
         if (rst) begin

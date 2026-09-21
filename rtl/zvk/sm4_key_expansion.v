@@ -7,32 +7,45 @@ module sm4_key_expansion
     output wire [127:0] next_rnd_key_o
 );
 
-    wire [31:0] rk0 = curr_rnd_key_i[ 31:  0];
-    wire [31:0] rk1 = curr_rnd_key_i[ 63: 32];
-    wire [31:0] rk2 = curr_rnd_key_i[ 95: 64];
-    wire [31:0] rk3 = curr_rnd_key_i[127: 96];
+    wire [31:0] rk0;
+    assign rk0 = curr_rnd_key_i[ 31:  0];
+    wire [31:0] rk1;
+    assign rk1 = curr_rnd_key_i[ 63: 32];
+    wire [31:0] rk2;
+    assign rk2 = curr_rnd_key_i[ 95: 64];
+    wire [31:0] rk3;
+    assign rk3 = curr_rnd_key_i[127: 96];
 
-    wire [4:0] rbase = {rnd_i, 2'b00};
+    wire [4:0] rbase;
+    assign rbase = {rnd_i, 2'b00};
 
-    wire [31:0] b0 = rk1 ^ rk2 ^ rk3 ^ sm_constant_key(rbase);
+    wire [31:0] b0;
+    assign b0 = rk1 ^ rk2 ^ rk3 ^ sm_constant_key(rbase);
     wire [31:0] s0;
     sm4_subword i_sub0 (.word_o(s0), .word_i(b0));
-    wire [31:0] rk4 = sm_round_key(rk0, s0);
+    wire [31:0] rk4;
+    assign rk4 = sm_round_key(rk0, s0);
 
-    wire [31:0] b1 = rk2 ^ rk3 ^ rk4 ^ sm_constant_key(rbase + 5'd1);
+    wire [31:0] b1;
+    assign b1 = rk2 ^ rk3 ^ rk4 ^ sm_constant_key(rbase + 5'd1);
     wire [31:0] s1;
     sm4_subword i_sub1 (.word_o(s1), .word_i(b1));
-    wire [31:0] rk5 = sm_round_key(rk1, s1);
+    wire [31:0] rk5;
+    assign rk5 = sm_round_key(rk1, s1);
 
-    wire [31:0] b2 = rk3 ^ rk4 ^ rk5 ^ sm_constant_key(rbase + 5'd2);
+    wire [31:0] b2;
+    assign b2 = rk3 ^ rk4 ^ rk5 ^ sm_constant_key(rbase + 5'd2);
     wire [31:0] s2;
     sm4_subword i_sub2 (.word_o(s2), .word_i(b2));
-    wire [31:0] rk6 = sm_round_key(rk2, s2);
+    wire [31:0] rk6;
+    assign rk6 = sm_round_key(rk2, s2);
 
-    wire [31:0] b3 = rk4 ^ rk5 ^ rk6 ^ sm_constant_key(rbase + 5'd3);
+    wire [31:0] b3;
+    assign b3 = rk4 ^ rk5 ^ rk6 ^ sm_constant_key(rbase + 5'd3);
     wire [31:0] s3;
     sm4_subword i_sub3 (.word_o(s3), .word_i(b3));
-    wire [31:0] rk7 = sm_round_key(rk3, s3);
+    wire [31:0] rk7;
+    assign rk7 = sm_round_key(rk3, s3);
 
     assign next_rnd_key_o = {rk7, rk6, rk5, rk4};
 

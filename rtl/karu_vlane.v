@@ -93,8 +93,10 @@ module karu_vlane #(
     //  ==================================================================
     //  (1) integer sub-word-SIMD datapath (combinational)
     //  ==================================================================
-    wire [6:0] sewb = 7'd8 << vsew;         //  bits/element
-    wire [3:0] epc  = 4'd8 >> vsew;         //  elements per 64-bit chunk (e8->8 .. e64->1)
+    wire [6:0] sewb;         //  bits/element
+    assign sewb = 7'd8 << vsew;
+    wire [3:0] epc;         //  elements per 64-bit chunk (e8->8 .. e64->1)
+    assign epc = 4'd8 >> vsew;
 
     //  sign-extend the low w bits of v to 64 (verbatim from karu_varith)
     function [63:0] sext;   input [63:0] v; input [6:0] w;
@@ -300,7 +302,8 @@ module karu_vlane #(
 `ifdef KARU_EN_ZVKB
     reg [63:0] zvbbA, zvbbP;
     reg zvbb_unaryP;
-    wire zvbb_unary = is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop;
+    wire zvbb_unary;
+    assign zvbb_unary = is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop;
     always @(*) begin
         zvbbA = 64'b0;
         if (is_brev8)      zvbbA = zvkb_brev8_word(vs2_chunk);

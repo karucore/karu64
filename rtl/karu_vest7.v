@@ -103,60 +103,102 @@ module karu_vest7 (
     endfunction
 
     //  ---- field decode (F uses the low 32 bits of a) ----
-    wire        sgn = is_d ? a[63]   : a[31];
-    wire [10:0] exp = is_d ? a[62:52] : {3'b0, a[30:23]};
-    wire [51:0] sig = is_d ? a[51:0]  : {29'b0, a[22:0]};
-    wire        exp_max = is_d ? (exp == 11'h7FF) : (exp[7:0] == 8'hFF);
-    wire        sig_zero = (sig == 52'b0);
-    wire        snan_bit = is_d ? sig[51] : sig[22];
-    wire        is_inf  = exp_max && sig_zero;
-    wire        is_nan  = exp_max && !sig_zero;
-    wire        is_snan = is_nan && !snan_bit;
-    wire        is_zero = (exp == 11'b0) && sig_zero;
-    wire        is_sub  = (exp == 11'b0) && !sig_zero;
+    wire        sgn;
+    assign sgn = is_d ? a[63]   : a[31];
+    wire [10:0] exp;
+    assign exp = is_d ? a[62:52] : {3'b0, a[30:23]};
+    wire [51:0] sig;
+    assign sig = is_d ? a[51:0]  : {29'b0, a[22:0]};
+    wire        exp_max;
+    assign exp_max = is_d ? (exp == 11'h7FF) : (exp[7:0] == 8'hFF);
+    wire        sig_zero;
+    assign sig_zero = (sig == 52'b0);
+    wire        snan_bit;
+    assign snan_bit = is_d ? sig[51] : sig[22];
+    wire        is_inf;
+    assign is_inf = exp_max && sig_zero;
+    wire        is_nan;
+    assign is_nan = exp_max && !sig_zero;
+    wire        is_snan;
+    assign is_snan = is_nan && !snan_bit;
+    wire        is_zero;
+    assign is_zero = (exp == 11'b0) && sig_zero;
+    wire        is_sub;
+    assign is_sub = (exp == 11'b0) && !sig_zero;
 
     //  ---- subnormal normalisation (clz + shift), exactly per the reference ----
-    wire [63:0] sig_align = is_d ? ({12'b0, sig} << 12) : ({12'b0, sig} << 41);
-    wire [6:0]  lz   = clz64(sig_align);                    //  only meaningful when is_sub
-    wire [63:0] exp_eff = is_sub ? ({53'b0, exp} - {57'b0, lz}) : {53'b0, exp};
-    wire [63:0] sigmask = is_d ? 64'h000F_FFFF_FFFF_FFFF : 64'h0000_0000_007F_FFFF;
-    wire [63:0] sig_eff = is_sub ? (({12'b0, sig} << (lz + 7'd1)) & sigmask) : {12'b0, sig};
+    wire [63:0] sig_align;
+    assign sig_align = is_d ? ({12'b0, sig} << 12) : ({12'b0, sig} << 41);
+    wire [6:0]  lz;                    //  only meaningful when is_sub
+    assign lz = clz64(sig_align);
+    wire [63:0] exp_eff;
+    assign exp_eff = is_sub ? ({53'b0, exp} - {57'b0, lz}) : {53'b0, exp};
+    wire [63:0] sigmask;
+    assign sigmask = is_d ? 64'h000F_FFFF_FFFF_FFFF : 64'h0000_0000_007F_FFFF;
+    wire [63:0] sig_eff;
+    assign sig_eff = is_sub ? (({12'b0, sig} << (lz + 7'd1)) & sigmask) : {12'b0, sig};
 
     //  ---- table index + significand ----
     //  Top 6 / top 7 significand bits used by the Spike table index.
-    wire [5:0]  srsq = sig_eff[(is_d ? 6'd46 : 6'd17) +: 6];
-    wire [6:0]  srcp = sig_eff[(is_d ? 6'd45 : 6'd16) +: 7];
-    wire [6:0]  idx_rsq = {exp_eff[0], srsq};
-    wire [6:0]  idx_rcp = srcp;
-    wire [6:0]  tabval  = is_rec ? rcp_lut(idx_rcp) : rsq_lut(idx_rsq);
-    wire [63:0] out_sig0 = {57'b0, tabval} << (is_d ? 7'd45 : 7'd16);   //  << (s-7)
+    wire [5:0]  srsq;
+    assign srsq = sig_eff[(is_d ? 6'd46 : 6'd17) +: 6];
+    wire [6:0]  srcp;
+    assign srcp = sig_eff[(is_d ? 6'd45 : 6'd16) +: 7];
+    wire [6:0]  idx_rsq;
+    assign idx_rsq = {exp_eff[0], srsq};
+    wire [6:0]  idx_rcp;
+    assign idx_rcp = srcp;
+    wire [6:0]  tabval;
+    assign tabval = is_rec ? rcp_lut(idx_rcp) : rsq_lut(idx_rsq);
+    wire [63:0] out_sig0;   //  << (s-7)
+    assign out_sig0 = {57'b0, tabval} << (is_d ? 7'd45 : 7'd16);
 
     //  ---- output exponents (64-bit modular arithmetic, matching the C) ----
-    wire [63:0] threebias = is_d ? 64'd3069 : 64'd381;      //  3*(2^(e-1)-1)
-    wire [63:0] twobias   = is_d ? 64'd2046 : 64'd254;      //  2*(2^(e-1)-1)
-    wire [63:0] oexp_rsq  = (threebias + ~exp_eff) >> 1;
-    wire [63:0] oexp_rcp_raw = twobias + ~exp_eff;
-    wire        rcp_e0 = (oexp_rcp_raw == 64'd0);
-    wire        rcp_em1 = (oexp_rcp_raw == {64{1'b1}});     //  == -1
-    wire [63:0] impl1  = 64'd1 << (is_d ? 7'd51 : 7'd22);   //  1 << (s-1)
-    wire [63:0] out_sig_rcp = rcp_em1 ? (((out_sig0 >> 1) | impl1) >> 1)
-                              : rcp_e0  ?  ((out_sig0 >> 1) | impl1)
-                              :             out_sig0;
-    wire [63:0] out_exp_rcp = (rcp_e0 || rcp_em1) ? 64'd0 : oexp_rcp_raw;
+    wire [63:0] threebias;      //  3*(2^(e-1)-1)
+    assign threebias = is_d ? 64'd3069 : 64'd381;
+    wire [63:0] twobias;      //  2*(2^(e-1)-1)
+    assign twobias = is_d ? 64'd2046 : 64'd254;
+    wire [63:0] oexp_rsq;
+    assign oexp_rsq = (threebias + ~exp_eff) >> 1;
+    wire [63:0] oexp_rcp_raw;
+    assign oexp_rcp_raw = twobias + ~exp_eff;
+    wire        rcp_e0;
+    assign rcp_e0 = (oexp_rcp_raw == 64'd0);
+    wire        rcp_em1;     //  == -1
+    assign rcp_em1 = (oexp_rcp_raw == {64{1'b1}});
+    wire [63:0] impl1;   //  1 << (s-1)
+    assign impl1 = 64'd1 << (is_d ? 7'd51 : 7'd22);
+    wire [63:0] out_sig_rcp;
+    assign out_sig_rcp = rcp_em1 ? (((out_sig0 >> 1) | impl1) >> 1)
+                         : rcp_e0  ?  ((out_sig0 >> 1) | impl1)
+                         :             out_sig0;
+    wire [63:0] out_exp_rcp;
+    assign out_exp_rcp = (rcp_e0 || rcp_em1) ? 64'd0 : oexp_rcp_raw;
 
     //  ---- composition pieces ----
-    wire [5:0]  SHs    = is_d ? 6'd52 : 6'd23;              //  s
-    wire [63:0] signf  = sgn ? (64'd1 << (is_d ? 7'd63 : 7'd31)) : 64'd0;
-    wire [63:0] expall = is_d ? 64'h7FF0_0000_0000_0000 : 64'h0000_0000_7F80_0000;
-    wire [63:0] pinf   = expall;
-    wire [63:0] ninf   = expall | (64'd1 << (is_d ? 7'd63 : 7'd31));
-    wire [63:0] dnan   = is_d ? `FP_D_QNAN : {32'b0, `FP_S_QNAN};
-    wire [63:0] rsq_body = signf | (oexp_rsq    << SHs) | out_sig0;
-    wire [63:0] rcp_body = signf | (out_exp_rcp << SHs) | out_sig_rcp;
+    wire [5:0]  SHs;              //  s
+    assign SHs = is_d ? 6'd52 : 6'd23;
+    wire [63:0] signf;
+    assign signf = sgn ? (64'd1 << (is_d ? 7'd63 : 7'd31)) : 64'd0;
+    wire [63:0] expall;
+    assign expall = is_d ? 64'h7FF0_0000_0000_0000 : 64'h0000_0000_7F80_0000;
+    wire [63:0] pinf;
+    assign pinf = expall;
+    wire [63:0] ninf;
+    assign ninf = expall | (64'd1 << (is_d ? 7'd63 : 7'd31));
+    wire [63:0] dnan;
+    assign dnan = is_d ? `FP_D_QNAN : {32'b0, `FP_S_QNAN};
+    wire [63:0] rsq_body;
+    assign rsq_body = signf | (oexp_rsq    << SHs) | out_sig0;
+    wire [63:0] rcp_body;
+    assign rcp_body = signf | (out_exp_rcp << SHs) | out_sig_rcp;
     //  subnormal-input reciprocal that overflows: rm-dependent inf vs max-finite
-    wire        rmax = (rm == 3'd1) || (rm == 3'd2 && !sgn) || (rm == 3'd3 && sgn);
-    wire [63:0] rcp_ovf  = rmax ? ((signf | expall) - 64'd1) : (signf | expall);
-    wire        rcp_abn  = is_sub && (exp_eff != 64'd0) && (exp_eff != {64{1'b1}});
+    wire        rmax;
+    assign rmax = (rm == 3'd1) || (rm == 3'd2 && !sgn) || (rm == 3'd3 && sgn);
+    wire [63:0] rcp_ovf;
+    assign rcp_ovf = rmax ? ((signf | expall) - 64'd1) : (signf | expall);
+    wire        rcp_abn;
+    assign rcp_abn = is_sub && (exp_eff != 64'd0) && (exp_eff != {64{1'b1}});
 
     always @(*) begin
         res = 64'b0; flags = 5'b0;

@@ -125,13 +125,18 @@ module karu_vrf_bram_wr #(
     reg  [4:0]  g2a, g3a, g1a;
     reg         g2g, g3g, g1g;
     reg         g2v, g3v, g1v;
-    wire gn2 = src_vs1 && (!g2v || (g2a != vr_rs2) || (g2g != src_g1));
-    wire gn3 = src_vs2 && (!g3v || (g3a != vr_rs3) || (g3g != src_g2));
-    wire gn1 = src_vold && (!g1v || (g1a != vr_rs) || (g1g != src_gv));
-    wire need_fill = gn2 || gn3 || gn1;
+    wire gn2;
+    assign gn2 = src_vs1 && (!g2v || (g2a != vr_rs2) || (g2g != src_g1));
+    wire gn3;
+    assign gn3 = src_vs2 && (!g3v || (g3a != vr_rs3) || (g3g != src_g2));
+    wire gn1;
+    assign gn1 = src_vold && (!g1v || (g1a != vr_rs) || (g1g != src_gv));
+    wire need_fill;
+    assign need_fill = gn2 || gn3 || gn1;
     assign vs1_g = vs1_gq;  assign vs2_g = vs2_gq;  assign vold_g = vold_gq;
     assign op_stall = varith_active && need_fill;
-    wire   start_fill = varith_active && need_fill;     //  == op_stall
+    wire   start_fill;     //  == op_stall
+    assign start_fill = varith_active && need_fill;
 
     //  fill FSM: read vs1/vs2 granules (ports A+B), then vold's granule
     //  when needed. 2-3 cycles per fill.
@@ -160,7 +165,8 @@ module karu_vrf_bram_wr #(
     //  writes commit direct, or are edge-captured and drained when they coincide
     //  with a fill. One unified path -- no varith/vlsu classification (the caller
     //  mux selects the source by its write signal).
-    wire direct_gw = (fs == F_IDLE) && g_we  && !start_fill && !cap_pending;
+    wire direct_gw;
+    assign direct_gw = (fs == F_IDLE) && g_we  && !start_fill && !cap_pending;
 
     //  ---- combinational BRAM port drivers ----
     always @* begin
@@ -267,9 +273,12 @@ module karu_vrf_bram_wr #(
     //  varith FINAL write as varith_busy drops -- both attributed to vlsu here so
     //  the two never appear active together (the adapter can't distinguish them,
     //  and either attribution satisfies "access => some unit active").
-    wire varith_wr_cyc = (fs == F_DRAIN);
-    wire chk_varith = varith_active || varith_wr_cyc;
-    wire chk_vlsu   = vlsu_active || (g_we && !varith_active);
+    wire varith_wr_cyc;
+    assign varith_wr_cyc = (fs == F_DRAIN);
+    wire chk_varith;
+    assign chk_varith = varith_active || varith_wr_cyc;
+    wire chk_vlsu;
+    assign chk_vlsu = vlsu_active || (g_we && !varith_active);
 // synthesis translate_off
     //  VRF8 (read-cache coherence, granule-tag form): a committed op-final
     //  write (g_wlast) must invalidate ALL the granule operand tags, so the
@@ -288,7 +297,8 @@ module karu_vrf_bram_wr #(
     //  with a frozen producer pulse still high and a capture pending, cap_pending
     //  must mask the direct paths, so the only F_IDLE write source is masked ->
     //  a_we must be low. A high a_we here means the suppression failed (replay).
-    wire wgn3_risk = (fs==F_IDLE) && !start_fill && cap_pending && g_we;
+    wire wgn3_risk;
+    assign wgn3_risk = (fs==F_IDLE) && !start_fill && cap_pending && g_we;
     always @(posedge clk) if (!rst && wgn3_risk && a_we) begin
         $display("[VRF-BRAM-ASSERT] WGN3 edge-captured write replayed after op_stall @%0t", $time);
         $finish;

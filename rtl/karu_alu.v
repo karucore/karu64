@@ -17,32 +17,52 @@ module karu_alu (
     output wire [63:0]  out
 );
     //  64-bit results
-    wire [63:0] add64 = op1 + op2;
-    wire [63:0] sub64 = op1 - op2;
-    wire [63:0] and64 = op1 & op2;
-    wire [63:0] or64  = op1 | op2;
-    wire [63:0] xor64 = op1 ^ op2;
-    wire [63:0] sll64 = op1 << op2[5:0];
-    wire [63:0] srl64 = op1 >> op2[5:0];
-    wire [63:0] sra64 = $signed(op1) >>> op2[5:0];
+    wire [63:0] add64;
+    assign add64 = op1 + op2;
+    wire [63:0] sub64;
+    assign sub64 = op1 - op2;
+    wire [63:0] and64;
+    assign and64 = op1 & op2;
+    wire [63:0] or64;
+    assign or64 = op1 | op2;
+    wire [63:0] xor64;
+    assign xor64 = op1 ^ op2;
+    wire [63:0] sll64;
+    assign sll64 = op1 << op2[5:0];
+    wire [63:0] srl64;
+    assign srl64 = op1 >> op2[5:0];
+    wire [63:0] sra64;
+    assign sra64 = $signed(op1) >>> op2[5:0];
 
     //  SLT/SLTU (signed/unsigned compare)
-    wire [63:0] sltu64 = {63'b0, op1 < op2};
-    wire [63:0] slt64  =
+    wire [63:0] sltu64;
+    assign sltu64 = {63'b0, op1 < op2};
+    wire [63:0] slt64;
+    assign slt64 =
         {63'b0, (op1[63] == 1 && op2[63] == 0) ||
                 ((op1[63] == op2[63]) && (op1 < op2))};
 
     //  32-bit (W) results
-    wire [31:0] add32 = op1[31:0] + op2[31:0];
-    wire [31:0] sub32 = op1[31:0] - op2[31:0];
-    wire [31:0] sll32 = op1[31:0] << op2[4:0];
-    wire [31:0] srl32 = op1[31:0] >> op2[4:0];
-    wire [31:0] sra32 = $signed(op1[31:0]) >>> op2[4:0];
-    wire [63:0] add32w = {{32{add32[31]}}, add32};
-    wire [63:0] sub32w = {{32{sub32[31]}}, sub32};
-    wire [63:0] sll32w = {{32{sll32[31]}}, sll32};
-    wire [63:0] srl32w = {{32{srl32[31]}}, srl32};
-    wire [63:0] sra32w = {{32{sra32[31]}}, sra32};
+    wire [31:0] add32;
+    assign add32 = op1[31:0] + op2[31:0];
+    wire [31:0] sub32;
+    assign sub32 = op1[31:0] - op2[31:0];
+    wire [31:0] sll32;
+    assign sll32 = op1[31:0] << op2[4:0];
+    wire [31:0] srl32;
+    assign srl32 = op1[31:0] >> op2[4:0];
+    wire [31:0] sra32;
+    assign sra32 = $signed(op1[31:0]) >>> op2[4:0];
+    wire [63:0] add32w;
+    assign add32w = {{32{add32[31]}}, add32};
+    wire [63:0] sub32w;
+    assign sub32w = {{32{sub32[31]}}, sub32};
+    wire [63:0] sll32w;
+    assign sll32w = {{32{sll32[31]}}, sll32};
+    wire [63:0] srl32w;
+    assign srl32w = {{32{srl32[31]}}, srl32};
+    wire [63:0] sra32w;
+    assign sra32w = {{32{sra32[31]}}, sra32};
 
     assign out =
         sub == `ALU_ADD  ? (is_w ? add32w : add64) :

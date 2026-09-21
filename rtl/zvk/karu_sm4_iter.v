@@ -18,15 +18,19 @@ module karu_sm4_iter
     reg [2:0]  rnd_q;
     reg        is_key_q;
 
-    wire [4:0] ck_idx = {rnd_q, 2'b00} + {3'b000, step};
-    wire [31:0] round_key = is_key_q ? sm_constant_key(ck_idx) :
-        (step == 2'd0) ? key_i[ 31:  0] :
-        (step == 2'd1) ? key_i[ 63: 32] :
-        (step == 2'd2) ? key_i[ 95: 64] : key_i[127: 96];
-    wire [31:0] b = w1 ^ w2 ^ w3 ^ round_key;
+    wire [4:0] ck_idx;
+    assign ck_idx = {rnd_q, 2'b00} + {3'b000, step};
+    wire [31:0] round_key;
+    assign round_key = is_key_q ? sm_constant_key(ck_idx) :
+   (step == 2'd0) ? key_i[ 31:  0] :
+   (step == 2'd1) ? key_i[ 63: 32] :
+   (step == 2'd2) ? key_i[ 95: 64] : key_i[127: 96];
+    wire [31:0] b;
+    assign b = w1 ^ w2 ^ w3 ^ round_key;
     wire [31:0] s;
     sm4_subword i_subword (.word_o(s), .word_i(b));
-    wire [31:0] new_w = is_key_q ? sm_round_key(w0, s) : sm_round(w0, s);
+    wire [31:0] new_w;
+    assign new_w = is_key_q ? sm_round_key(w0, s) : sm_round(w0, s);
 
     always @(posedge clk) begin
         if (rst) begin

@@ -181,12 +181,17 @@ module karu_csr (
         64'b0;
 `endif
     // MIDELEG-zero bits require corresponding HIDELEG bits read-only zero.
-    wire [63:0] hideleg_wmask = VS_IRQ_MASK | (csr_mideleg & VS_LCOFI_MASK);
-    wire [63:0] vs_lcofi_alias = csr_hideleg & csr_mideleg & VS_LCOFI_MASK;
-    wire h_stce = menvcfg_stce && csr_henvcfg[63];
-    wire [63:0] henvcfg_v = csr_henvcfg &
-        {menvcfg_stce, menvcfg_pbmte, 62'h3fff_ffff_ffff_ffff};
-    wire [63:0] guest_time = time_in + csr_htimedelta;
+    wire [63:0] hideleg_wmask;
+    assign hideleg_wmask = VS_IRQ_MASK | (csr_mideleg & VS_LCOFI_MASK);
+    wire [63:0] vs_lcofi_alias;
+    assign vs_lcofi_alias = csr_hideleg & csr_mideleg & VS_LCOFI_MASK;
+    wire h_stce;
+    assign h_stce = menvcfg_stce && csr_henvcfg[63];
+    wire [63:0] henvcfg_v;
+    assign henvcfg_v = csr_henvcfg &
+   {menvcfg_stce, menvcfg_pbmte, 62'h3fff_ffff_ffff_ffff};
+    wire [63:0] guest_time;
+    assign guest_time = time_in + csr_htimedelta;
     reg [63:0] guest_time_q;
     reg [3:0] vstime_gt_q, vstime_eq_q;
     reg vstime_pending_q;
@@ -232,7 +237,8 @@ module karu_csr (
     assign hstatus_hupmm_o = csr_hstatus[49:48];
     assign henvcfg_pmm_o = csr_henvcfg[33:32];
 `else
-    wire virt = 1'b0;
+    wire virt;
+    assign virt = 1'b0;
     assign virt_o = 0;
     assign data_virt_o = 0;
     assign vsatp_o = 0;
@@ -437,11 +443,15 @@ module karu_csr (
 `ifdef KARU_EN_S
     // STCE selects hardware STIP exclusively, and makes its mip field R/O.
     // The disabled source retains the legacy M-firmware injection mechanism.
-    wire [63:0] mip_wmask = MIP_WMASK & (menvcfg_stce ? ~64'h20 : ~64'b0);
-    wire        stip_v = menvcfg_stce ? stime_pending_q : csr_mip[5];
+    wire [63:0] mip_wmask;
+    assign mip_wmask = MIP_WMASK & (menvcfg_stce ? ~64'h20 : ~64'b0);
+    wire        stip_v;
+    assign stip_v = menvcfg_stce ? stime_pending_q : csr_mip[5];
 `else
-    wire [63:0] mip_wmask = MIP_WMASK;
-    wire        stip_v = csr_mip[5];
+    wire [63:0] mip_wmask;
+    assign mip_wmask = MIP_WMASK;
+    wire        stip_v;
+    assign stip_v = csr_mip[5];
 `endif
     localparam [63:0] SIP_WMASK = S_IRQ_MASK & ~64'h220; // SSIP and LCOFIP only
     localparam [63:0] MEDELEG_WMASK = 64'hb3ff
@@ -529,66 +539,100 @@ module karu_csr (
     //  SD (63): read-only, derived -- some context state is Dirty. The stored
     //  bit 63 is never written (excluded from both write masks, reset 0), so
     //  the read views just OR the derived value in.
-    wire        sd_w = (csr_mstatus[14:13] == 2'b11) || (csr_mstatus[16:15] == 2'b11)
-                    || (csr_mstatus[10:9]  == 2'b11);
-    wire [63:0] sd_v = {sd_w, 63'b0};
-    wire [63:0] mstatus_v = (csr_mstatus & ~MSTATUS_XLEN) | MSTATUS_XLEN | sd_v;
+    wire        sd_w;
+    assign sd_w = (csr_mstatus[14:13] == 2'b11) || (csr_mstatus[16:15] == 2'b11)
+               || (csr_mstatus[10:9]  == 2'b11);
+    wire [63:0] sd_v;
+    assign sd_v = {sd_w, 63'b0};
+    wire [63:0] mstatus_v;
+    assign mstatus_v = (csr_mstatus & ~MSTATUS_XLEN) | MSTATUS_XLEN | sd_v;
 `ifdef KARU_EN_S
-    wire [63:0] sstatus_v = ((csr_mstatus | sd_v) & SSTATUS_RMASK) | SSTATUS_XLEN;
+    wire [63:0] sstatus_v;
+    assign sstatus_v = ((csr_mstatus | sd_v) & SSTATUS_RMASK) | SSTATUS_XLEN;
 `endif
-    wire [63:0] mip_v = {csr_mip[63:6], stip_v, csr_mip[4:0]} |
+    wire [63:0] mip_v;
+    assign mip_v = {csr_mip[63:6], stip_v, csr_mip[4:0]} |
 `ifdef KARU_EN_H
-        {53'b0, csr_hvip[2], 3'b0, (csr_hvip[1] | (h_stce && vstime_pending_q)),
-         3'b0, csr_hvip[0], 2'b0} |
+   {53'b0, csr_hvip[2], 3'b0, (csr_hvip[1] | (h_stce && vstime_pending_q)),
+    3'b0, csr_hvip[0], 2'b0} |
 `endif
-        (irq_software   ? 64'h0000_0000_0000_0008 : 64'b0) |
-        (irq_timer      ? 64'h0000_0000_0000_0080 : 64'b0) |
+   (irq_software   ? 64'h0000_0000_0000_0008 : 64'b0) |
+   (irq_timer      ? 64'h0000_0000_0000_0080 : 64'b0) |
 `ifdef KARU_EN_S
-        (irq_external_s ? 64'h0000_0000_0000_0200 : 64'b0) |
+   (irq_external_s ? 64'h0000_0000_0000_0200 : 64'b0) |
 `endif
-        (irq_external_m ? 64'h0000_0000_0000_0800 : 64'b0);
+   (irq_external_m ? 64'h0000_0000_0000_0800 : 64'b0);
 `ifdef KARU_EN_S
-    wire [63:0] sie_v = csr_mie & csr_mideleg & ~H_IRQ_MASK;
-    wire [63:0] sip_v = mip_v & csr_mideleg & ~H_IRQ_MASK;
-    wire        trap_deleg = priv != PRIV_M &&
-        (trap_cause[63] ? csr_mideleg[trap_cause[5:0]] :
-                           csr_medeleg[trap_cause[5:0]]);
-    wire [63:0] irq_pend = mip_v & csr_mie;
-    wire [63:0] irq_m_pend = irq_pend & ~csr_mideleg;
-    wire [63:0] irq_s_pend = irq_pend &  csr_mideleg & ~H_IRQ_MASK;
-    wire        irq_m_enable = (priv != PRIV_M) || csr_mstatus[3];  //  MIE
-    wire        irq_s_enable = virt || (priv == PRIV_U) ||
-                               (priv == PRIV_S && csr_mstatus[1]);  //  SIE
-    wire        irq_meip = irq_m_enable && irq_m_pend[11];
-    wire        irq_msip = irq_m_enable && irq_m_pend[3];
-    wire        irq_mtip = irq_m_enable && irq_m_pend[7];
-    wire        irq_mseip = irq_m_enable && irq_m_pend[9];
-    wire        irq_mssip = irq_m_enable && irq_m_pend[1];
-    wire        irq_mstip = irq_m_enable && irq_m_pend[5];
-    wire        irq_seip = irq_s_enable && irq_s_pend[9];
-    wire        irq_ssip = irq_s_enable && irq_s_pend[1];
-    wire        irq_stip = irq_s_enable && irq_s_pend[5];
+    wire [63:0] sie_v;
+    assign sie_v = csr_mie & csr_mideleg & ~H_IRQ_MASK;
+    wire [63:0] sip_v;
+    assign sip_v = mip_v & csr_mideleg & ~H_IRQ_MASK;
+    wire        trap_deleg;
+    assign trap_deleg = priv != PRIV_M &&
+   (trap_cause[63] ? csr_mideleg[trap_cause[5:0]] :
+                      csr_medeleg[trap_cause[5:0]]);
+    wire [63:0] irq_pend;
+    assign irq_pend = mip_v & csr_mie;
+    wire [63:0] irq_m_pend;
+    assign irq_m_pend = irq_pend & ~csr_mideleg;
+    wire [63:0] irq_s_pend;
+    assign irq_s_pend = irq_pend &  csr_mideleg & ~H_IRQ_MASK;
+    wire        irq_m_enable;  //  MIE
+    assign irq_m_enable = (priv != PRIV_M) || csr_mstatus[3];
+    wire        irq_s_enable;  //  SIE
+    assign irq_s_enable = virt || (priv == PRIV_U) ||
+                          (priv == PRIV_S && csr_mstatus[1]);
+    wire        irq_meip;
+    assign irq_meip = irq_m_enable && irq_m_pend[11];
+    wire        irq_msip;
+    assign irq_msip = irq_m_enable && irq_m_pend[3];
+    wire        irq_mtip;
+    assign irq_mtip = irq_m_enable && irq_m_pend[7];
+    wire        irq_mseip;
+    assign irq_mseip = irq_m_enable && irq_m_pend[9];
+    wire        irq_mssip;
+    assign irq_mssip = irq_m_enable && irq_m_pend[1];
+    wire        irq_mstip;
+    assign irq_mstip = irq_m_enable && irq_m_pend[5];
+    wire        irq_seip;
+    assign irq_seip = irq_s_enable && irq_s_pend[9];
+    wire        irq_ssip;
+    assign irq_ssip = irq_s_enable && irq_s_pend[1];
+    wire        irq_stip;
+    assign irq_stip = irq_s_enable && irq_s_pend[5];
 `ifdef KARU_EN_H
-    wire [63:0] irq_hv_pend = irq_pend & VS_IRQ_MASK & ~csr_hideleg;
-    wire [63:0] irq_v_pend = irq_pend & VS_IRQ_MASK & csr_hideleg;
-    wire irq_v_enable = virt && ((priv == PRIV_U) || csr_vsstatus[1]);
-    wire irq_hvseip = irq_s_enable && irq_hv_pend[10];
-    wire irq_hvssip = irq_s_enable && irq_hv_pend[2];
-    wire irq_hvstip = irq_s_enable && irq_hv_pend[6];
-    wire irq_vseip = irq_v_enable && irq_v_pend[10];
-    wire irq_vssip = irq_v_enable && irq_v_pend[2];
-    wire irq_vstip = irq_v_enable && irq_v_pend[6];
+    wire [63:0] irq_hv_pend;
+    assign irq_hv_pend = irq_pend & VS_IRQ_MASK & ~csr_hideleg;
+    wire [63:0] irq_v_pend;
+    assign irq_v_pend = irq_pend & VS_IRQ_MASK & csr_hideleg;
+    wire irq_v_enable;
+    assign irq_v_enable = virt && ((priv == PRIV_U) || csr_vsstatus[1]);
+    wire irq_hvseip;
+    assign irq_hvseip = irq_s_enable && irq_hv_pend[10];
+    wire irq_hvssip;
+    assign irq_hvssip = irq_s_enable && irq_hv_pend[2];
+    wire irq_hvstip;
+    assign irq_hvstip = irq_s_enable && irq_hv_pend[6];
+    wire irq_vseip;
+    assign irq_vseip = irq_v_enable && irq_v_pend[10];
+    wire irq_vssip;
+    assign irq_vssip = irq_v_enable && irq_v_pend[2];
+    wire irq_vstip;
+    assign irq_vstip = irq_v_enable && irq_v_pend[6];
 `ifdef KARU_EN_SSCOFPMF
-    wire irq_vlcofi = irq_v_enable && irq_s_pend[13] && csr_hideleg[13];
+    wire irq_vlcofi;
+    assign irq_vlcofi = irq_v_enable && irq_s_pend[13] && csr_hideleg[13];
 `endif
 `endif
 `ifdef KARU_EN_SSCOFPMF
-    wire        irq_mlcofi = irq_m_enable && irq_m_pend[13];    //  LCOFI -> M
-    wire        irq_slcofi = irq_s_enable && irq_s_pend[13]
+    wire        irq_mlcofi;    //  LCOFI -> M
+    assign irq_mlcofi = irq_m_enable && irq_m_pend[13];
+    wire        irq_slcofi; // LCOFI -> S/HS, unless delegated to VS
+    assign irq_slcofi = irq_s_enable && irq_s_pend[13]
 `ifdef KARU_EN_H
-                            && !csr_hideleg[13]
+                       && !csr_hideleg[13]
 `endif
-                            ; // LCOFI -> S/HS, unless delegated to VS
+        ;
 `endif
     assign irq_pending = irq_meip || irq_msip || irq_mtip ||
                          irq_mseip || irq_mssip || irq_mstip ||
@@ -638,14 +682,21 @@ module karu_csr (
 `endif
                    64'h8000_0000_0000_0005;
 `else
-    wire        trap_deleg = 1'b0;
-    wire [63:0] irq_pend = mip_v & csr_mie;
-    wire        irq_m_enable = (priv != PRIV_M) || csr_mstatus[3];  //  MIE
-    wire        irq_meip = irq_m_enable && irq_pend[11];
-    wire        irq_msip = irq_m_enable && irq_pend[3];
-    wire        irq_mtip = irq_m_enable && irq_pend[7];
+    wire        trap_deleg;
+    assign trap_deleg = 1'b0;
+    wire [63:0] irq_pend;
+    assign irq_pend = mip_v & csr_mie;
+    wire        irq_m_enable;  //  MIE
+    assign irq_m_enable = (priv != PRIV_M) || csr_mstatus[3];
+    wire        irq_meip;
+    assign irq_meip = irq_m_enable && irq_pend[11];
+    wire        irq_msip;
+    assign irq_msip = irq_m_enable && irq_pend[3];
+    wire        irq_mtip;
+    assign irq_mtip = irq_m_enable && irq_pend[7];
 `ifdef KARU_EN_SSCOFPMF
-    wire        irq_mlcofi = irq_m_enable && irq_pend[13];  //  LCOFI -> M
+    wire        irq_mlcofi;  //  LCOFI -> M
+    assign irq_mlcofi = irq_m_enable && irq_pend[13];
 `endif
     assign irq_pending = irq_meip || irq_msip || irq_mtip
 `ifdef KARU_EN_SSCOFPMF
@@ -665,16 +716,20 @@ module karu_csr (
 `endif
 
 `ifdef KARU_EN_H
-    wire trap_v_deleg = trap_deleg && virt &&
-        (trap_cause[63] ? csr_hideleg[trap_cause[5:0]] : csr_hedeleg[trap_cause[5:0]]);
-    wire [63:0] trap_delivered_cause = trap_v_deleg && trap_cause[63] &&
-        (trap_cause[5:0] == 6'd2 || trap_cause[5:0] == 6'd6 || trap_cause[5:0] == 6'd10)
-        ? {trap_cause[63:6], trap_cause[5:0] - 6'd1} : trap_cause;
+    wire trap_v_deleg;
+    assign trap_v_deleg = trap_deleg && virt &&
+          (trap_cause[63] ? csr_hideleg[trap_cause[5:0]] : csr_hedeleg[trap_cause[5:0]]);
+    wire [63:0] trap_delivered_cause;
+    assign trap_delivered_cause = trap_v_deleg && trap_cause[63] &&
+   (trap_cause[5:0] == 6'd2 || trap_cause[5:0] == 6'd6 || trap_cause[5:0] == 6'd10)
+   ? {trap_cause[63:6], trap_cause[5:0] - 6'd1} : trap_cause;
     assign irq_target_o = !csr_mideleg[irq_cause[5:0]] ? 2'd0 :
         (virt && csr_hideleg[irq_cause[5:0]]) ? 2'd2 : 2'd1;
 `else
-    wire trap_v_deleg = 1'b0;
-    wire [63:0] trap_delivered_cause = trap_cause;
+    wire trap_v_deleg;
+    assign trap_v_deleg = 1'b0;
+    wire [63:0] trap_delivered_cause;
+    assign trap_delivered_cause = trap_cause;
 `ifdef KARU_EN_S
     assign irq_target_o = csr_mideleg[irq_cause[5:0]] ? 2'd1 : 2'd0;
 `else
@@ -712,9 +767,11 @@ module karu_csr (
             endcase
         end
     endfunction
-    wire [11:0] bank_addr = virt ? guest_bank(op_addr) : op_addr;
-    wire [63:0] vsstatus_v = (csr_vsstatus & SSTATUS_RMASK) | SSTATUS_XLEN
-        | {((csr_vsstatus[14:13] == 2'b11) || (csr_vsstatus[10:9] == 2'b11)),63'b0};
+    wire [11:0] bank_addr;
+    assign bank_addr = virt ? guest_bank(op_addr) : op_addr;
+    wire [63:0] vsstatus_v;
+    assign vsstatus_v = (csr_vsstatus & SSTATUS_RMASK) | SSTATUS_XLEN
+   | {((csr_vsstatus[14:13] == 2'b11) || (csr_vsstatus[10:9] == 2'b11)),63'b0};
     wire [63:0] mstateen_v [0:3];
     assign mstateen_v[0] = csr_mstateen0;
     assign mstateen_v[1] = {mstateen_se[0],63'b0};
@@ -760,12 +817,14 @@ module karu_csr (
         endcase
     end
 `else
-    wire [11:0] bank_addr = op_addr;
+    wire [11:0] bank_addr;
+    assign bank_addr = op_addr;
 `endif
 
-    wire hpm_csr_addr = (op_addr >= 12'hB03 && op_addr <= 12'hB1F) ||
-                        (op_addr >= 12'hC03 && op_addr <= 12'hC1F) ||
-                        (op_addr >= 12'h323 && op_addr <= 12'h33F);
+    wire hpm_csr_addr;
+    assign hpm_csr_addr = (op_addr >= 12'hB03 && op_addr <= 12'hB1F) ||
+                          (op_addr >= 12'hC03 && op_addr <= 12'hC1F) ||
+                          (op_addr >= 12'h323 && op_addr <= 12'h33F);
 
 `ifdef KARU_EN_HPM
     function hpm_event_hit;
@@ -827,13 +886,16 @@ module karu_csr (
             scountovf_bits[scov_k + 3] = csr_mhpmevent[scov_k][63];
     end
 `endif
-    wire [63:0] hpm_rd_v = read_hpm(op_addr);
+    wire [63:0] hpm_rd_v;
+    assign hpm_rd_v = read_hpm(op_addr);
 `else
-    wire [63:0] hpm_rd_v = 64'b0;
+    wire [63:0] hpm_rd_v;
+    assign hpm_rd_v = 64'b0;
 `endif
 
     //  -- read value (combinational) --
-    wire [63:0] rd_v_w =
+    wire [63:0] rd_v_w;
+    assign rd_v_w =
 `ifdef KARU_EN_H
         h_read_sel ? h_rd_v :
 `endif
@@ -974,27 +1036,30 @@ module karu_csr (
         end
     endfunction
 
-    wire [63:0] rmw_v = (op_addr == 12'h344)
-        ? {rd_v_w[63:10], csr_mip[9], rd_v_w[8:0]} : rd_v_w;
-    wire [63:0] new_v_w =
+    wire [63:0] rmw_v;
+    assign rmw_v = (op_addr == 12'h344)
+   ? {rd_v_w[63:10], csr_mip[9], rd_v_w[8:0]} : rd_v_w;
+    wire [63:0] new_v_w;
+    assign new_v_w =
         op_sub == `CSR_RW || op_sub == `CSR_RWI ? op_src               :
         op_sub == `CSR_RS || op_sub == `CSR_RSI ? rmw_v |  op_src      :
         op_sub == `CSR_RC || op_sub == `CSR_RCI ? rmw_v & ~op_src      :
                                                   rmw_v;
     // MPP is WARL: encoding 2 is never a privilege mode; S is absent in an
     // M/U build. Normalize unsupported writes to U before any MRET/MPRV use.
-    wire [1:0] new_mpp =
+    wire [1:0] new_mpp;
 `ifdef KARU_EN_S
-        (new_v_w[12:11] == 2'd2) ? PRIV_U : new_v_w[12:11];
+    assign new_mpp = (new_v_w[12:11] == 2'd2) ? PRIV_U : new_v_w[12:11];
 `else
-        (new_v_w[12:11] == PRIV_M) ? PRIV_M : PRIV_U;
+    assign new_mpp = (new_v_w[12:11] == PRIV_M) ? PRIV_M : PRIV_U;
 `endif
 
     //  Write enable: RW always writes; RS/RC write only if source is
     //  non-zero (rs1 != x0 for reg form, imm != 0 for I form). We
     //  approximate with rs1 != 0 -- the I-form imm is uimm[4:0] so it
     //  being zero is the same condition.
-    wire wen_w =
+    wire wen_w;
+    assign wen_w =
         (op_sub == `CSR_RW || op_sub == `CSR_RWI) ||
         ((op_sub == `CSR_RS || op_sub == `CSR_RC ||
           op_sub == `CSR_RSI || op_sub == `CSR_RCI) && op_rs1 != 5'd0);
@@ -1006,33 +1071,41 @@ module karu_csr (
     //  shadows cycle/time/instret (0xC00-0xC02) and hpmcounter3..31 (0xC03-0xC1F)
     //  trap in S unless mcounteren[idx], and in U unless BOTH mcounteren[idx] and
     //  scounteren[idx]. (M-mode counters 0xB.. are already M-only via priv[9:8].)
-    wire        ctr_is = (op_addr >= 12'hC00) && (op_addr <= 12'hC1F);
-    wire [4:0]  ctr_idx = op_addr[4:0];
-    wire        ctr_blocked = ctr_is && (priv != PRIV_M)
-        && (!csr_mcounteren[ctr_idx]
+    wire        ctr_is;
+    assign ctr_is = (op_addr >= 12'hC00) && (op_addr <= 12'hC1F);
+    wire [4:0]  ctr_idx;
+    assign ctr_idx = op_addr[4:0];
+    wire        ctr_blocked;
+    assign ctr_blocked = ctr_is && (priv != PRIV_M)
+   && (!csr_mcounteren[ctr_idx]
 `ifdef KARU_EN_S
-            || (!virt && priv == PRIV_U && !csr_scounteren[ctr_idx])
+       || (!virt && priv == PRIV_U && !csr_scounteren[ctr_idx])
 `endif
-            );
+       );
 
     //  TVM: when mstatus.TVM=1, an S-mode access to satp (read or write) is
     //  illegal (forces the OS to trap to M for address-space changes).
 `ifdef KARU_EN_S
-    wire satp_tvm_block = !virt && ((op_addr == 12'h180)
+    wire satp_tvm_block;
+    assign satp_tvm_block = !virt && ((op_addr == 12'h180)
 `ifdef KARU_EN_H
-                              || (op_addr == 12'h680)
+                                || (op_addr == 12'h680)
 `endif
-                              ) && (priv == PRIV_S) && csr_mstatus[20];
-    wire timer_csr = (op_addr == 12'h14d)
+                                ) && (priv == PRIV_S) && csr_mstatus[20];
+    wire timer_csr;
+    assign timer_csr = (op_addr == 12'h14d)
 `ifdef KARU_EN_H
-                  || (op_addr == 12'h24d)
+                    || (op_addr == 12'h24d)
 `endif
-                  ;
-    wire stimecmp_block = timer_csr && (priv != PRIV_M)
-                            && (!menvcfg_stce || !csr_mcounteren[1]);
+        ;
+    wire stimecmp_block;
+    assign stimecmp_block = timer_csr && (priv != PRIV_M)
+                              && (!menvcfg_stce || !csr_mcounteren[1]);
 `else
-    wire satp_tvm_block = 1'b0;
-    wire stimecmp_block = 1'b0;
+    wire satp_tvm_block;
+    assign satp_tvm_block = 1'b0;
+    wire stimecmp_block;
+    assign stimecmp_block = 1'b0;
 `endif
 
     //  Smstateen: when an mstateen0 gate bit is 0, S-mode access to the gated
@@ -1041,45 +1114,57 @@ module karu_csr (
     //  already blocked by priv -- no U-side term needed for the current feature set.
 `ifdef KARU_EN_SSTATEEN
 `ifdef KARU_EN_H
-    wire stateen_addr = (op_addr >= 12'h10c && op_addr <= 12'h10f)
-                    || (op_addr >= 12'h60c && op_addr <= 12'h60f);
-    wire [63:0] op_mstateen = mstateen_v[op_addr[1:0]];
-    wire stateen_block = (priv != PRIV_M) &&
-        (((op_addr == 12'h10a || op_addr == 12'h60a) && !csr_mstateen0[62])
-         || (stateen_addr && !op_mstateen[63]));
+    wire stateen_addr;
+    assign stateen_addr = (op_addr >= 12'h10c && op_addr <= 12'h10f)
+                      || (op_addr >= 12'h60c && op_addr <= 12'h60f);
+    wire [63:0] op_mstateen;
+    assign op_mstateen = mstateen_v[op_addr[1:0]];
+    wire stateen_block;
+    assign stateen_block = (priv != PRIV_M) &&
+          (((op_addr == 12'h10a || op_addr == 12'h60a) && !csr_mstateen0[62])
+           || (stateen_addr && !op_mstateen[63]));
 `else
-    wire stateen_block = (priv == PRIV_S) &&
-        ( ((op_addr == 12'h10A) && !csr_mstateen0[62])      //  senvcfg via mstateen0.ENVCFG
-        ||((op_addr == 12'h10C) && !csr_mstateen0[63])      //  sstateen0 via mstateen0.SE0
-        ||((op_addr >= 12'h10D) && (op_addr <= 12'h10F)) ); //  sstateen1..3: mstateen1..3[63]=0 -> always trap from S
+    wire stateen_block; //  sstateen1..3: mstateen1..3[63]=0 -> always trap from S
+    assign stateen_block = (priv == PRIV_S) &&
+          ( ((op_addr == 12'h10A) && !csr_mstateen0[62])      //  senvcfg via mstateen0.ENVCFG
+          ||((op_addr == 12'h10C) && !csr_mstateen0[63])      //  sstateen0 via mstateen0.SE0
+          ||((op_addr >= 12'h10D) && (op_addr <= 12'h10F)) );
 `endif
 `else
-    wire stateen_block = 1'b0;
+    wire stateen_block;
+    assign stateen_block = 1'b0;
 `endif
 
 `ifdef KARU_EN_H
-    wire [1:0] csr_priv_rank = (!virt && priv == PRIV_S) ? 2'd2 : priv;
-    wire csr_priv_denied = csr_priv_rank < op_addr[9:8];
-    wire guest_denied = virt &&
-        ((csr_priv_denied && op_addr[9:8] != PRIV_M)
-         || (ctr_is && (!csr_hcounteren[ctr_idx]
-                       || (priv == PRIV_U && !csr_scounteren[ctr_idx])))
-         || (timer_csr && (!h_stce || !csr_hcounteren[1]
-                       || (priv == PRIV_U && !csr_scounteren[1])))
-         || (op_addr == 12'h180 && csr_hstatus[20])
-         || (op_addr == 12'h10a && !csr_hstateen[0][62])
-         || ((op_addr >= 12'h10c && op_addr <= 12'h10f)
-                         && !csr_hstateen[op_addr[1:0]][63]));
-    wire fp_csr_access = (op_addr >= 12'h001 && op_addr <= 12'h003);
-    wire v_csr_access = (op_addr == 12'h008 || op_addr == 12'h009
-                     || op_addr == 12'h00a || op_addr == 12'h00f
-                     || op_addr == 12'hc20 || op_addr == 12'hc21 || op_addr == 12'hc22);
-    wire context_off = (fp_csr_access && ((status_fs_o == 0) || (virt && vsstatus_fs_o == 0)))
-                    || (v_csr_access && ((status_vs_o == 0) || (virt && vsstatus_vs_o == 0)));
-    wire csr_hard_illegal = !csr_present(op_addr)
-        || (csr_priv_denied && (!virt || op_addr[9:8] == PRIV_M))
-        || ctr_blocked || satp_tvm_block || stimecmp_block || stateen_block
-        || context_off || ((op_addr[11:10] == 2'b11) && wen_w);
+    wire [1:0] csr_priv_rank;
+    assign csr_priv_rank = (!virt && priv == PRIV_S) ? 2'd2 : priv;
+    wire csr_priv_denied;
+    assign csr_priv_denied = csr_priv_rank < op_addr[9:8];
+    wire guest_denied;
+    assign guest_denied = virt &&
+          ((csr_priv_denied && op_addr[9:8] != PRIV_M)
+           || (ctr_is && (!csr_hcounteren[ctr_idx]
+                         || (priv == PRIV_U && !csr_scounteren[ctr_idx])))
+           || (timer_csr && (!h_stce || !csr_hcounteren[1]
+                         || (priv == PRIV_U && !csr_scounteren[1])))
+           || (op_addr == 12'h180 && csr_hstatus[20])
+           || (op_addr == 12'h10a && !csr_hstateen[0][62])
+           || ((op_addr >= 12'h10c && op_addr <= 12'h10f)
+                           && !csr_hstateen[op_addr[1:0]][63]));
+    wire fp_csr_access;
+    assign fp_csr_access = (op_addr >= 12'h001 && op_addr <= 12'h003);
+    wire v_csr_access;
+    assign v_csr_access = (op_addr == 12'h008 || op_addr == 12'h009
+                       || op_addr == 12'h00a || op_addr == 12'h00f
+                       || op_addr == 12'hc20 || op_addr == 12'hc21 || op_addr == 12'hc22);
+    wire context_off;
+    assign context_off = (fp_csr_access && ((status_fs_o == 0) || (virt && vsstatus_fs_o == 0)))
+                      || (v_csr_access && ((status_vs_o == 0) || (virt && vsstatus_vs_o == 0)));
+    wire csr_hard_illegal;
+    assign csr_hard_illegal = !csr_present(op_addr)
+          || (csr_priv_denied && (!virt || op_addr[9:8] == PRIV_M))
+          || ctr_blocked || satp_tvm_block || stimecmp_block || stateen_block
+          || context_off || ((op_addr[11:10] == 2'b11) && wen_w);
     assign csr_exc_o = csr_hard_illegal ? EXC_ILLEGAL : guest_denied ? EXC_VIRTUAL : EXC_NONE;
     assign csr_illegal = csr_exc_o == EXC_ILLEGAL;
 `else
@@ -1096,28 +1181,33 @@ module karu_csr (
 
     //  An illegal CSR access traps and must NOT modify architectural state, so
     //  the actual write fires only when the access is legal.
-    wire csr_w_fire = op_req && wen_w && (csr_exc_o == EXC_NONE);
+    wire csr_w_fire;
+    assign csr_w_fire = op_req && wen_w && (csr_exc_o == EXC_NONE);
 
     //  Smcntrpmf per-privilege inhibit for the CURRENT privilege: when set, the
     //  matching fixed counter is frozen this cycle (mcycle uses the cycle's priv;
     //  minstret the retiring instruction's priv -- both = the current `priv` reg,
     //  which updates only on next cycle's trap/xret).
 `ifdef KARU_EN_SMCNTRPMF
-    wire cyc_pinh = (priv == PRIV_M) ? csr_mcyclecfg[62]
+    wire cyc_pinh;
+    assign cyc_pinh = (priv == PRIV_M) ? csr_mcyclecfg[62]
 `ifdef KARU_EN_H
-                  : virt ? ((priv == PRIV_S) ? csr_mcyclecfg[59] : csr_mcyclecfg[58])
+                    : virt ? ((priv == PRIV_S) ? csr_mcyclecfg[59] : csr_mcyclecfg[58])
 `endif
-                  : (priv == PRIV_S) ? csr_mcyclecfg[61]
-                  :                    csr_mcyclecfg[60];
-    wire ir_pinh  = (priv == PRIV_M) ? csr_minstretcfg[62]
+                    : (priv == PRIV_S) ? csr_mcyclecfg[61]
+                    :                    csr_mcyclecfg[60];
+    wire ir_pinh;
+    assign ir_pinh = (priv == PRIV_M) ? csr_minstretcfg[62]
 `ifdef KARU_EN_H
-                  : virt ? ((priv == PRIV_S) ? csr_minstretcfg[59] : csr_minstretcfg[58])
+                   : virt ? ((priv == PRIV_S) ? csr_minstretcfg[59] : csr_minstretcfg[58])
 `endif
-                  : (priv == PRIV_S) ? csr_minstretcfg[61]
-                  :                    csr_minstretcfg[60];
+                   : (priv == PRIV_S) ? csr_minstretcfg[61]
+                   :                    csr_minstretcfg[60];
 `else
-    wire cyc_pinh = 1'b0;
-    wire ir_pinh  = 1'b0;
+    wire cyc_pinh;
+    assign cyc_pinh = 1'b0;
+    wire ir_pinh;
+    assign ir_pinh = 1'b0;
 `endif
 
 `ifdef KARU_EN_HPM
@@ -1552,15 +1642,18 @@ module karu_csr (
     //  BASE + 4*cause, exceptions -> BASE). BASE is the tvec value with the mode
     //  bits masked off.
 `ifdef KARU_EN_S
-    wire [63:0] tvec_sel  =
+    wire [63:0] tvec_sel;
+    assign tvec_sel =
 `ifdef KARU_EN_H
         trap_v_deleg ? csr_vstvec :
 `endif
         trap_deleg ? csr_stvec : csr_mtvec;
 `else
-    wire [63:0] tvec_sel  = csr_mtvec;
+    wire [63:0] tvec_sel;
+    assign tvec_sel = csr_mtvec;
 `endif
-    wire [63:0] tvec_base = {tvec_sel[63:2], 2'b00};
+    wire [63:0] tvec_base;
+    assign tvec_base = {tvec_sel[63:2], 2'b00};
     assign trap_vec = (tvec_sel[0] && trap_cause[63])
                     ? tvec_base + {56'b0, trap_delivered_cause[5:0], 2'b00}
                     : tvec_base;
