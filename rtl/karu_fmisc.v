@@ -20,7 +20,8 @@ module karu_fsgnj (
     input  wire [31:0]  b,
     output wire [31:0]  res
 );
-    wire new_sign =
+    wire new_sign;
+    assign new_sign =
         (sub == 2'd0) ?  b[31] :
         (sub == 2'd1) ? ~b[31] :
                         a[31] ^ b[31];
@@ -41,30 +42,45 @@ module karu_fminmax (
     output wire [31:0]  res,
     output wire [4:0]   flags
 );
-    wire        a_nan  = (a[30:23] == 8'hFF) && (a[22:0] != 23'h0);
-    wire        b_nan  = (b[30:23] == 8'hFF) && (b[22:0] != 23'h0);
-    wire        a_snan = a_nan && !a[22];
-    wire        b_snan = b_nan && !b[22];
-    wire        a_neg  = a[31];
-    wire        b_neg  = b[31];
-    wire [30:0] a_abs  = a[30:0];
-    wire [30:0] b_abs  = b[30:0];
+    wire        a_nan;
+    assign a_nan = (a[30:23] == 8'hFF) && (a[22:0] != 23'h0);
+    wire        b_nan;
+    assign b_nan = (b[30:23] == 8'hFF) && (b[22:0] != 23'h0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a[22];
+    wire        b_snan;
+    assign b_snan = b_nan && !b[22];
+    wire        a_neg;
+    assign a_neg = a[31];
+    wire        b_neg;
+    assign b_neg = b[31];
+    wire [30:0] a_abs;
+    assign a_abs = a[30:0];
+    wire [30:0] b_abs;
+    assign b_abs = b[30:0];
 
     //  signed compare: a < b
-    wire a_lt_b =
+    wire a_lt_b;
+    assign a_lt_b =
         (a_neg && !b_neg) ? 1'b1 :
         (!a_neg && b_neg) ? 1'b0 :
         (a_neg && b_neg)  ? (a_abs > b_abs) :
                             (a_abs < b_abs);
-    wire a_eq_b = (a == b);
+    wire a_eq_b;
+    assign a_eq_b = (a == b);
     //  -0 < +0 for FMIN/FMAX: treat as a_lt_b when signs differ and both zero
-    wire a_is_zero = (a[30:0] == 31'b0);
-    wire b_is_zero = (b[30:0] == 31'b0);
-    wire both_zero = a_is_zero && b_is_zero;
+    wire a_is_zero;
+    assign a_is_zero = (a[30:0] == 31'b0);
+    wire b_is_zero;
+    assign b_is_zero = (b[30:0] == 31'b0);
+    wire both_zero;
+    assign both_zero = a_is_zero && b_is_zero;
     //  If both zero and signs differ: a_lt_b = a is -0 (a_neg=1)
-    wire a_lt_b_z = both_zero ? (a_neg && !b_neg) : a_lt_b;
+    wire a_lt_b_z;
+    assign a_lt_b_z = both_zero ? (a_neg && !b_neg) : a_lt_b;
 
-    wire pick_a = is_max ? !a_lt_b_z : a_lt_b_z;
+    wire pick_a;
+    assign pick_a = is_max ? !a_lt_b_z : a_lt_b_z;
 
     //  fmin/fmax return the non-NaN operand; Zfa fminm/fmaxm (is_m) return the
     //  canonical NaN whenever EITHER operand is NaN.
@@ -92,35 +108,55 @@ module karu_fcmp (
     output wire [63:0]  res,        //  0 or 1, written to int regfile
     output wire [4:0]   flags
 );
-    wire        a_nan  = (a[30:23] == 8'hFF) && (a[22:0] != 23'h0);
-    wire        b_nan  = (b[30:23] == 8'hFF) && (b[22:0] != 23'h0);
-    wire        a_snan = a_nan && !a[22];
-    wire        b_snan = b_nan && !b[22];
-    wire        any_nan = a_nan || b_nan;
-    wire        any_snan = a_snan || b_snan;
+    wire        a_nan;
+    assign a_nan = (a[30:23] == 8'hFF) && (a[22:0] != 23'h0);
+    wire        b_nan;
+    assign b_nan = (b[30:23] == 8'hFF) && (b[22:0] != 23'h0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a[22];
+    wire        b_snan;
+    assign b_snan = b_nan && !b[22];
+    wire        any_nan;
+    assign any_nan = a_nan || b_nan;
+    wire        any_snan;
+    assign any_snan = a_snan || b_snan;
 
     //  Signed compare with -0 == +0 (IEEE compare equates the two zeros)
-    wire        a_zero = (a[30:0] == 31'b0);
-    wire        b_zero = (b[30:0] == 31'b0);
-    wire        eq_raw = (a == b);
-    wire        eq_z   = a_zero && b_zero;  //  -0 == +0
-    wire        eq     = eq_raw || eq_z;
-    wire        a_neg = a[31];
-    wire        b_neg = b[31];
-    wire [30:0] a_abs = a[30:0];
-    wire [30:0] b_abs = b[30:0];
-    wire        lt =
+    wire        a_zero;
+    assign a_zero = (a[30:0] == 31'b0);
+    wire        b_zero;
+    assign b_zero = (b[30:0] == 31'b0);
+    wire        eq_raw;
+    assign eq_raw = (a == b);
+    wire        eq_z;  //  -0 == +0
+    assign eq_z = a_zero && b_zero;
+    wire        eq;
+    assign eq = eq_raw || eq_z;
+    wire        a_neg;
+    assign a_neg = a[31];
+    wire        b_neg;
+    assign b_neg = b[31];
+    wire [30:0] a_abs;
+    assign a_abs = a[30:0];
+    wire [30:0] b_abs;
+    assign b_abs = b[30:0];
+    wire        lt;
+    assign lt =
         eq_z ? 1'b0 :
         (a_neg && !b_neg) ? 1'b1 :
         (!a_neg && b_neg) ? 1'b0 :
         (a_neg && b_neg)  ? (a_abs > b_abs) :
                             (a_abs < b_abs);
 
-    wire is_le = (sub == 2'd0);
-    wire is_lt = (sub == 2'd1);
-    wire is_eq = (sub == 2'd2);
+    wire is_le;
+    assign is_le = (sub == 2'd0);
+    wire is_lt;
+    assign is_lt = (sub == 2'd1);
+    wire is_eq;
+    assign is_eq = (sub == 2'd2);
 
-    wire result_bit =
+    wire result_bit;
+    assign result_bit =
         any_nan ? 1'b0 :
         is_eq   ? eq :
         is_lt   ? lt :
@@ -130,8 +166,9 @@ module karu_fcmp (
     assign res = {63'b0, result_bit};
     //  FLT/FLE signal on any NaN; FEQ and the Zfa quiet forms (fleq/fltq)
     //  signal only on a signaling NaN.
-    wire nv = is_quiet ? any_snan
-            : (is_eq && any_snan) || ((is_lt || is_le) && any_nan);
+    wire nv;
+    assign nv = is_quiet ? any_snan
+              : (is_eq && any_snan) || ((is_lt || is_le) && any_nan);
     assign flags = nv ? (5'b1 << `FF_NV) : 5'b0;
 endmodule
 
@@ -151,29 +188,40 @@ module karu_fclass (
     input  wire [31:0]  a,
     output wire [63:0]  res
 );
-    wire        s    = a[31];
-    wire [7:0]  e    = a[30:23];
-    wire [22:0] m    = a[22:0];
-    wire        zero = (e == 0) && (m == 0);
-    wire        sub  = (e == 0) && (m != 0);
-    wire        inf  = (e == 8'hFF) && (m == 0);
-    wire        nan  = (e == 8'hFF) && (m != 0);
-    wire        snan = nan && !m[22];
-    wire        qnan = nan && m[22];
-    wire        norm = !zero && !sub && !inf && !nan;
+    wire        s;
+    assign s = a[31];
+    wire [7:0]  e;
+    assign e = a[30:23];
+    wire [22:0] m;
+    assign m = a[22:0];
+    wire        zero;
+    assign zero = (e == 0) && (m == 0);
+    wire        sub;
+    assign sub = (e == 0) && (m != 0);
+    wire        inf;
+    assign inf = (e == 8'hFF) && (m == 0);
+    wire        nan;
+    assign nan = (e == 8'hFF) && (m != 0);
+    wire        snan;
+    assign snan = nan && !m[22];
+    wire        qnan;
+    assign qnan = nan && m[22];
+    wire        norm;
+    assign norm = !zero && !sub && !inf && !nan;
 
-    wire [9:0] mask = {
-        qnan,                   //  bit 9
-        snan,                   //  bit 8
-        !s && inf,              //  bit 7
-        !s && norm,             //  bit 6
-        !s && sub,              //  bit 5
-        !s && zero,             //  bit 4
-         s && zero,             //  bit 3
-         s && sub,              //  bit 2
-         s && norm,             //  bit 1
-         s && inf               //  bit 0
-    };
+    wire [9:0] mask;
+    assign mask = {
+    qnan,                   //  bit 9
+    snan,                   //  bit 8
+    !s && inf,              //  bit 7
+    !s && norm,             //  bit 6
+    !s && sub,              //  bit 5
+    !s && zero,             //  bit 4
+     s && zero,             //  bit 3
+     s && sub,              //  bit 2
+     s && norm,             //  bit 1
+     s && inf               //  bit 0
+};
     assign res = {54'b0, mask};
 endmodule
 
@@ -215,7 +263,8 @@ module karu_fsgnj_d (
     input  wire [63:0]  b,
     output wire [63:0]  res
 );
-    wire new_sign =
+    wire new_sign;
+    assign new_sign =
         (sub == 2'd0) ?  b[63] :
         (sub == 2'd1) ? ~b[63] :
                         a[63] ^ b[63];
@@ -231,26 +280,40 @@ module karu_fminmax_d (
     output wire [63:0]  res,
     output wire [4:0]   flags
 );
-    wire        a_nan  = (a[62:52] == 11'h7FF) && (a[51:0] != 52'h0);
-    wire        b_nan  = (b[62:52] == 11'h7FF) && (b[51:0] != 52'h0);
-    wire        a_snan = a_nan && !a[51];
-    wire        b_snan = b_nan && !b[51];
-    wire        a_neg  = a[63];
-    wire        b_neg  = b[63];
-    wire [62:0] a_abs  = a[62:0];
-    wire [62:0] b_abs  = b[62:0];
+    wire        a_nan;
+    assign a_nan = (a[62:52] == 11'h7FF) && (a[51:0] != 52'h0);
+    wire        b_nan;
+    assign b_nan = (b[62:52] == 11'h7FF) && (b[51:0] != 52'h0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a[51];
+    wire        b_snan;
+    assign b_snan = b_nan && !b[51];
+    wire        a_neg;
+    assign a_neg = a[63];
+    wire        b_neg;
+    assign b_neg = b[63];
+    wire [62:0] a_abs;
+    assign a_abs = a[62:0];
+    wire [62:0] b_abs;
+    assign b_abs = b[62:0];
 
-    wire a_lt_b =
+    wire a_lt_b;
+    assign a_lt_b =
         (a_neg && !b_neg) ? 1'b1 :
         (!a_neg && b_neg) ? 1'b0 :
         (a_neg && b_neg)  ? (a_abs > b_abs) :
                             (a_abs < b_abs);
-    wire a_is_zero = (a[62:0] == 63'b0);
-    wire b_is_zero = (b[62:0] == 63'b0);
-    wire both_zero = a_is_zero && b_is_zero;
-    wire a_lt_b_z = both_zero ? (a_neg && !b_neg) : a_lt_b;
+    wire a_is_zero;
+    assign a_is_zero = (a[62:0] == 63'b0);
+    wire b_is_zero;
+    assign b_is_zero = (b[62:0] == 63'b0);
+    wire both_zero;
+    assign both_zero = a_is_zero && b_is_zero;
+    wire a_lt_b_z;
+    assign a_lt_b_z = both_zero ? (a_neg && !b_neg) : a_lt_b;
 
-    wire pick_a = is_max ? !a_lt_b_z : a_lt_b_z;
+    wire pick_a;
+    assign pick_a = is_max ? !a_lt_b_z : a_lt_b_z;
 
     assign res =
         (is_m && (a_nan || b_nan)) ? `FP_D_QNAN :
@@ -271,34 +334,54 @@ module karu_fcmp_d (
     output wire [63:0]  res,
     output wire [4:0]   flags
 );
-    wire        a_nan  = (a[62:52] == 11'h7FF) && (a[51:0] != 52'h0);
-    wire        b_nan  = (b[62:52] == 11'h7FF) && (b[51:0] != 52'h0);
-    wire        a_snan = a_nan && !a[51];
-    wire        b_snan = b_nan && !b[51];
-    wire        any_nan  = a_nan || b_nan;
-    wire        any_snan = a_snan || b_snan;
+    wire        a_nan;
+    assign a_nan = (a[62:52] == 11'h7FF) && (a[51:0] != 52'h0);
+    wire        b_nan;
+    assign b_nan = (b[62:52] == 11'h7FF) && (b[51:0] != 52'h0);
+    wire        a_snan;
+    assign a_snan = a_nan && !a[51];
+    wire        b_snan;
+    assign b_snan = b_nan && !b[51];
+    wire        any_nan;
+    assign any_nan = a_nan || b_nan;
+    wire        any_snan;
+    assign any_snan = a_snan || b_snan;
 
-    wire        a_zero = (a[62:0] == 63'b0);
-    wire        b_zero = (b[62:0] == 63'b0);
-    wire        eq_raw = (a == b);
-    wire        eq_z   = a_zero && b_zero;
-    wire        eq     = eq_raw || eq_z;
-    wire        a_neg = a[63];
-    wire        b_neg = b[63];
-    wire [62:0] a_abs = a[62:0];
-    wire [62:0] b_abs = b[62:0];
-    wire        lt =
+    wire        a_zero;
+    assign a_zero = (a[62:0] == 63'b0);
+    wire        b_zero;
+    assign b_zero = (b[62:0] == 63'b0);
+    wire        eq_raw;
+    assign eq_raw = (a == b);
+    wire        eq_z;
+    assign eq_z = a_zero && b_zero;
+    wire        eq;
+    assign eq = eq_raw || eq_z;
+    wire        a_neg;
+    assign a_neg = a[63];
+    wire        b_neg;
+    assign b_neg = b[63];
+    wire [62:0] a_abs;
+    assign a_abs = a[62:0];
+    wire [62:0] b_abs;
+    assign b_abs = b[62:0];
+    wire        lt;
+    assign lt =
         eq_z ? 1'b0 :
         (a_neg && !b_neg) ? 1'b1 :
         (!a_neg && b_neg) ? 1'b0 :
         (a_neg && b_neg)  ? (a_abs > b_abs) :
                             (a_abs < b_abs);
 
-    wire is_le = (sub == 2'd0);
-    wire is_lt = (sub == 2'd1);
-    wire is_eq = (sub == 2'd2);
+    wire is_le;
+    assign is_le = (sub == 2'd0);
+    wire is_lt;
+    assign is_lt = (sub == 2'd1);
+    wire is_eq;
+    assign is_eq = (sub == 2'd2);
 
-    wire result_bit =
+    wire result_bit;
+    assign result_bit =
         any_nan ? 1'b0 :
         is_eq   ? eq :
         is_lt   ? lt :
@@ -306,8 +389,9 @@ module karu_fcmp_d (
                   1'b0;
 
     assign res = {63'b0, result_bit};
-    wire nv = is_quiet ? any_snan
-            : (is_eq && any_snan) || ((is_lt || is_le) && any_nan);
+    wire nv;
+    assign nv = is_quiet ? any_snan
+              : (is_eq && any_snan) || ((is_lt || is_le) && any_nan);
     assign flags = nv ? (5'b1 << `FF_NV) : 5'b0;
 endmodule
 
@@ -316,22 +400,33 @@ module karu_fclass_d (
     input  wire [63:0]  a,
     output wire [63:0]  res
 );
-    wire        s    = a[63];
-    wire [10:0] e    = a[62:52];
-    wire [51:0] m    = a[51:0];
-    wire        zero = (e == 11'h0) && (m == 52'h0);
-    wire        sub  = (e == 11'h0) && (m != 52'h0);
-    wire        inf  = (e == 11'h7FF) && (m == 52'h0);
-    wire        nan  = (e == 11'h7FF) && (m != 52'h0);
-    wire        snan = nan && !m[51];
-    wire        qnan = nan && m[51];
-    wire        norm = !zero && !sub && !inf && !nan;
+    wire        s;
+    assign s = a[63];
+    wire [10:0] e;
+    assign e = a[62:52];
+    wire [51:0] m;
+    assign m = a[51:0];
+    wire        zero;
+    assign zero = (e == 11'h0) && (m == 52'h0);
+    wire        sub;
+    assign sub = (e == 11'h0) && (m != 52'h0);
+    wire        inf;
+    assign inf = (e == 11'h7FF) && (m == 52'h0);
+    wire        nan;
+    assign nan = (e == 11'h7FF) && (m != 52'h0);
+    wire        snan;
+    assign snan = nan && !m[51];
+    wire        qnan;
+    assign qnan = nan && m[51];
+    wire        norm;
+    assign norm = !zero && !sub && !inf && !nan;
 
-    wire [9:0] mask = {
-        qnan, snan,
-        !s && inf,  !s && norm, !s && sub,  !s && zero,
-         s && zero,  s && sub,   s && norm,  s && inf
-    };
+    wire [9:0] mask;
+    assign mask = {
+    qnan, snan,
+    !s && inf,  !s && norm, !s && sub,  !s && zero,
+     s && zero,  s && sub,   s && norm,  s && inf
+};
     assign res = {54'b0, mask};
 endmodule
 

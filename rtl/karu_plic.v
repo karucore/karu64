@@ -59,21 +59,31 @@ module karu_plic (
     reg         in_service_1, in_service_2;
 
     //  per-context, per-source "interrupt is presentable"
-    wire m1 = pending_1 && enable_m[1] && (priority_1 > threshold_m);
-    wire m2 = pending_2 && enable_m[2] && (priority_2 > threshold_m);
-    wire s1 = pending_1 && enable_s[1] && (priority_1 > threshold_s);
-    wire s2 = pending_2 && enable_s[2] && (priority_2 > threshold_s);
+    wire m1;
+    assign m1 = pending_1 && enable_m[1] && (priority_1 > threshold_m);
+    wire m2;
+    assign m2 = pending_2 && enable_m[2] && (priority_2 > threshold_m);
+    wire s1;
+    assign s1 = pending_1 && enable_s[1] && (priority_1 > threshold_s);
+    wire s2;
+    assign s2 = pending_2 && enable_s[2] && (priority_2 > threshold_s);
 
     // Threshold controls notifications only: polling a claim is legal even
     // with threshold=max and no IRQ. Priority zero still disables a source.
-    wire c_m1 = pending_1 && enable_m[1] && (priority_1 != 0);
-    wire c_m2 = pending_2 && enable_m[2] && (priority_2 != 0);
-    wire c_s1 = pending_1 && enable_s[1] && (priority_1 != 0);
-    wire c_s2 = pending_2 && enable_s[2] && (priority_2 != 0);
-    wire [31:0] claim_m = (c_m1 && (!c_m2 || (priority_1 >= priority_2))) ? 32'd1 :
-                          c_m2 ? 32'd2 : 32'd0;
-    wire [31:0] claim_s = (c_s1 && (!c_s2 || (priority_1 >= priority_2))) ? 32'd1 :
-                          c_s2 ? 32'd2 : 32'd0;
+    wire c_m1;
+    assign c_m1 = pending_1 && enable_m[1] && (priority_1 != 0);
+    wire c_m2;
+    assign c_m2 = pending_2 && enable_m[2] && (priority_2 != 0);
+    wire c_s1;
+    assign c_s1 = pending_1 && enable_s[1] && (priority_1 != 0);
+    wire c_s2;
+    assign c_s2 = pending_2 && enable_s[2] && (priority_2 != 0);
+    wire [31:0] claim_m;
+    assign claim_m = (c_m1 && (!c_m2 || (priority_1 >= priority_2))) ? 32'd1 :
+                     c_m2 ? 32'd2 : 32'd0;
+    wire [31:0] claim_s;
+    assign claim_s = (c_s1 && (!c_s2 || (priority_1 >= priority_2))) ? 32'd1 :
+                     c_s2 ? 32'd2 : 32'd0;
 
     assign irq_m = m1 || m2;
     assign irq_s = s1 || s2;
@@ -99,8 +109,10 @@ module karu_plic (
         end
     endfunction
 
-    wire [31:0] roff = raddr - PLIC_BASE;
-    wire [31:0] rbase = {roff[31:3], 3'b000};
+    wire [31:0] roff;
+    assign roff = raddr - PLIC_BASE;
+    wire [31:0] rbase;
+    assign rbase = {roff[31:3], 3'b000};
     // Pass dynamic register state explicitly: repeated reads of a fixed
     // address must reflect source events even when the address never changes.
     assign rdata = {
@@ -110,28 +122,44 @@ module karu_plic (
                enable_m, enable_s, claim_m, claim_s, {pending_2,pending_1})};
     // Exposing the adjacent claim value on a 64-bit data bus is not itself
     // a read of that register. Threshold+0 must not consume claim+4.
-    wire claim_read_m = re && ({roff[31:2],2'b0} == OFF_CLAIM_M);
-    wire claim_read_s = re && ({roff[31:2],2'b0} == OFF_CLAIM_S);
-    wire take_1 = (claim_read_m && claim_m == 1) || (claim_read_s && claim_s == 1);
-    wire take_2 = (claim_read_m && claim_m == 2) || (claim_read_s && claim_s == 2);
+    wire claim_read_m;
+    assign claim_read_m = re && ({roff[31:2],2'b0} == OFF_CLAIM_M);
+    wire claim_read_s;
+    assign claim_read_s = re && ({roff[31:2],2'b0} == OFF_CLAIM_S);
+    wire take_1;
+    assign take_1 = (claim_read_m && claim_m == 1) || (claim_read_s && claim_s == 1);
+    wire take_2;
+    assign take_2 = (claim_read_m && claim_m == 2) || (claim_read_s && claim_s == 2);
 
-    wire [31:0] woff = waddr - PLIC_BASE;
-    wire [31:0] wbase = {woff[31:3], 3'b000};
-    wire        we_lo = we && |wstrb[3:0];
-    wire        we_hi = we && |wstrb[7:4];
-    wire [31:0] waddr_lo = wbase;
-    wire [31:0] waddr_hi = wbase + 32'd4;
-    wire [31:0] wdata_lo = wdata[31:0];
-    wire [31:0] wdata_hi = wdata[63:32];
+    wire [31:0] woff;
+    assign woff = waddr - PLIC_BASE;
+    wire [31:0] wbase;
+    assign wbase = {woff[31:3], 3'b000};
+    wire        we_lo;
+    assign we_lo = we && |wstrb[3:0];
+    wire        we_hi;
+    assign we_hi = we && |wstrb[7:4];
+    wire [31:0] waddr_lo;
+    assign waddr_lo = wbase;
+    wire [31:0] waddr_hi;
+    assign waddr_hi = wbase + 32'd4;
+    wire [31:0] wdata_lo;
+    assign wdata_lo = wdata[31:0];
+    wire [31:0] wdata_hi;
+    assign wdata_hi = wdata[63:32];
     // Claim/complete is a native 32-bit register. A complete word strobe is
     // required for the side effect; partial/unknown/disabled completions do
     // nothing. No ownership/last-claimed comparison is permitted by the spec.
-    wire complete_m = we && (&wstrb[7:4]) && waddr_hi == OFF_CLAIM_M;
-    wire complete_s = we && (&wstrb[7:4]) && waddr_hi == OFF_CLAIM_S;
-    wire complete_1 = wdata_hi == 1 &&
-        ((complete_m && enable_m[1]) || (complete_s && enable_s[1]));
-    wire complete_2 = wdata_hi == 2 &&
-        ((complete_m && enable_m[2]) || (complete_s && enable_s[2]));
+    wire complete_m;
+    assign complete_m = we && (&wstrb[7:4]) && waddr_hi == OFF_CLAIM_M;
+    wire complete_s;
+    assign complete_s = we && (&wstrb[7:4]) && waddr_hi == OFF_CLAIM_S;
+    wire complete_1;
+    assign complete_1 = wdata_hi == 1 &&
+          ((complete_m && enable_m[1]) || (complete_s && enable_s[1]));
+    wire complete_2;
+    assign complete_2 = wdata_hi == 2 &&
+          ((complete_m && enable_m[2]) || (complete_s && enable_s[2]));
 
     always @(posedge clk) begin
         if (rst) begin

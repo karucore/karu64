@@ -1,22 +1,22 @@
-# RVA23S64 release diagnostics — updated 2026-09-15
+# RVA23S64 release diagnostics — updated 2026-09-22
 
 This is the current handoff record for the opt-in RVA23S64 shipping
 configuration. It reports source, simulation, synthesis and board evidence as
 separate results. A passing configured suite or mapped estimate is not by
 itself an ISA certification or physical signoff result.
 
-The shipping image passes September 15 board acceptance with Linux
-7.2.4-zvk. Build identity, validation results and remaining limits follow.
+The September 22 image passes board acceptance and the thorough Linux
+7.2.6-zvk test run, including both KVM guests and vector SM4. No functional
+regression was observed against the September 15 image.
 
 ## Source scope
 
-The measured release checkpoint is commit
-`a0062b9dda485bb391729b7c7aca13be4a3aee33` on `dev-mjos`. Each generated
-manifest also records the exact source hashes, so the evidence remains
-attributable after documentation-only updates.
-The vector-crypto correction used by every current run has
-`rtl/karu_varith.v` SHA-256
-`af7b6829866f4cd45ac7bc480435d6c05c775d1fe4e4805d28e354bd24c9ee19`.
+The Genus declaration-order cleanup is recorded in commit `26b421c` on
+`mjos-dev`; its source checks are described in the
+[ASIC handoff](../flow/asic/README.md#coding-rules-for-the-genus-front-end).
+The simulation, ACT4 and synthesis reference results below belong to the
+September 15 checkpoint `a0062b9`, before that cleanup. The September 22
+hardware results are tied to the new bitstream hash separately.
 
 The shipping composition is:
 
@@ -34,16 +34,16 @@ bus-error access faults, Shlcofideleg, writable SGEIE under H, CLINT/PLIC and
 DDR-stall assertion coverage, corrected `vsetvl` high-bit legality, and the
 vector-crypto `.vs` source-group fix.
 
-## Functional validation
+## Reference functional validation — 2026-09-15
 
-| Check | Current result |
+| Check | Result |
 | --- | --- |
 | `make zvk-test-all` | PASS on the same ELF under Spike and Karu; Karu HTIF exit 0 at cycle 95,297 |
 | Exact shipping `zvk-test` | PASS on a forced-fresh simulator; HTIF exit 0 at cycle 102,281 |
 | `make zvk-kat zvk-decode-test zvk-decode-leaf-test` | PASS |
 | Multi-group `.vs` semantics | `vaesem`, `vaesef`, `vaesdm`, `vaesdf`, `vaesz` and `vsm4r` PASS at `vl=8,m1` and `vl=16,m2`; later `vs2` element groups are deliberately distinct |
 | `make diel-test-ship` | 215/215 operand-class checks PASS; HTIF exit 0 at cycle 6,046,463 |
-| Current directed H/platform checkpoint | CSR/H, PMU, two-stage translation, PLIC, memory stream, BRAM/DDR responder and five-delay preemption suites PASS as recorded by their maintained targets |
+| Directed H/platform checkpoint | CSR/H, PMU, two-stage translation, PLIC, memory stream, BRAM/DDR responder and five-delay preemption suites PASS as recorded by their maintained targets |
 | `python3 flow/asic/audit.py` | PASS: 9 macro candidates, 2 register files, 4 scratch arrays, 97,024 logical data bits and zero initialized ASIC state |
 | `python3 flow/asic/check.py` | PASS: four-state memory controls plus `vresv`, `vperm` and `vstart` with randomized startup seeds 1 and 42 |
 | `make syn-runtime-div-audit{,-rva23s64}` | PASS for mandatory and exact shipping compositions: no live variable division/modulo operators; input manifests unchanged |
@@ -55,7 +55,7 @@ The DIEL result is a source review plus empirical cycle-equality test, not a
 formal noninterference or physical side-channel claim. Full scope is in
 [diel-review-2026-09-14.md](diel-review-2026-09-14.md).
 
-## ACT4
+## ACT4 — 2026-09-15
 
 The final exact-shipping replay passed **2872/2872** configured tests. It used
 Sail 0.14, regenerated all 2872 reference ELFs for the current configuration,
@@ -71,7 +71,7 @@ configuration itself is maintained under `test/act4-karu`. Exact patch provenanc
 coverage boundaries and reproduction commands are in
 [test/act4-karu/README.md](../test/act4-karu/README.md).
 
-## Open-source synthesis
+## Open-source synthesis — 2026-09-15
 
 The corrected-source refresh uses:
 
@@ -113,65 +113,64 @@ The standard target writes `_build/vcu118_ddr.bit`, reports under
 `_build/fpga_rpt`, and `_build/vcu118_ddr_build.log`; it does not program the
 board. This release implementation uses Vivado 2026.1.
 
-The ROM build uses:
-
-| Input | SHA-256 |
-| --- | --- |
-| karudeb OpenSBI `fw_jump.bin` | `307ff4379bb146646a0825b510e5f16b664c669e7b24390b381350a5a914fc21` |
-| ROM RVA23S64 DTB | `d617ba564798245c27343e16c86e5d76ea65ed534cc1dfcd5044f74ab3b0cec9` |
-| staged TFTP `board.dtb` | `d617ba564798245c27343e16c86e5d76ea65ed534cc1dfcd5044f74ab3b0cec9` |
-
-`make rva23-boot-inputs-check` passes and the two DTB copies are identical.
-The standard Vivado 2026.1 run completed at 2026-09-15 02:47 UTC. Bitgen and
-its prerequisite DRC completed with zero errors. The final routed design meets
-every user timing constraint: whole-design setup/hold WNS is
-**+0.009/+0.010 ns**, and the 75 MHz `cpu_clk` setup/hold WNS is
-**+0.046/+0.010 ns**. All 14 bus-skew constraints pass; the smallest margin is
-+2.167 ns. Utilization is 366,098 CLB LUTs (30.97%), 86,857 CLB registers
-(3.67%), 317.5 BRAM tiles (14.70%), and 29 DSPs (0.42%).
-
-The generated handoff artifacts are:
+The current transfer contains only these files:
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `_build/vcu118_ddr.bit` | 80,159,322 | `c61da577953658e8a2e82f63a7ff03f48e0ec46027fc359d521ceb17711ed0da` |
+| `_build/vcu118_ddr.bit` | 80,159,322 | `03eeb088971ef3a19183516ea53675cbaa141b8a935155cd8c80fb403a2e73d2` |
 | `_build/vcu118_ddr.ltx` | 1,010 | `b4b1ce76f88f53501ca477b1c9203509a74dfbee529023656c78e5610b58c3f7` |
-| `_build/vcu118_ddr_route.dcp` | 358,144,611 | `bfa990f8dd8e21ebdd577b61f5165ead6928eeeb19ddf1a74f234e6dd70bbb41` |
 
-Reports use the `ddr_rva23s64_sgmii_75_rom` tag in `_build/fpga_rpt`.
-Programming completed successfully with Vivado/hw_server 2025.2.1.
-Live UART capture uses `_build/boot.log`.
+The bitstream header identifies Vivado 2026.1, `vcu118_ddr_top`, part
+`xcvu9p-flga2104-2L-e`, and build date September 22. Programming with
+Vivado/hw_server 2025.2.1 completed successfully; live UART capture remains
+`_build/boot.log`.
 
-## Board acceptance — 2026-09-15
+The retained routed reports under `_build/fpga_rpt` describe the September
+15 `c61da577…ed0da` reference image: CPU setup/hold **+0.046/+0.010 ns** at
+75 MHz, whole-design **+0.009/+0.010 ns**, all 14 bus-skew constraints PASS,
+and zero bitgen DRC errors. Reference utilization is 366,098 LUTs, 86,857
+registers, 317.5 BRAM tiles and 29 DSPs. September 22 timing/utilization
+reports were not transferred; these figures must not be relabelled as new
+measurements.
 
-Image: `c61da577…ed0da`, 75 MHz, 2 GiB DRAM, normal Svpbmt-enabled profile.
-Boot: fu-boot → OpenSBI 1.8.1 → U-Boot 2025.01 → Linux 7.2.4-zvk →
+## Board acceptance — 2026-09-22
+
+Image: `03eeb088…e73d2`, 75 MHz, 2 GiB DRAM, Svpbmt-enabled RVA23S64 profile.
+Boot: fu-boot → OpenSBI 1.8.1 → U-Boot 2025.01 → Linux 7.2.6-zvk →
 Debian trixie NFS root.
 
 | Check | Result |
 | --- | --- |
-| Root `board_accept.sh` | PASS |
-| Boot, NFS, Ethernet, ISA discovery | PASS |
-| Memory patterns | 512 MiB PASS |
-| PMU | Live cycle/instret counters; probe ratio ×1.09 |
-| Zvknhk OpenSSL | 17 checks PASS across both backends |
-| riscv-pqc instruction vectors | 39 PASS |
+| Root `board_accept.sh` | PASS; 256 MiB memory patterns, ISA discovery, PMU and KVM API |
+| Zvknhk OpenSSL checks | 17 PASS |
+| OpenSSL scalar/Zvk known answers | 92/92 match expected; 92/92 match scalar |
+| SM4 ECB/CBC/CTR, `zvkb_zvksed`, `full`, `auto` | All match expected and scalar |
+| KVM `ebreak_test` | Exit 0 |
+| KVM `arch_timer -n 1 -i 2 -p 1 -m 0 -e 1000` | `PASS(vCPU-0)`, exit 0 |
+| riscv-pqc `xtest`, 24/12-round `vkeccak.vi` | 39/39 PASS |
 | `vill_probe` | 6 PASS |
-| `validate_v_ptrace` | 13 PASS, 6 inapplicable-case SKIP, 0 FAIL; syscall clobbering PASS |
-| Cache-window performance | PASS reported by karudeb with `perf_run --user-count` |
-| KVM API | VM/vCPU creation and run-area mapping PASS |
+| `validate_v_ptrace`, including syscall clobbering | 13 PASS, 6 SKIP, 0 FAIL |
+| `vstate_ptrace` / `v_initval` | 2/2 / 1/1 PASS |
+| `vstate_prctl` / `sigreturn` | 11 PASS, 2 SKIP / 2/2 PASS |
+| CBO / hwprobe / which-cpus | 9/9 / 5/5 / 7/7 PASS |
+| Cache-window probe, inside/outside 256 MiB | Fetch 4.41/4.42 cycles per instruction; loads 14.28/14.07 cycles per load; PASS |
 
-Evidence: `_build/board-accept-c61da577-20260915/` contains the saved acceptance
-transcript, probe outputs, boot/programming logs and hashes. The cache result
-above is the corrected handoff result; the retained zero-cycle capture is
-invalid. Current PQC/OpenSSL measurements are under
-`../karudeb/build/paper-data-20260915/`.
+Cache timings use `perf_run --user-count`; measured pages are at
+`0x82d00000` and `0x938ae000`. The karudeb comparison reports cycle results
+matching `c61da577` to two decimal places. OpenSSL's forced vector SM4 path
+directly exercises the units changed by the declaration rewrite. These
+results support no observed regression in Linux, KVM, crypto, vector ABI or
+cache behavior; they are not a Cadence timing or formal equivalence result.
 
-Scope: KVM guest execution has hardware coverage on the September 14 image;
-the retained September 15 KVM log covers the API only. Dedicated multi-group
-`.vs` and resident-Keccak suite results are simulation evidence. Board
-acceptance does not establish profile certification or ASIC security signoff.
-See [fpga.md](fpga.md) for repeatable deployment and acceptance commands.
+Evidence is on the board in `/root/thorough/` and `/root/accept-lint-03eeb088/`.
+A local snapshot of result files, the karudeb transcripts, boot/programming
+logs and hashes is retained in `_build/board-results-20260922/`.
+See [fpga.md](fpga.md) for deployment and acceptance commands.
+
+Process follow-up: reinstalling the NFS export removes the `/home/karu` ACL.
+This run used `scp` for the twelve selftest binaries. An optional ACL grant
+in karudeb's `install-nfs-root.sh` would make repeated deployment easier;
+no installer change was made here.
 
 ## Retained artifacts
 

@@ -161,30 +161,43 @@ module karu_mem #(
     reg [15:0]      vq_strb;
     reg [15:0]      vq_rstrb;
     reg [1:0]       vq_pbmt, vq_size;
-    wire vq_io = vq_pbmt == 2 || (vq_pbmt == 0 && karu_pma_io({32'b0,vq_addr}));
-    wire v_io = v_pbmt == 2 || (v_pbmt == 0 && karu_pma_io({32'b0,v_addr}));
+    wire vq_io;
+    assign vq_io = vq_pbmt == 2 || (vq_pbmt == 0 && karu_pma_io({32'b0,vq_addr}));
+    wire v_io;
+    assign v_io = v_pbmt == 2 || (v_pbmt == 0 && karu_pma_io({32'b0,v_addr}));
     // Standard-map RAM spans the full upper 2 GiB, as in karu_pma.vh.
-    wire vq_post = vq_allow_post && vq_store && vq_pbmt == 0 && vq_addr[31] &&
-                   !vq_io && vq_addr[31:12] != uncache_page[31:12];
-    wire v_post = v_allow_post && v_is_store && v_pbmt == 0 && v_addr[31] &&
-                  !v_io && v_addr[31:12] != uncache_page[31:12];
+    wire vq_post;
+    assign vq_post = vq_allow_post && vq_store && vq_pbmt == 0 && vq_addr[31] &&
+                     !vq_io && vq_addr[31:12] != uncache_page[31:12];
+    wire v_post;
+    assign v_post = v_allow_post && v_is_store && v_pbmt == 0 && v_addr[31] &&
+                    !v_io && v_addr[31:12] != uncache_page[31:12];
 
-    wire [IDXW-1:0] req_idx  = req_pa[OFFW+IDXW-1:OFFW];
-    wire [TAGW-1:0] req_tag  = req_pa[31:OFFW+IDXW];
-    wire [2:0]      req_word = req_pa[5:3];     //  64-bit word in line
-    wire [1:0]      req_dw   = req_pa[5:4];     //  128-bit dword in line
-    wire            req_uncacheable =
+    wire [IDXW-1:0] req_idx;
+    assign req_idx = req_pa[OFFW+IDXW-1:OFFW];
+    wire [TAGW-1:0] req_tag;
+    assign req_tag = req_pa[31:OFFW+IDXW];
+    wire [2:0]      req_word;     //  64-bit word in line
+    assign req_word = req_pa[5:3];
+    wire [1:0]      req_dw;     //  128-bit dword in line
+    assign req_dw = req_pa[5:4];
+    wire            req_uncacheable;
+    assign req_uncacheable =
         (req_pbmt != 0) || karu_pma_io({32'b0,req_pa}) ||
         (req_pa[31:12] == uncache_page[31:12]) || !req_pa[31];
     // Only cacheable RAM may receive a two-beat INCR burst. Device and boot
     // targets keep single beats; suppress empty halves before issuing AW.
-    wire req_burst = req_w128 && !req_uncacheable &&
-                     (|req_wstrb[7:0]) && (|req_wstrb[15:8]);
+    wire req_burst;
+    assign req_burst = req_w128 && !req_uncacheable &&
+                       (|req_wstrb[7:0]) && (|req_wstrb[15:8]);
     wire [511:0]    hit_line;
     wire [TAGW-1:0] hit_tag;
-    wire            req_hit = line_valid[req_idx] && (hit_tag == req_tag);
-    wire [63:0]     hit_word = hit_line[req_word*64 +: 64];
-    wire [127:0]    hit_dw   = hit_line[req_dw*128 +: 128];
+    wire            req_hit;
+    assign req_hit = line_valid[req_idx] && (hit_tag == req_tag);
+    wire [63:0]     hit_word;
+    assign hit_word = hit_line[req_word*64 +: 64];
+    wire [127:0]    hit_dw;
+    assign hit_dw = hit_line[req_dw*128 +: 128];
 
     localparam S_IDLE=4'd0, S_RD=4'd1, S_FILL_R=4'd2, S_FILL_DONE=4'd3,
                S_UC_AR=4'd4, S_UC_R=4'd5, S_RESP=4'd6, S_WR=4'd7, S_WR_B=4'd8,
@@ -206,8 +219,10 @@ module karu_mem #(
     reg [7:0]   io_strb;
     reg [127:0] io_data;
     integer ib;
-    wire [15:0] io_mask = req_is_store ? req_wstrb : req_rstrb;
-    wire [15:0] io_mask_tail = io_mask >> io_off[3:0];
+    wire [15:0] io_mask;
+    assign io_mask = req_is_store ? req_wstrb : req_rstrb;
+    wire [15:0] io_mask_tail;
+    assign io_mask_tail = io_mask >> io_off[3:0];
     reg [2:0]   io_size;
     reg [3:0]   io_bytes;
     reg [7:0]   io_lane_mask;
@@ -243,11 +258,15 @@ module karu_mem #(
         end
     end
 
-    wire            store_hit_we = (state == S_WR) && !req_uncacheable &&
-                                   line_valid[req_idx] && (hit_tag == req_tag);
-    wire            fill_we = (state == S_FILL_DONE) && !fill_resp[1] && !fill_poison && !flush;
-    wire            line_data_we = fill_we || store_hit_we;
-    wire [511:0]    line_data_wdata = fill_we ? fill_buf : store_line;
+    wire            store_hit_we;
+    assign store_hit_we = (state == S_WR) && !req_uncacheable &&
+                          line_valid[req_idx] && (hit_tag == req_tag);
+    wire            fill_we;
+    assign fill_we = (state == S_FILL_DONE) && !fill_resp[1] && !fill_poison && !flush;
+    wire            line_data_we;
+    assign line_data_we = fill_we || store_hit_we;
+    wire [511:0]    line_data_wdata;
+    assign line_data_wdata = fill_we ? fill_buf : store_line;
     karu_1w1r_async_ram #(
         .DATA_W(512), .DEPTH(SETS), .ADDR_W(IDXW)
     ) line_data_u (
@@ -527,6 +546,7 @@ module karu_mem #(
     end
     // synthesis translate_on
 
-    wire _unused = &{s_arlen,s_arburst,s_arprot,s_awlen,
-                     s_awburst,s_awprot,s_wlast,m_rid,m_bid,1'b0};
+    wire _unused;
+    assign _unused = &{s_arlen,s_arburst,s_arprot,s_awlen,
+                       s_awburst,s_awprot,s_wlast,m_rid,m_bid,1'b0};
 endmodule

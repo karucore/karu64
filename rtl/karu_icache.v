@@ -79,18 +79,28 @@ module karu_icache #(
     reg [`AXI_ADDR_W-1:0]   addr_q;
     reg [`AXI_ID_W-1:0]     id_q;
     //  geometry of the in-flight (latched) request, used by the refill path.
-    wire [IDXW-1:0] a_idx = addr_q[OFFW+IDXW-1:OFFW];
-    wire [2:0]      a_qw  = addr_q[5:3];                //  word within the line
-    wire [TAGW-1:0] a_tag = addr_q[`AXI_ADDR_W-1:OFFW+IDXW];
-    wire [IDXW-1:0] s_idx = s_araddr[OFFW+IDXW-1:OFFW];
-    wire [2:0]      s_qw  = s_araddr[5:3];
-    wire [TAGW-1:0] s_tag = s_araddr[`AXI_ADDR_W-1:OFFW+IDXW];
-    wire [IDXW+2:0] cdata_raddr = {s_idx, s_qw};
-    wire [IDXW+2:0] cdata_waddr = {a_idx, beat};
+    wire [IDXW-1:0] a_idx;
+    assign a_idx = addr_q[OFFW+IDXW-1:OFFW];
+    wire [2:0]      a_qw;                //  word within the line
+    assign a_qw = addr_q[5:3];
+    wire [TAGW-1:0] a_tag;
+    assign a_tag = addr_q[`AXI_ADDR_W-1:OFFW+IDXW];
+    wire [IDXW-1:0] s_idx;
+    assign s_idx = s_araddr[OFFW+IDXW-1:OFFW];
+    wire [2:0]      s_qw;
+    assign s_qw = s_araddr[5:3];
+    wire [TAGW-1:0] s_tag;
+    assign s_tag = s_araddr[`AXI_ADDR_W-1:OFFW+IDXW];
+    wire [IDXW+2:0] cdata_raddr;
+    assign cdata_raddr = {s_idx, s_qw};
+    wire [IDXW+2:0] cdata_waddr;
+    assign cdata_waddr = {a_idx, beat};
     wire [63:0]     cdata_rdata;
     wire [TAGW-1:0] ctag_rdata;
-    wire            cdata_we = (state == S_MISS_R) && m_rvalid && m_rready;
-    wire            ctag_we  = cdata_we && m_rlast && !poison && !flush;
+    wire            cdata_we;
+    assign cdata_we = (state == S_MISS_R) && m_rvalid && m_rready;
+    wire            ctag_we;
+    assign ctag_we = cdata_we && m_rlast && !poison && !flush;
     karu_1w1r_async_ram #(
         .DATA_W(64), .DEPTH(LINES*8), .ADDR_W(IDXW+3)
     ) cdata_u (
@@ -227,5 +237,6 @@ module karu_icache #(
 // synthesis translate_on
 
     //  silence unused AR attributes from the IFU (single-beat 8B INCR always).
-    wire _unused = &{1'b0, s_arlen, s_arsize, s_arburst, s_arprot, m_rid};
+    wire _unused;
+    assign _unused = &{1'b0, s_arlen, s_arsize, s_arburst, s_arprot, m_rid};
 endmodule

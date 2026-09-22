@@ -61,11 +61,12 @@ module karu_vcrypto (
     //  ================= leaf cores (all combinational except GHASH) =========
 `ifdef KARU_EN_ZVKNED
     //  AES encdec: aes_op 000=Z 010=EM 011=EF 100=DM 101=DF
-    wire [2:0] aes_op =
+    wire [2:0] aes_op; //  AESZ
+    assign aes_op =
         (cop_q == COP_AESEM) ? 3'b010 :
         (cop_q == COP_AESEF) ? 3'b011 :
         (cop_q == COP_AESDM) ? 3'b100 :
-        (cop_q == COP_AESDF) ? 3'b101 : 3'b000; //  AESZ
+        (cop_q == COP_AESDF) ? 3'b101 : 3'b000;
     wire [127:0] aes_enc_o;
     encdec i_aes_encdec (
         .aes_op_i    (aes_op),
@@ -85,7 +86,8 @@ module karu_vcrypto (
 
 `ifdef KARU_EN_ZVKNHA
     //  SHA-2: sha_op = {CL?, SEW64} ; compression + message schedule
-    wire [1:0] sha_op = {(cop_q == COP_SHA2CL), aux_q[0]};
+    wire [1:0] sha_op;
+    assign sha_op = {(cop_q == COP_SHA2CL), aux_q[0]};
     reg          sha2_req;
     wire         sha2_busy, sha2_done;
     wire [255:0] sha2_o;
@@ -98,7 +100,8 @@ module karu_vcrypto (
         .msg_i(vs1_q),
         .busy(sha2_busy), .done(sha2_done), .result(sha2_o)
     );
-    wire _sha2_unused = &{1'b0, sha2_busy};
+    wire _sha2_unused;
+    assign _sha2_unused = &{1'b0, sha2_busy};
 `endif
 
 `ifdef KARU_EN_ZVKSED
@@ -114,7 +117,8 @@ module karu_vcrypto (
         .key_i(vs2_q[127:0]),
         .busy(sm4_busy), .done(sm4_done), .result(sm4_o)
     );
-    wire _sm4_unused = &{1'b0, sm4_busy};
+    wire _sm4_unused;
+    assign _sm4_unused = &{1'b0, sm4_busy};
 `endif
 
 `ifdef KARU_EN_ZVKSH
@@ -134,7 +138,8 @@ module karu_vcrypto (
         .msg_words_end_i   (vs2_q),
         .msg_words_o       (sm3_me_o)
     );
-    wire _sm3_unused = &{1'b0, sm3_busy};
+    wire _sm3_unused;
+    assign _sm3_unused = &{1'b0, sm3_busy};
 `endif
 
 `ifdef KARU_EN_ZVKG
@@ -150,7 +155,8 @@ module karu_vcrypto (
         .vs2(vs2_q[127:0]),
         .busy(gh_busy), .done(gh_done), .prod(gh_prod)
     );
-    wire _gh_unused = &{1'b0, gh_busy};
+    wire _gh_unused;
+    assign _gh_unused = &{1'b0, gh_busy};
 `endif
 
     //  ---- combinational result mux (for the shallow cores) ----

@@ -186,48 +186,78 @@ module karu_varith (
     (* max_fanout = 100 *) reg  is_fp_q;    //  this op is OPFVV/OPFVF (use the FP datapath + addressing)
 
     //  ---- decode (combinational on latched fields) ----
-    wire opiv = (f3_q == 3'b000) || (f3_q == 3'b100) || (f3_q == 3'b011);
-    wire opmv = (f3_q == 3'b010) || (f3_q == 3'b110);
-    wire b_vv = (f3_q == 3'b000) || (f3_q == 3'b010);   //  operand b = vs1
-    wire b_vx = (f3_q == 3'b100) || (f3_q == 3'b110);   //  operand b = x[rs1]
-    wire b_vi = (f3_q == 3'b011);                       //  operand b = imm
+    wire opiv;
+    assign opiv = (f3_q == 3'b000) || (f3_q == 3'b100) || (f3_q == 3'b011);
+    wire opmv;
+    assign opmv = (f3_q == 3'b010) || (f3_q == 3'b110);
+    wire b_vv;   //  operand b = vs1
+    assign b_vv = (f3_q == 3'b000) || (f3_q == 3'b010);
+    wire b_vx;   //  operand b = x[rs1]
+    assign b_vx = (f3_q == 3'b100) || (f3_q == 3'b110);
+    wire b_vi;                       //  operand b = imm
+    assign b_vi = (f3_q == 3'b011);
 
-    wire is_cmp     = opiv && (f6_q[5:3] == 3'b011);            //  OPIV compares
-    wire is_mlg     = (f3_q == 3'b010) && (f6_q[5:3] == 3'b011);    //  OPMVV mask logic
-    wire is_mul     = opmv && (f6_q[5:2] == 4'b1001);           //  1001xx mul/mulh*
-    wire is_div     = opmv && (f6_q[5:2] == 4'b1000);           //  1000xx vdivu/vdiv/vremu/vrem (f6[1]=rem,f6[0]=signed)
-    wire is_mac     = opmv && (f6_q[5:3] == 3'b101) && f6_q[0]; //  101xx1 vmadd/vnmsub/vmacc/vnmsac
-    wire is_mvmerge = opiv && (f6_q == 6'b010111);              //  vmv.v.* / vmerge
-    wire is_vmvnr   = b_vi && (f6_q == 6'b100111);              //  vmv<nr>r.v whole-reg move (.vi only)
+    wire is_cmp;            //  OPIV compares
+    assign is_cmp = opiv && (f6_q[5:3] == 3'b011);
+    wire is_mlg;    //  OPMVV mask logic
+    assign is_mlg = (f3_q == 3'b010) && (f6_q[5:3] == 3'b011);
+    wire is_mul;           //  1001xx mul/mulh*
+    assign is_mul = opmv && (f6_q[5:2] == 4'b1001);
+    wire is_div;           //  1000xx vdivu/vdiv/vremu/vrem (f6[1]=rem,f6[0]=signed)
+    assign is_div = opmv && (f6_q[5:2] == 4'b1000);
+    wire is_mac; //  101xx1 vmadd/vnmsub/vmacc/vnmsac
+    assign is_mac = opmv && (f6_q[5:3] == 3'b101) && f6_q[0];
+    wire is_mvmerge;              //  vmv.v.* / vmerge
+    assign is_mvmerge = opiv && (f6_q == 6'b010111);
+    wire is_vmvnr;              //  vmv<nr>r.v whole-reg move (.vi only)
+    assign is_vmvnr = b_vi && (f6_q == 6'b100111);
     //  carry/borrow group (OPIV 0100xx): f6[0]=0 element (vadc/vsbc),
     //  f6[0]=1 mask-out (vmadc/vmsbc); f6[1]=1 subtract.
-    wire is_carry   = opiv && (f6_q[5:2] == 4'b0100);
-    wire is_carry_e = is_carry && !f6_q[0];                     //  vadc / vsbc -> element
-    wire is_carry_m = is_carry &&  f6_q[0];                     //  vmadc / vmsbc -> mask
+    wire is_carry;
+    assign is_carry = opiv && (f6_q[5:2] == 4'b0100);
+    wire is_carry_e;                     //  vadc / vsbc -> element
+    assign is_carry_e = is_carry && !f6_q[0];
+    wire is_carry_m;                     //  vmadc / vmsbc -> mask
+    assign is_carry_m = is_carry &&  f6_q[0];
     //  -- fixed-point (OPIV 1000xx sat add/sub, 100111 vsmul, 10101x ssr; OPMV 0010xx avg) --
-    wire is_satadd  = opiv && (f6_q[5:2] == 4'b1000);           //  vsaddu/vsadd/vssubu/vssub (f6[1]=sub,f6[0]=signed)
-    wire is_vsmul   = opiv && (b_vv || b_vx) && (f6_q == 6'b100111);    //  vsmul.vv/.vx (OPIV; OPMV 100111 = vmulh)
-    wire is_vssr    = opiv && (f6_q[5:1] == 5'b10101);          //  vssrl(101010)/vssra(101011), f6[0]=arith
-    wire is_avg     = opmv && (f6_q[5:2] == 4'b0010);           //  vaaddu/vaadd/vasubu/vasub (f6[1]=sub,f6[0]=signed)
+    wire is_satadd;           //  vsaddu/vsadd/vssubu/vssub (f6[1]=sub,f6[0]=signed)
+    assign is_satadd = opiv && (f6_q[5:2] == 4'b1000);
+    wire is_vsmul;    //  vsmul.vv/.vx (OPIV; OPMV 100111 = vmulh)
+    assign is_vsmul = opiv && (b_vv || b_vx) && (f6_q == 6'b100111);
+    wire is_vssr;          //  vssrl(101010)/vssra(101011), f6[0]=arith
+    assign is_vssr = opiv && (f6_q[5:1] == 5'b10101);
+    wire is_avg;           //  vaaddu/vaadd/vasubu/vasub (f6[1]=sub,f6[0]=signed)
+    assign is_avg = opmv && (f6_q[5:2] == 4'b0010);
     //  -- widening: base-V OPMV 11xxxx plus Zvbb vwsll (OPIV 110101) --
 `ifdef KARU_EN_ZVBB
-    wire is_vwsll   = opiv && (f6_q == 6'b110101);
+    wire is_vwsll;
+    assign is_vwsll = opiv && (f6_q == 6'b110101);
 `else
-    wire is_vwsll   = 1'b0;
+    wire is_vwsll;
+    assign is_vwsll = 1'b0;
 `endif
-    wire is_wide    = (opmv && (f6_q[5:4] == 2'b11)) || is_vwsll;
+    wire is_wide;
+    assign is_wide = (opmv && (f6_q[5:4] == 2'b11)) || is_vwsll;
     //  Qualify the base-V classes with opmv: vwsll's 110101 would otherwise
     //  alias wide_w's 1101 prefix.
-    wire wide_w     = opmv && (f6_q[5:2] == 4'b1101);            //  .w forms (vwadd.w etc.): vs2 already wide
-    wire wide_mul   = opmv && (f6_q[5:2] == 4'b1110);            //  vwmulu/vwmulsu/vwmul
-    wire wide_mac   = opmv && (f6_q[5:2] == 4'b1111);            //  vwmaccu/vwmacc/vwmaccus/vwmaccsu
+    wire wide_w;            //  .w forms (vwadd.w etc.): vs2 already wide
+    assign wide_w = opmv && (f6_q[5:2] == 4'b1101);
+    wire wide_mul;            //  vwmulu/vwmulsu/vwmul
+    assign wide_mul = opmv && (f6_q[5:2] == 4'b1110);
+    wire wide_mac;            //  vwmaccu/vwmacc/vwmaccus/vwmaccsu
+    assign wide_mac = opmv && (f6_q[5:2] == 4'b1111);
     //  -- narrowing (OPIV 1011xx): vs2 = 2*SEW, dest = SEW --
-    wire is_narrow  = opiv && (f6_q[5:2] == 4'b1011);
-    wire narrow_clip= is_narrow && f6_q[1];                     //  vnclipu(101110)/vnclip(101111)
+    wire is_narrow;
+    assign is_narrow = opiv && (f6_q[5:2] == 4'b1011);
+    wire narrow_clip;                     //  vnclipu(101110)/vnclip(101111)
+    assign narrow_clip = is_narrow && f6_q[1];
     //  -- reductions: OPMVV 0000xx single-width (.vs); OPIVV 11000x widening --
-    wire is_red     = (f3_q == 3'b010) && (f6_q[5:3] == 3'b000);    //  vredsum/and/or/xor/minu/min/maxu/max
-    wire is_wred    = (f3_q == 3'b000) && (f6_q[5:1] == 5'b11000);  //  vwredsumu(110000)/vwredsum(110001)
-    wire is_reduce  = is_red || is_wred;
+    wire is_red;    //  vredsum/and/or/xor/minu/min/maxu/max
+    assign is_red = (f3_q == 3'b010) && (f6_q[5:3] == 3'b000);
+    wire is_wred;  //  vwredsumu(110000)/vwredsum(110001)
+    assign is_wred = (f3_q == 3'b000) && (f6_q[5:1] == 5'b11000);
+    wire is_reduce;
+    assign is_reduce = is_red || is_wred;
     //  --- forward-declared nets/regs (hoisted for single-pass front-ends) ---
     //  Each is referenced earlier than its natural definition below; the
     //  definition stays in place (now `assign` for the wires, `always` for the
@@ -243,72 +273,105 @@ module karu_varith (
     reg         czv_q, czk_q;
     reg  [5:0]  state;
 
-    wire is_alu     = opiv && !is_cmp && !is_mvmerge && !is_vmvnr && !is_carry
-                    && !is_satadd && !is_vsmul && !is_vssr && !is_narrow && !is_wred
-                    && !is_gather && !is_gei16 && !is_slideup && !is_slidedn
-                    && !is_vwsll;
-    wire is_unary   = (f3_q == 3'b010) && (f6_q == 6'b010000);  //  VWXUNARY0 (OPMVV)
-    wire is_munary  = (f3_q == 3'b010) && (f6_q == 6'b010100);  //  VMUNARY0
+    wire is_alu;
+    assign is_alu = opiv && !is_cmp && !is_mvmerge && !is_vmvnr && !is_carry
+                  && !is_satadd && !is_vsmul && !is_vssr && !is_narrow && !is_wred
+                  && !is_gather && !is_gei16 && !is_slideup && !is_slidedn
+                  && !is_vwsll;
+    wire is_unary;  //  VWXUNARY0 (OPMVV)
+    assign is_unary = (f3_q == 3'b010) && (f6_q == 6'b010000);
+    wire is_munary;  //  VMUNARY0
+    assign is_munary = (f3_q == 3'b010) && (f6_q == 6'b010100);
     //  VXUNARY0 (OPMVV 010010): integer extend vsext/vzext.vf{2,4,8}. vs1[2:1]
     //  picks the factor (01->/8, 10->/4, 11->/2), vs1[0] picks sign. Narrow
     //  source (EEW=SEW/f, EMUL=LMUL/f); normal-width dest.
-    wire is_vext    = (f3_q == 3'b010) && (f6_q == 6'b010010)
-                    && (vs1_q[4:3] == 2'b00) && (vs1_q[2:1] != 2'b00);
+    wire is_vext;
+    assign is_vext = (f3_q == 3'b010) && (f6_q == 6'b010010)
+                   && (vs1_q[4:3] == 2'b00) && (vs1_q[2:1] != 2'b00);
 `ifdef KARU_EN_ZVKB
     //  Zvkb byte/bit reversals: VXUNARY0 (OPMVV 010010) like vsext/vzext but
     //  vs1 selectors 01000/01001 -- element-local unary on vs2, so they ride
     //  the lane (is_grp) path, not the whole-register ext_res path. The
     //  other Zvkb ops (vandn/vrol/vror) are OPIV encodings that fall into
     //  the is_alu catch-all; the lane f6 case implements them.
-    wire is_brev8   = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01000);
-    wire is_rev8    = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01001);
+    wire is_brev8;
+    assign is_brev8 = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01000);
+    wire is_rev8;
+    assign is_rev8 = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01001);
 `else
-    wire is_brev8   = 1'b0;
-    wire is_rev8    = 1'b0;
+    wire is_brev8;
+    assign is_brev8 = 1'b0;
+    wire is_rev8;
+    assign is_rev8 = 1'b0;
 `endif
 `ifdef KARU_EN_ZVBB
     //  Full Zvbb VXUNARY0 selectors. These are normal-width, element-local
     //  operations and use the same lane path as the two Zvkb reversals.
-    wire is_brev     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01010);
-    wire is_vclz     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01100);
-    wire is_vctz     = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01101);
-    wire is_vcpop_e  = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01110);
+    wire is_brev;
+    assign is_brev = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01010);
+    wire is_vclz;
+    assign is_vclz = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01100);
+    wire is_vctz;
+    assign is_vctz = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01101);
+    wire is_vcpop_e;
+    assign is_vcpop_e = (f3_q == 3'b010) && (f6_q == 6'b010010) && (vs1_q == 5'b01110);
 `else
-    wire is_brev     = 1'b0;
-    wire is_vclz     = 1'b0;
-    wire is_vctz     = 1'b0;
-    wire is_vcpop_e  = 1'b0;
+    wire is_brev;
+    assign is_brev = 1'b0;
+    wire is_vclz;
+    assign is_vclz = 1'b0;
+    wire is_vctz;
+    assign is_vctz = 1'b0;
+    wire is_vcpop_e;
+    assign is_vcpop_e = 1'b0;
 `endif
     //  These VXUNARY0 selectors use vs1 as a subopcode, not a vector source.
     //  Keep them off the generic OPMVV vs1 granule-read path.
-    wire is_vxunary_lane = is_brev8 || is_rev8 || is_brev
-                         || is_vclz || is_vctz || is_vcpop_e;
-    wire [2:0] ext_flog = 3'd4 - {1'b0, vs1_q[2:1]};            //  log2(factor): vf8->3, vf4->2, vf2->1
-    wire       ext_sign = vs1_q[0];                             //  1 = vsext, 0 = vzext
-    wire [6:0] ext_ssew = sewb >> ext_flog;                     //  source (narrow) element width
-    wire is_vfirst  = is_unary  && (vs1_q == 5'b10001);
-    wire is_vcpop   = is_unary  && (vs1_q == 5'b10000);         //  vcpop.m -> x
-    wire is_vmvxs   = is_unary  && (vs1_q == 5'b00000);         //  vmv.x.s -> x
-    wire is_vmvsx   = (f3_q == 3'b110) && (f6_q == 6'b010000) && (vs2_q == 5'b00000); //    vmv.s.x (vs2=selector, rs1=x src)
-    wire is_vid     = is_munary && (vs1_q == 5'b10001);
-    wire is_mscan   = is_munary && (vs1_q[4:2] == 3'b000) && (vs1_q[1:0] != 2'b00); //  vmsbf/vmsof/vmsif
+    wire is_vxunary_lane;
+    assign is_vxunary_lane = is_brev8 || is_rev8 || is_brev
+                           || is_vclz || is_vctz || is_vcpop_e;
+    wire [2:0] ext_flog;            //  log2(factor): vf8->3, vf4->2, vf2->1
+    assign ext_flog = 3'd4 - {1'b0, vs1_q[2:1]};
+    wire       ext_sign;                             //  1 = vsext, 0 = vzext
+    assign ext_sign = vs1_q[0];
+    wire [6:0] ext_ssew;                     //  source (narrow) element width
+    assign ext_ssew = sewb >> ext_flog;
+    wire is_vfirst;
+    assign is_vfirst = is_unary  && (vs1_q == 5'b10001);
+    wire is_vcpop;         //  vcpop.m -> x
+    assign is_vcpop = is_unary  && (vs1_q == 5'b10000);
+    wire is_vmvxs;         //  vmv.x.s -> x
+    assign is_vmvxs = is_unary  && (vs1_q == 5'b00000);
+    wire is_vmvsx; //    vmv.s.x (vs2=selector, rs1=x src)
+    assign is_vmvsx = (f3_q == 3'b110) && (f6_q == 6'b010000) && (vs2_q == 5'b00000);
+    wire is_vid;
+    assign is_vid = is_munary && (vs1_q == 5'b10001);
+    wire is_mscan; //  vmsbf/vmsof/vmsif
+    assign is_mscan = is_munary && (vs1_q[4:2] == 3'b000) && (vs1_q[1:0] != 2'b00);
     //  -- VPERM (cross-lane): slides, gather, compress, iota --
     assign is_gather   = opiv && (f6_q == 6'b001100);                 //  vrgather.v{v,x,i}
     assign is_gei16    = (f3_q == 3'b000) && (f6_q == 6'b001110);     //  vrgatherei16.vv (OPIVV)
     //  slideup/down are OPIVX/OPIVI only (OPMVX 001110/001111 = vslide1up/down)
     assign is_slideup  = ((f3_q == 3'b100) || b_vi) && (f6_q == 6'b001110);   //  vslideup.v{x,i}
     assign is_slidedn  = ((f3_q == 3'b100) || b_vi) && (f6_q == 6'b001111);   //  vslidedown.v{x,i}
-    wire is_slide1up = (f3_q == 3'b110) && (f6_q == 6'b001110);     //  vslide1up.vx (OPMVX)
-    wire is_slide1dn = (f3_q == 3'b110) && (f6_q == 6'b001111);     //  vslide1down.vx (OPMVX)
-    wire is_compress = (f3_q == 3'b010) && (f6_q == 6'b010111);     //  vcompress.vm (OPMVV)
-    wire is_viota    = is_munary && (vs1_q == 5'b10000);            //  viota.m
+    wire is_slide1up;     //  vslide1up.vx (OPMVX)
+    assign is_slide1up = (f3_q == 3'b110) && (f6_q == 6'b001110);
+    wire is_slide1dn;     //  vslide1down.vx (OPMVX)
+    assign is_slide1dn = (f3_q == 3'b110) && (f6_q == 6'b001111);
+    wire is_compress;     //  vcompress.vm (OPMVV)
+    assign is_compress = (f3_q == 3'b010) && (f6_q == 6'b010111);
+    wire is_viota;            //  viota.m
+    assign is_viota = is_munary && (vs1_q == 5'b10000);
     //  true per-element (data-indexed) gather -> the only crossbar; handled in
     //  the lane-limited S_GATH path. vrgather.vx/.vi have one scalar index
     //  (a broadcast, no crossbar) and stay on the cheap whole-register path.
-    wire is_gvv      = (is_gather && b_vv) || is_gei16;
-    wire is_gscalar  = is_gather && (b_vx || b_vi);                 //  vrgather.vx/.vi (splat)
-    wire is_perm     = is_gather || is_gei16 || is_slideup || is_slidedn
-                    || is_slide1up || is_slide1dn || is_compress || is_viota;
+    wire is_gvv;
+    assign is_gvv = (is_gather && b_vv) || is_gei16;
+    wire is_gscalar;                 //  vrgather.vx/.vi (splat)
+    assign is_gscalar = is_gather && (b_vx || b_vi);
+    wire is_perm;
+    assign is_perm = is_gather || is_gei16 || is_slideup || is_slidedn
+                  || is_slide1up || is_slide1dn || is_compress || is_viota;
 
     //  writes_x is sampled by the core at the issue/req cycle, so it must be
     //  combinational on the *input* fields (the _q latches still hold the
@@ -317,16 +380,18 @@ module karu_varith (
                     && (vs1_base == 5'b10001 || vs1_base == 5'b00000 || vs1_base == 5'b10000);
     //  element-producing group ops iterate the LMUL group; mask/unary/vmv.s.x
     //  write a single register.
-    wire grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid || is_cmp
-            || is_carry_e || is_carry_m || is_satadd || is_vsmul || is_vssr || is_avg
-            || is_vext || is_brev8 || is_rev8
-            || is_brev || is_vclz || is_vctz || is_vcpop_e;
+    wire grp;
+    assign grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid || is_cmp
+              || is_carry_e || is_carry_m || is_satadd || is_vsmul || is_vssr || is_avg
+              || is_vext || is_brev8 || is_rev8
+              || is_brev || is_vclz || is_vctz || is_vcpop_e;
     //  vmv<nr>r.v copies imm+1 registers (1/2/4/8); other group ops span LMUL.
     wire lane_walk;
     wire [31:0] live_regs;
-    wire [3:0] iter_n = is_vmvnr ? (imm_q[3:0] + 4'd1)
-                     : lane_walk && (live_regs < nreg_q) ? live_regs[3:0]
-                     : (grp ? nreg_q : 4'd1);
+    wire [3:0] iter_n;
+    assign iter_n = is_vmvnr ? (imm_q[3:0] + 4'd1)
+                 : lane_walk && (live_regs < nreg_q) ? live_regs[3:0]
+                 : (grp ? nreg_q : 4'd1);
 
     assign sewb = 7'd8 << vsew_q;               //  bits/element
     //  log2(sewb): sewb = 8<<vsew is a power of 2, so index*sewb barrel-shift
@@ -334,18 +399,25 @@ module karu_varith (
     //  mapping the gather/permute index geometry (pelem/gidx) to DSP48s, which
     //  otherwise anchor placement and add a long inter-DSP route on the writeback
     //  cone. Byte-identical (g*sewb == g<<sew_lg).
-    wire [5:0] sew_lg = 6'd3 + {3'b0, vsew_q};      //  log2(bits/element) = 3..6
+    wire [5:0] sew_lg;      //  log2(bits/element) = 3..6
+    assign sew_lg = 6'd3 + {3'b0, vsew_q};
     //  epr (elements/reg = VLEN>>(3+vsew)) and epc_w (elems/64b chunk = 8>>vsew)
     //  are powers of 2 too -> r*epr and *epc_w geometry are SHIFTS, not DSPs.
     localparam LOG2VLEN = $clog2(VLEN);
-    wire [5:0] epr_lg  = LOG2VLEN[5:0] - 6'd3 - {3'b0, vsew_q}; //  log2(epr)
+    wire [5:0] epr_lg; //  log2(epr)
+    assign epr_lg = LOG2VLEN[5:0] - 6'd3 - {3'b0, vsew_q};
     assign live_regs = (vl_q == 0) ? 32'd1 : (((vl_q - 1) >> epr_lg) + 1);
-    wire [5:0] epc_lg  = 6'd3 - {3'b0, vsew_q};                 //  log2(epc_w) = 0..3
-    wire [5:0] eprw_lg = epr_lg - 6'd1;                         //  log2(epr_w = epr/2)
-    wire [5:0] wsew_lg = sew_lg + 6'd1;                         //  log2(wsewb = 2*sewb)
-    wire [5:0] essew_lg = sew_lg - {3'b0, ext_flog};            //  log2(ext_ssew = sewb>>ext_flog)
+    wire [5:0] epc_lg;                 //  log2(epc_w) = 0..3
+    assign epc_lg = 6'd3 - {3'b0, vsew_q};
+    wire [5:0] eprw_lg;                         //  log2(epr_w = epr/2)
+    assign eprw_lg = epr_lg - 6'd1;
+    wire [5:0] wsew_lg;                         //  log2(wsewb = 2*sewb)
+    assign wsew_lg = sew_lg + 6'd1;
+    wire [5:0] essew_lg;            //  log2(ext_ssew = sewb>>ext_flog)
+    assign essew_lg = sew_lg - {3'b0, ext_flog};
     //  r*epr / r*epr_w reused below via `ebase` / `ebase_w` (defined after `r`).
-    wire [31:0] epr = VLEN[31:0] >> (3 + vsew_q);   //  elements/register
+    wire [31:0] epr;   //  elements/register
+    assign epr = VLEN[31:0] >> (3 + vsew_q);
 
     reg [3:0] r;        //  dest register index within the (dest) group
     reg       nph;      //  narrowing phase: 0 = low wide src reg (2r), 1 = high (2r+1)
@@ -354,8 +426,10 @@ module karu_varith (
     //  register addressing.  widening: dest spans 2*LMUL regs (r), narrow
     //  sources at r>>1 (half = r[0]); .w forms read vs2 wide at r. narrowing:
     //  dest narrow at r, wide vs2 at 2r (+phase), narrow vs1/vold at r.
-    wire [4:0] r_half = {2'b0, r[3:1]};                 //  r >> 1
-    wire [4:0] r_dbl  = {r, 1'b0} + {4'b0, nph};        //  2r + phase
+    wire [4:0] r_half;                 //  r >> 1
+    assign r_half = {2'b0, r[3:1]};
+    wire [4:0] r_dbl;        //  2r + phase
+    assign r_dbl = {r, 1'b0} + {4'b0, nph};
     //  ---- VPERM (cross-lane) buffers & geometry (forward-declared) ----
     localparam GBUF = VLEN*8;                           //  max group bits (LMUL<=8)
     //  slice (b): the perm source/index buffers live behind async RAM leaves
@@ -375,8 +449,10 @@ module karu_varith (
     wire [63:0]    pram_src_word, pram_mask_word;
     wire [63:0]    iram_idx_word, iram_cmp_word;
     wire           pbuf_we;
-    wire [63:0]    pbuf_vs2_word = vs2_g[plw[0]*64 +: 64];
-    wire [63:0]    pbuf_vs1_word = vs1_g[plw[0]*64 +: 64];
+    wire [63:0]    pbuf_vs2_word;
+    assign pbuf_vs2_word = vs2_g[plw[0]*64 +: 64];
+    wire [63:0]    pbuf_vs1_word;
+    assign pbuf_vs1_word = vs1_g[plw[0]*64 +: 64];
     reg [3:0]  pli;                                     //  perm load counter
     reg        ld_active;                               //  high during the perm load phase
     reg [31:0] iota_acc;                                //  viota running prefix (carried per window)
@@ -402,30 +478,40 @@ module karu_varith (
                   //    stage-4: the S_CMW vold_g fills key the mask register
                   : (is_cmp || is_carry_m) ? vd_q
                   : is_reduce ? vd_q : (vd_q + {1'b0, r});  //  reduction writes single reg vd
-    wire [31:0] ebase = {28'b0, r} << epr_lg;   //  == r*epr (epr=2^epr_lg); shift, not DSP
-    wire [31:0] ebase_eff = ebase;
+    wire [31:0] ebase;   //  == r*epr (epr=2^epr_lg); shift, not DSP
+    assign ebase = {28'b0, r} << epr_lg;
+    wire [31:0] ebase_eff;
+    assign ebase_eff = ebase;
     //  wide-element geometry: 2*SEW element, epr_w = epr/2 elements per reg
-    wire [6:0]  wsewb = sewb << 1;                      //  wide element bits (<=64)
-    wire [31:0] epr_w = epr >> 1;                       //  wide elements per register
+    wire [6:0]  wsewb;                      //  wide element bits (<=64)
+    assign wsewb = sewb << 1;
+    wire [31:0] epr_w;                       //  wide elements per register
+    assign epr_w = epr >> 1;
 
     //  true VLMAX (elements in the group), honouring fractional LMUL
-    wire [31:0] vlmax = vlmul_q[2] ? (epr >> (4 - {2'b0, vlmul_q[1:0]}))
-                                   : (epr << vlmul_q[1:0]);
+    wire [31:0] vlmax;
+    assign vlmax = vlmul_q[2] ? (epr >> (4 - {2'b0, vlmul_q[1:0]}))
+                              : (epr << vlmul_q[1:0]);
     //  index EMUL (registers) for vrgatherei16 (EEW=16); else = LMUL
-    wire [4:0] gei_nreg = (vsew_q == 3'd0) ? {nreg_q, 1'b0}
-                        : (vsew_q == 3'd1) ? {1'b0, nreg_q}
-                        : (vsew_q == 3'd2) ? ({1'b0, nreg_q} >> 1)
-                        :                    ({1'b0, nreg_q} >> 2);
-    wire [3:0] idx_nreg = is_gei16
-                        ? ((gei_nreg == 5'd0) ? 4'd1 : (gei_nreg > 5'd8 ? 4'd8 : gei_nreg[3:0]))
-                        : nreg_q;
+    wire [4:0] gei_nreg;
+    assign gei_nreg = (vsew_q == 3'd0) ? {nreg_q, 1'b0}
+                    : (vsew_q == 3'd1) ? {1'b0, nreg_q}
+                    : (vsew_q == 3'd2) ? ({1'b0, nreg_q} >> 1)
+                    :                    ({1'b0, nreg_q} >> 2);
+    wire [3:0] idx_nreg;
+    assign idx_nreg = is_gei16
+                    ? ((gei_nreg == 5'd0) ? 4'd1 : (gei_nreg > 5'd8 ? 4'd8 : gei_nreg[3:0]))
+                    : nreg_q;
     //  registers to buffer: max(source LMUL, index EMUL when gathering)
-    wire [3:0] load_n = ((is_gather && b_vv) || is_gei16)
-                      ? ((idx_nreg > nreg_q) ? idx_nreg : nreg_q) : nreg_q;
+    wire [3:0] load_n;
+    assign load_n = ((is_gather && b_vv) || is_gei16)
+                  ? ((idx_nreg > nreg_q) ? idx_nreg : nreg_q) : nreg_q;
 
     //  splat source for vmv.v.{x,i}
-    wire [63:0] mv_splat = b_vx ? rs1_q : imm_q;
-    wire        mv_is_vv = b_vv;
+    wire [63:0] mv_splat;
+    assign mv_splat = b_vx ? rs1_q : imm_q;
+    wire        mv_is_vv;
+    assign mv_is_vv = b_vv;
 
     //  ========================================================
     //  element-producing datapath (alu / mul / vmv|vmerge / vid)
@@ -498,10 +584,12 @@ module karu_varith (
     //  parallel barrel-shift/clip cone -- the worst combinational path). Per-reg
     //  cost becomes 2*ceil(epr_w/NWIN) cycles instead of 2.
     localparam NWIN   = NLANES;
-    wire [3:0] epc_w = 4'd8 >> vsew_q;          //  elements per 64-bit chunk
+    wire [3:0] epc_w;          //  elements per 64-bit chunk
+    assign epc_w = 4'd8 >> vsew_q;
     wire [`KARU_VLEN-1:0] grp_res;
     wire [NLANES-1:0]     lane_sat_arr;
-    wire grp_sat = |lane_sat_arr;
+    wire grp_sat;
+    assign grp_sat = |lane_sat_arr;
 
     //  ---- 2-lane granule loop ----------------------------------
     //  The NLANES compute lanes cover a register's CPR 64-bit chunks over
@@ -526,17 +614,20 @@ module karu_varith (
             $fatal(1, "bounded lane walk requires two granules per register");
     end
     // synthesis translate_on
-    wire                  last_g = (gpass == (VGRAN_C-1)) ||
-        (lane_walk && (ebase + (({31'b0, gpass} + 1) << (epr_lg-1)) >= vl_q));
+    wire                  last_g;
+    assign last_g = (gpass == (VGRAN_C-1)) ||
+(lane_walk && (ebase + (({31'b0, gpass} + 1) << (epr_lg-1)) >= vl_q));
     //  this pass's chunk base. Folds to a constant 0 at VGRAN_C==1 so the FP geg/
     //  fdbuf selects (which use gwin directly, not generate-gated) are static in
     //  the byte-identical build -- no live gpass mux there either.
-    wire [31:0]           gwin   = (VGRAN_C > 1) ? (gpass * NLANES) : 32'd0;
+    wire [31:0]           gwin;
+    assign gwin = (VGRAN_C > 1) ? (gpass * NLANES) : 32'd0;
     //  lane-based ops whose result comes from grp_res (granule-windowed). NOT
     //  is_vext (whole-register ext_res) nor cmp/mlg/mscan/vfirst (whole-reg).
-    wire is_grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid
-               || is_vmvsx || is_carry_e || is_satadd || is_avg || is_vssr || is_vsmul
-               || is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop_e;
+    wire is_grp;
+    assign is_grp = is_alu || is_mul || is_div || is_mac || is_mvmerge || is_vid
+                 || is_vmvsx || is_carry_e || is_satadd || is_avg || is_vssr || is_vsmul
+                 || is_brev8 || is_rev8 || is_brev || is_vclz || is_vctz || is_vcpop_e;
     assign lane_walk = is_grp && !cz_q && !is_fp_q
                     && !(BS_MUL && (is_mul || is_mac || is_vsmul))
                     && !(BS_DIV && is_div);
@@ -582,7 +673,8 @@ module karu_varith (
     //     -- the FSM issues a 1-cycle req pulse only when the lane is idle (`busy`
     //     is registered, so it rises the cycle AFTER req); a future pipelined-issue
     //     change that fed a busy lane would trip this.
-    wire dbg_fp_req_busy = |(lane_fp_req & lane_fp_busy);
+    wire dbg_fp_req_busy;
+    assign dbg_fp_req_busy = |(lane_fp_req & lane_fp_busy);
 
     genvar L;
     generate for (L = 0; L < NLANES; L = L + 1) begin : g_lane
@@ -597,8 +689,10 @@ module karu_varith (
         end else begin : g_gcl_stat
             assign gcL = L[31:0];
         end
-        wire [31:0] eg_base_L = ebase_eff + (gcL << epc_lg);    //  gcL*epc_w; shift, not DSP
-        wire [7:0]  v0b_L     = v0_q[eg_base_L[7:0] +: 8];
+        wire [31:0] eg_base_L;    //  gcL*epc_w; shift, not DSP
+        assign eg_base_L = ebase_eff + (gcL << epc_lg);
+        wire [7:0]  v0b_L;
+        assign v0b_L = v0_q[eg_base_L[7:0] +: 8];
         karu_vlane #(.MUL_COMB(V_MUL_C == 1 ? 1 : 0),
                      .DIV_COMB(V_DIV_C == 1 ? 1 : 0)
                      ) u_lane (
@@ -642,9 +736,12 @@ module karu_varith (
     reg [4:0]   x_sub;  integer xe, xbb;
     //  the source sub-window for dest reg r is granule x_g2 of the source
     //  register; x_wbase = the window's bit offset within that register
-    wire [4:0]  x_subw  = {1'b0, r} & ((5'd1 << ext_flog) - 5'd1);
-    wire [31:0] x_wbase = ({27'b0, x_subw} << LOG2VLEN) >> ext_flog;
-    wire        x_g2    = x_wbase[7];
+    wire [4:0]  x_subw;
+    assign x_subw = {1'b0, r} & ((5'd1 << ext_flog) - 5'd1);
+    wire [31:0] x_wbase;
+    assign x_wbase = ({27'b0, x_subw} << LOG2VLEN) >> ext_flog;
+    wire        x_g2;
+    assign x_g2 = x_wbase[7];
     always @(*) begin
         ext_res = {`KARU_VLEN{1'b0}};   //  6c-b: keep-old = the suppressed byte enable
         x_sval=0; x_ext=0; x_eg=0; x_nidx=0; x_act=0;
@@ -679,7 +776,8 @@ module karu_varith (
     reg [`KARU_VLEN-1:0] cmp_bits, cmp_act;
     integer ce; reg [63:0] ca, cb, cau, cbu, cas, cbs, csm; reg cbit, cact, ccin; reg [31:0] ceg;
     reg [64:0] cca, ccs;
-    wire [31:0] epg = epr / VGRAN_C;    //  elements per source granule
+    wire [31:0] epg;    //  elements per source granule
+    assign epg = epr / VGRAN_C;
     always @(*) begin
         cmp_bits = {VLEN{1'b0}};    cmp_act = {VLEN{1'b0}};
         ca=0; cb=0; cau=0; cbu=0; cas=0; cbs=0; csm=0; cbit=0; cact=0; ccin=0; ceg=0; cca=0; ccs=0;
@@ -752,7 +850,8 @@ module karu_varith (
     //  ---- vmv.x.s : element 0 of vs2, sign-extended to XLEN ----
     //  stage-4: element 0 lives in granule 0 (vmvxs is a single S_RUN
     //  visit at gpass==0, so vs2_g holds it)
-    wire [63:0] vmvxs_res = sext(vs2_g[63:0] & ~((sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb)), sewb);
+    wire [63:0] vmvxs_res;
+    assign vmvxs_res = sext(vs2_g[63:0] & ~((sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb)), sewb);
 
     //  ---- mask-scan (vmsbf/vmsof/vmsif) + vcpop.m ----
     //  source mask = d_vs2 (single mask reg). active = vm||v0[i], i<vl.
@@ -838,10 +937,13 @@ module karu_varith (
             assign ms_firsts[MS] = ms_found[2*MS] ? ms_firsts[2*MS] : ms_firsts[2*MS+1];
         end
     endgenerate
-    wire gfound = found_q | ms_found[1];
-    wire [31:0] gff = (found_q || !ms_found[1]) ? ff_q :
-        ((gpass ? 32'd`KARU_VBUS_W : 32'd0) | {{(32-MS_INDEX_W){1'b0}},ms_firsts[1]});
-    wire [MS_COUNT_W-1:0] gcnt = cnt_q + ms_counts[1];
+    wire gfound;
+    assign gfound = found_q | ms_found[1];
+    wire [31:0] gff;
+    assign gff = (found_q || !ms_found[1]) ? ff_q :
+   ((gpass ? 32'd`KARU_VBUS_W : 32'd0) | {{(32-MS_INDEX_W){1'b0}},ms_firsts[1]});
+    wire [MS_COUNT_W-1:0] gcnt;
+    assign gcnt = cnt_q + ms_counts[1];
     reg [VLEN-1:0] mscan_wbits; integer swi; reg swb;
     always @(*) begin
         mscan_wbits = {VLEN{1'b0}}; swb=1'b0;
@@ -898,7 +1000,8 @@ module karu_varith (
     end
 
     //  req-time is_div (latched f6_q not yet valid at the issue/req cycle)
-    wire req_is_div = (vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:2] == 4'b1000);
+    wire req_is_div;
+    assign req_is_div = (vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:2] == 4'b1000);
 
     //  ========================================================
     //  bit-serial multiply (V_MUL_C > 1): shared radix-2^K shift-and-add
@@ -975,12 +1078,16 @@ module karu_varith (
 
     //  radix-2^K step (K=MK bits/cycle). mmul_a is the multiplicand magnitude;
     //  macc_acc starts at {64'b0, mag_b} and ends holding the 128-bit product.
-    wire [MK+63:0] m_partial = mmul_a * macc_acc[MK-1:0];
-    wire [MK+63:0] m_sum     = macc_acc[127:64] + m_partial;
-    wire [127:0]   m_next     = { m_sum, macc_acc[63:MK] };
+    wire [MK+63:0] m_partial;
+    assign m_partial = mmul_a * macc_acc[MK-1:0];
+    wire [MK+63:0] m_sum;
+    assign m_sum = macc_acc[127:64] + m_partial;
+    wire [127:0]   m_next;
+    assign m_next = { m_sum, macc_acc[63:MK] };
 
     //  req-time is_mul (covers mul/mulh*, MAC, vsmul) for the FSM branch
-    wire req_is_mul =
+    wire req_is_mul;
+    assign req_is_mul =
         ((vfunct3 == 3'b010 || vfunct3 == 3'b110) &&
            ((vfunct6[5:2] == 4'b1001) || ((vfunct6[5:3] == 3'b101) && vfunct6[0])))
      || ((vfunct3 == 3'b000 || vfunct3 == 3'b100) && (vfunct6 == 6'b100111));
@@ -990,9 +1097,12 @@ module karu_varith (
     //  cycle. dest reg r in [0, 2*LMUL); narrow sources at reg r>>1, half
     //  r[0] (.vv/mul/mac); .w forms read vs2 wide at reg r. Masked + tailed.
     //  ========================================================
-    wire [31:0] ebase_w = {28'b0, r} << eprw_lg;    //  == r*epr_w; shift, not DSP
-    wire [31:0] epg_w32 = epr_w >> 1;               //  wide elements per granule
-    wire [31:0] w_gbase = gpass[0] ? epg_w32 : 32'd0;   //  this pass's wide window
+    wire [31:0] ebase_w;    //  == r*epr_w; shift, not DSP
+    assign ebase_w = {28'b0, r} << eprw_lg;
+    wire [31:0] epg_w32;               //  wide elements per granule
+    assign epg_w32 = epr_w >> 1;
+    wire [31:0] w_gbase;   //  this pass's wide window
+    assign w_gbase = gpass[0] ? epg_w32 : 32'd0;
     reg [`KARU_VLEN-1:0] wide_res;
     integer we_i, wbj, w_noff;
     reg [63:0]  w_na, w_nb, w_na_s, w_nb_s, w_wa, w_vd, w_nsm, w_wsm, w_shamt;
@@ -1065,17 +1175,22 @@ module karu_varith (
 
     //  req-time is_wide / is_narrow for the FSM branch selection
 `ifdef KARU_EN_ZVBB
-    wire req_is_vwsll  = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
-                       && (vfunct6 == 6'b110101);
+    wire req_is_vwsll;
+    assign req_is_vwsll = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
+                        && (vfunct6 == 6'b110101);
 `else
-    wire req_is_vwsll  = 1'b0;
+    wire req_is_vwsll;
+    assign req_is_vwsll = 1'b0;
 `endif
-    wire req_is_wide   = ((vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:4] == 2'b11))
+    wire req_is_wide;
+    assign req_is_wide = ((vfunct3 == 3'b010 || vfunct3 == 3'b110) && (vfunct6[5:4] == 2'b11))
                        || req_is_vwsll;
-    wire req_is_narrow = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
-                       && (vfunct6[5:2] == 4'b1011);
+    wire req_is_narrow;
+    assign req_is_narrow = (vfunct3 == 3'b000 || vfunct3 == 3'b100 || vfunct3 == 3'b011)
+                         && (vfunct6[5:2] == 4'b1011);
     //  widening mul/mac (funct6 111xxx) -- routed to the serial multiplier when BS_MUL
-    wire req_is_wmul   = req_is_wide && (vfunct6[5:3] == 3'b111);
+    wire req_is_wmul;
+    assign req_is_wmul = req_is_wide && (vfunct6[5:3] == 3'b111);
 
     //  ========================================================
     //  widening serial multiply (V_MUL_C>1): per-element radix multiply
@@ -1085,7 +1200,8 @@ module karu_varith (
     reg [63:0]  wm_na, wm_nb, wm_na_s, wm_nb_s, wm_maga, wm_magb, wm_vd, wm_nsm, wm_wsm, wm_res;
     reg         wm_asig, wm_bsig, wm_aneg, wm_bneg, wm_neg; reg [31:0] wm_eg;   integer wm_noff;
     reg [127:0] wm_signed;
-    wire [31:0] wm_vsh = {26'b0, mle} << wsew_lg;   //  wide-element bit offset
+    wire [31:0] wm_vsh;   //  wide-element bit offset
+    assign wm_vsh = {26'b0, mle} << wsew_lg;
     always @(*) begin
         wm_nsm = (sewb  >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
         wm_wsm = (wsewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << wsewb);
@@ -1124,7 +1240,8 @@ module karu_varith (
     reg  [NWIN*6-1:0]  nA_loc, pA_loc;  //  dest narrow-element index (<= epr-1)
     reg  [NWIN-1:0]    nA_we,  pA_we;   //  write-enable (active & in-vl)
     //  -- stage A combinational --
-    wire n_g2 = ({26'b0, nse} >= epg_w32);      //  this window's wide granule
+    wire n_g2;      //  this window's wide granule
+    assign n_g2 = ({26'b0, nse} >= epg_w32);
     integer ne_i, nk, n_loc;
     reg [63:0]  n_wide, n_wide_s, n_b, n_shamt, n_shval, n_sh, n_nsm, n_wsm;
     reg         n_dmsb, n_stk, n_lsb, n_rnd, n_act; reg [31:0] n_eg;
@@ -1220,16 +1337,23 @@ module karu_varith (
     //  per A/B pair; the accumulator seeds from vs1[0] at the very first chunk.
     reg [63:0]  red_acc, red_next;
     //  shared, combinational on the (quasi-static) latched config -- used by both stages
-    wire [6:0]  rwidth   = is_wred ? wsewb : sewb;
-    wire [63:0] red_csm  = (rwidth >= 7'd64) ? 64'h0 : ({64{1'b1}} << rwidth);  //  result-width mask
-    wire [63:0] red_ssm  = (sewb   >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);        //  SEW element mask
-    wire [63:0] red_seed = vs1_g & ~red_csm;    //  vs1[0] scalar seed (granule 0)
-    wire [63:0] red_base = (r == 4'd0 && rch == 4'd0) ? red_seed : red_acc;
-    wire [2:0]  red_op   = is_wred ? 3'b000 : f6_q[2:0];                        //  widening = sum
-    wire [63:0] red_ident = (red_op == 3'b001 || red_op == 3'b100) ? {64{1'b1}}         //  and / minu
-                           : (red_op == 3'b101) ? ((64'h1 << (sewb - 7'd1)) - 64'h1)        //  min : SEW max-positive
-                           : (red_op == 3'b111) ?  (64'h1 << (sewb - 7'd1))             //  max : SEW min-negative
-                           :                       64'h0;                               //  sum / or / xor / maxu
+    wire [6:0]  rwidth;
+    assign rwidth = is_wred ? wsewb : sewb;
+    wire [63:0] red_csm;  //  result-width mask
+    assign red_csm = (rwidth >= 7'd64) ? 64'h0 : ({64{1'b1}} << rwidth);
+    wire [63:0] red_ssm;        //  SEW element mask
+    assign red_ssm = (sewb   >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
+    wire [63:0] red_seed;    //  vs1[0] scalar seed (granule 0)
+    assign red_seed = vs1_g & ~red_csm;
+    wire [63:0] red_base;
+    assign red_base = (r == 4'd0 && rch == 4'd0) ? red_seed : red_acc;
+    wire [2:0]  red_op;                        //  widening = sum
+    assign red_op = is_wred ? 3'b000 : f6_q[2:0];
+    wire [63:0] red_ident;                               //  sum / or / xor / maxu
+    assign red_ident = (red_op == 3'b001 || red_op == 3'b100) ? {64{1'b1}}         //  and / minu
+                      : (red_op == 3'b101) ? ((64'h1 << (sewb - 7'd1)) - 64'h1)        //  min : SEW max-positive
+                      : (red_op == 3'b111) ?  (64'h1 << (sewb - 7'd1))             //  max : SEW min-negative
+                      :                       64'h0;
 
     //  ---- stage A (combinational): extract chunk + fold 2 levels (REPC -> 2) ----
     reg [63:0]  red_t [0:2][0:REPC-1];  //  levels 0,1,2 of the chunk tree
@@ -1268,8 +1392,9 @@ module karu_varith (
         for (rwb = 0; rwb < 8; rwb = rwb + 1)
             if (rwb < (rwidth >> 3)) red_wdata[rwb*8 +: 8] = red_acc[rwb*8 +: 8];
     end
-    wire req_is_reduce = ((vfunct3 == 3'b010) && (vfunct6[5:3] == 3'b000))
-                       || ((vfunct3 == 3'b000) && (vfunct6[5:1] == 5'b11000));
+    wire req_is_reduce;
+    assign req_is_reduce = ((vfunct3 == 3'b010) && (vfunct6[5:3] == 3'b000))
+                         || ((vfunct3 == 3'b000) && (vfunct6[5:1] == 5'b11000));
 
     //  ========================================================
     //  VPERM (cross-lane): gather / slides / compress / iota.
@@ -1309,10 +1434,13 @@ module karu_varith (
 
     //  scalar offset / insert value: slide1* use 1; .vx uses x[rs1]; .vi uses
     //  the *unsigned* uimm5 (slides/gather immediates are zero-extended).
-    wire [63:0] slide_off = (is_slide1up || is_slide1dn) ? 64'd1
-                           : b_vx ? rs1_q : {59'b0, imm_q[4:0]};
-    wire [63:0] gidx_sx   = b_vx ? rs1_q : {59'b0, imm_q[4:0]}; //  gather.vx/.vi index
-    wire [63:0] elem_sm   = (sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
+    wire [63:0] slide_off;
+    assign slide_off = (is_slide1up || is_slide1dn) ? 64'd1
+                      : b_vx ? rs1_q : {59'b0, imm_q[4:0]};
+    wire [63:0] gidx_sx; //  gather.vx/.vi index
+    assign gidx_sx = b_vx ? rs1_q : {59'b0, imm_q[4:0]};
+    wire [63:0] elem_sm;
+    assign elem_sm = (sewb >= 7'd64) ? 64'h0 : ({64{1'b1}} << sewb);
 
     //  -- vcompress: SERIAL pack. A full-VLEN scatter (VLEN-wide prefix network +
     //  VLEN-wide barrel-shifts) would be the dominant Vivado tech-mapping hotspot,
@@ -1339,8 +1467,10 @@ module karu_varith (
     reg [31:0]     cse;             //  source element index being examined
     reg [31:0]     out_idx;         //  packed count so far = next free dest slot
     reg [31:0]     cmp_count;       //  final packed count (latched at scan end)
-    wire           cmp_sel = (cse < vl_q) && iram_cmp_word[cse[5:0]]; //  in-vl & mask-selected
-    wire [63:0]    cmp_src = pelem_word(cse, pram_src_word) & ~elem_sm; //  one source element
+    wire           cmp_sel; //  in-vl & mask-selected
+    assign cmp_sel = (cse < vl_q) && iram_cmp_word[cse[5:0]];
+    wire [63:0]    cmp_src; //  one source element
+    assign cmp_src = pelem_word(cse, pram_src_word) & ~elem_sm;
     integer csb;
 
     //  -- per-dest-register compute, WINDOWED to PLANES elements/cycle.
@@ -1434,8 +1564,10 @@ module karu_varith (
     end
 
     //  req-time perm detection (input fields; _q not yet valid at S_IDLE)
-    wire rq_opiv = (vfunct3 == 3'b000) || (vfunct3 == 3'b100) || (vfunct3 == 3'b011);
-    wire req_is_perm =
+    wire rq_opiv;
+    assign rq_opiv = (vfunct3 == 3'b000) || (vfunct3 == 3'b100) || (vfunct3 == 3'b011);
+    wire req_is_perm; //    viota
+    assign req_is_perm =
            (rq_opiv && vfunct6 == 6'b001100)                            //  vrgather
         || ((vfunct3 == 3'b000) && vfunct6 == 6'b001110)            //  vrgatherei16
         || (((vfunct3 == 3'b100) || (vfunct3 == 3'b011)) &&         //  vslideup/down
@@ -1443,7 +1575,7 @@ module karu_varith (
         || ((vfunct3 == 3'b110) &&                                  //  vslide1up/down
             (vfunct6 == 6'b001110 || vfunct6 == 6'b001111))
         || ((vfunct3 == 3'b010) && vfunct6 == 6'b010111)            //  vcompress
-        || ((vfunct3 == 3'b010) && vfunct6 == 6'b010100 && vs1_base == 5'b10000); //    viota
+        || ((vfunct3 == 3'b010) && vfunct6 == 6'b010100 && vs1_base == 5'b10000);
 
     //  ========================================================
     //  Vector floating-point datapath (OPFVV/OPFVF). Per-element reuse of the
@@ -1580,81 +1712,143 @@ module karu_varith (
     reg  [4:0]            f_estfl_q;
     reg                    vf_fpu_req;  //  FSM pulse -> lane FPU(s)
 
-    wire        vf_is_d   = (vsew_q == 3'd3);
-    wire        vf_is_vf  = (f3_q == 3'b101);
-    wire        vf_is_add  = (f6_q == 6'b000000);
-    wire        vf_is_sub  = (f6_q == 6'b000010);
-    wire        vf_is_rsub = vf_is_vf && (f6_q == 6'b100111);
-    wire        vf_is_mul  = (f6_q == 6'b100100);
-    wire        vf_is_div  = (f6_q == 6'b100000);
-    wire        vf_is_rdiv = vf_is_vf && (f6_q == 6'b100001);
-    wire        vf_is_min  = (f6_q == 6'b000100);
-    wire        vf_is_max  = (f6_q == 6'b000110);
-    wire        vf_is_sgnj = (f6_q == 6'b001000);
-    wire        vf_is_sgnjn= (f6_q == 6'b001001);
-    wire        vf_is_sgnjx= (f6_q == 6'b001010);
-    wire        vf_is_unary= (f6_q == 6'b010011);           //  VFUNARY1
-    wire        vf_is_sqrt = vf_is_unary && (vs1_q == 5'b00000);
-    wire        vf_is_class= vf_is_unary && (vs1_q == 5'b10000);
-    wire        vf_is_rsqrt7 = vf_is_unary && (vs1_q == 5'b00100);
-    wire        vf_is_rec7   = vf_is_unary && (vs1_q == 5'b00101);
-    wire        vf_is_est    = vf_is_rsqrt7 || vf_is_rec7;
-    wire        vf_is_eq   = (f6_q == 6'b011000);
-    wire        vf_is_le   = (f6_q == 6'b011001);
-    wire        vf_is_lt   = (f6_q == 6'b011011);
-    wire        vf_is_ne   = (f6_q == 6'b011100);
-    wire        vf_is_gt   = vf_is_vf && (f6_q == 6'b011101);
-    wire        vf_is_ge   = vf_is_vf && (f6_q == 6'b011111);
-    wire        vf_is_cmp  = vf_is_eq || vf_is_le || vf_is_lt || vf_is_ne || vf_is_gt || vf_is_ge;
-    wire        vf_is_fma  = (f6_q[5:3] == 3'b101);
-    wire        vf_is_merge= (f6_q == 6'b010111);           //  vfmerge.vfm / vfmv.v.f
-    wire        vf_is_vmvsf= vf_is_vf && (f6_q == 6'b010000);   //  vfmv.s.f
-    wire        vf_is_vmvfs= !vf_is_vf && (f6_q == 6'b010000);  //  vfmv.f.s
-    wire        vf_is_fred = !vf_is_vf && ((f6_q==6'b000001)||(f6_q==6'b000011)||(f6_q==6'b000101)||(f6_q==6'b000111));
-    wire        vf_red_max = f6_q[2] &&  f6_q[1];
-    wire        vf_red_min = f6_q[2] && !f6_q[1];
-    wire        vf_is_fsl1up = vf_is_vf && (f6_q == 6'b001110);
-    wire        vf_is_fsl1dn = vf_is_vf && (f6_q == 6'b001111);
-    wire        vf_is_cvt  = !vf_is_vf && (f6_q == 6'b010010);  //  VFUNARY0
-    wire        vf_is_wcvt = vf_is_cvt && (vs1_q[4:3] == 2'b01);
-    wire        vf_is_ncvt = vf_is_cvt && (vs1_q[4:3] == 2'b10);
-    wire        vf_cvt_ff  = vf_is_cvt && (vs1_q[2:1] == 2'b10);
+    wire        vf_is_d;
+    assign vf_is_d = (vsew_q == 3'd3);
+    wire        vf_is_vf;
+    assign vf_is_vf = (f3_q == 3'b101);
+    wire        vf_is_add;
+    assign vf_is_add = (f6_q == 6'b000000);
+    wire        vf_is_sub;
+    assign vf_is_sub = (f6_q == 6'b000010);
+    wire        vf_is_rsub;
+    assign vf_is_rsub = vf_is_vf && (f6_q == 6'b100111);
+    wire        vf_is_mul;
+    assign vf_is_mul = (f6_q == 6'b100100);
+    wire        vf_is_div;
+    assign vf_is_div = (f6_q == 6'b100000);
+    wire        vf_is_rdiv;
+    assign vf_is_rdiv = vf_is_vf && (f6_q == 6'b100001);
+    wire        vf_is_min;
+    assign vf_is_min = (f6_q == 6'b000100);
+    wire        vf_is_max;
+    assign vf_is_max = (f6_q == 6'b000110);
+    wire        vf_is_sgnj;
+    assign vf_is_sgnj = (f6_q == 6'b001000);
+    wire        vf_is_sgnjn;
+    assign vf_is_sgnjn = (f6_q == 6'b001001);
+    wire        vf_is_sgnjx;
+    assign vf_is_sgnjx = (f6_q == 6'b001010);
+    wire        vf_is_unary;           //  VFUNARY1
+    assign vf_is_unary = (f6_q == 6'b010011);
+    wire        vf_is_sqrt;
+    assign vf_is_sqrt = vf_is_unary && (vs1_q == 5'b00000);
+    wire        vf_is_class;
+    assign vf_is_class = vf_is_unary && (vs1_q == 5'b10000);
+    wire        vf_is_rsqrt7;
+    assign vf_is_rsqrt7 = vf_is_unary && (vs1_q == 5'b00100);
+    wire        vf_is_rec7;
+    assign vf_is_rec7 = vf_is_unary && (vs1_q == 5'b00101);
+    wire        vf_is_est;
+    assign vf_is_est = vf_is_rsqrt7 || vf_is_rec7;
+    wire        vf_is_eq;
+    assign vf_is_eq = (f6_q == 6'b011000);
+    wire        vf_is_le;
+    assign vf_is_le = (f6_q == 6'b011001);
+    wire        vf_is_lt;
+    assign vf_is_lt = (f6_q == 6'b011011);
+    wire        vf_is_ne;
+    assign vf_is_ne = (f6_q == 6'b011100);
+    wire        vf_is_gt;
+    assign vf_is_gt = vf_is_vf && (f6_q == 6'b011101);
+    wire        vf_is_ge;
+    assign vf_is_ge = vf_is_vf && (f6_q == 6'b011111);
+    wire        vf_is_cmp;
+    assign vf_is_cmp = vf_is_eq || vf_is_le || vf_is_lt || vf_is_ne || vf_is_gt || vf_is_ge;
+    wire        vf_is_fma;
+    assign vf_is_fma = (f6_q[5:3] == 3'b101);
+    wire        vf_is_merge;           //  vfmerge.vfm / vfmv.v.f
+    assign vf_is_merge = (f6_q == 6'b010111);
+    wire        vf_is_vmvsf;   //  vfmv.s.f
+    assign vf_is_vmvsf = vf_is_vf && (f6_q == 6'b010000);
+    wire        vf_is_vmvfs;  //  vfmv.f.s
+    assign vf_is_vmvfs = !vf_is_vf && (f6_q == 6'b010000);
+    wire        vf_is_fred;
+    assign vf_is_fred = !vf_is_vf && ((f6_q==6'b000001)||(f6_q==6'b000011)||(f6_q==6'b000101)||(f6_q==6'b000111));
+    wire        vf_red_max;
+    assign vf_red_max = f6_q[2] &&  f6_q[1];
+    wire        vf_red_min;
+    assign vf_red_min = f6_q[2] && !f6_q[1];
+    wire        vf_is_fsl1up;
+    assign vf_is_fsl1up = vf_is_vf && (f6_q == 6'b001110);
+    wire        vf_is_fsl1dn;
+    assign vf_is_fsl1dn = vf_is_vf && (f6_q == 6'b001111);
+    wire        vf_is_cvt;  //  VFUNARY0
+    assign vf_is_cvt = !vf_is_vf && (f6_q == 6'b010010);
+    wire        vf_is_wcvt;
+    assign vf_is_wcvt = vf_is_cvt && (vs1_q[4:3] == 2'b01);
+    wire        vf_is_ncvt;
+    assign vf_is_ncvt = vf_is_cvt && (vs1_q[4:3] == 2'b10);
+    wire        vf_cvt_ff;
+    assign vf_cvt_ff = vf_is_cvt && (vs1_q[2:1] == 2'b10);
     //  Zvfhmin (the only FP16 ops): vfwcvt.f.f.v at SEW=16 (FP16->FP32) and
     //  vfncvt.f.f.w at SEW=16 (FP32->FP16). karu64 traps every OTHER e16/e8
     //  FP op, so reaching here at vsew==1 with f.f means Zvfhmin.
     //  widen f.f only (01100); vfwcvt.rod.f.f.v (01101) doesn't exist -> not
     //  Zvfhmin -> karu64 traps it as reserved (exact-predicate match there).
-    wire        vf_zfh_w  = vf_is_wcvt && vf_cvt_ff && !vf_cvt_rod && (vsew_q == 3'd1); //  widen
+    wire        vf_zfh_w; //  widen
+    assign vf_zfh_w = vf_is_wcvt && vf_cvt_ff && !vf_cvt_rod && (vsew_q == 3'd1);
     //  narrow f.f only (10100); the e16 vfncvt.rod.f.f.w (10101) is Zvfh, not
     //  Zvfhmin -> trapped at issue. (Base-V e64->e32 vfncvt.rod.f.f.w is still
     //  implemented and unaffected -- this is e16-specific.) The converter's
     //  ROD path stays (fcvt-hs validated) but is unreachable at e16.
-    wire        vf_zfh_n  = vf_is_ncvt && vf_cvt_ff && !vf_cvt_rod && (vsew_q == 3'd1); //  narrow
-    wire        vf_zfh    = vf_zfh_w || vf_zfh_n;
+    wire        vf_zfh_n; //  narrow
+    assign vf_zfh_n = vf_is_ncvt && vf_cvt_ff && !vf_cvt_rod && (vsew_q == 3'd1);
+    wire        vf_zfh;
+    assign vf_zfh = vf_zfh_w || vf_zfh_n;
     assign vf_cvt_rod = vf_is_cvt && (vs1_q[2:0] == 3'b101);
-    wire        vf_cvt_i2f = vf_is_cvt && !vf_cvt_ff &&  vs1_q[1] && !vs1_q[2];
-    wire        vf_cvt_f2i = vf_is_cvt && !vf_cvt_ff && (!vs1_q[1] || vs1_q[2]);
-    wire        vf_cvt_uns = !vs1_q[0];
-    wire        vf_cvt_rtz = vf_is_cvt && !vf_cvt_ff && vs1_q[2];
-    wire        vf_is_wadd = (f6_q == 6'b110000) || (f6_q == 6'b110100);
-    wire        vf_is_wsub = (f6_q == 6'b110010) || (f6_q == 6'b110110);
-    wire        vf_is_w_w  = (f6_q == 6'b110100) || (f6_q == 6'b110110);
-    wire        vf_is_wmul = (f6_q == 6'b111000);
-    wire        vf_is_wfma = (f6_q[5:2] == 4'b1111);
-    wire        vf_is_warith = vf_is_wadd || vf_is_wsub || vf_is_wmul || vf_is_wfma;
-    wire        vf_is_wredu  = (f6_q == 6'b110001);
-    wire        vf_is_wredo  = (f6_q == 6'b110011);
-    wire        vf_is_wred   = vf_is_wredu || vf_is_wredo;
+    wire        vf_cvt_i2f;
+    assign vf_cvt_i2f = vf_is_cvt && !vf_cvt_ff &&  vs1_q[1] && !vs1_q[2];
+    wire        vf_cvt_f2i;
+    assign vf_cvt_f2i = vf_is_cvt && !vf_cvt_ff && (!vs1_q[1] || vs1_q[2]);
+    wire        vf_cvt_uns;
+    assign vf_cvt_uns = !vs1_q[0];
+    wire        vf_cvt_rtz;
+    assign vf_cvt_rtz = vf_is_cvt && !vf_cvt_ff && vs1_q[2];
+    wire        vf_is_wadd;
+    assign vf_is_wadd = (f6_q == 6'b110000) || (f6_q == 6'b110100);
+    wire        vf_is_wsub;
+    assign vf_is_wsub = (f6_q == 6'b110010) || (f6_q == 6'b110110);
+    wire        vf_is_w_w;
+    assign vf_is_w_w = (f6_q == 6'b110100) || (f6_q == 6'b110110);
+    wire        vf_is_wmul;
+    assign vf_is_wmul = (f6_q == 6'b111000);
+    wire        vf_is_wfma;
+    assign vf_is_wfma = (f6_q[5:2] == 4'b1111);
+    wire        vf_is_warith;
+    assign vf_is_warith = vf_is_wadd || vf_is_wsub || vf_is_wmul || vf_is_wfma;
+    wire        vf_is_wredu;
+    assign vf_is_wredu = (f6_q == 6'b110001);
+    wire        vf_is_wredo;
+    assign vf_is_wredo = (f6_q == 6'b110011);
+    wire        vf_is_wred;
+    assign vf_is_wred = vf_is_wredu || vf_is_wredo;
     //  Zvfhmin retargets widths: widen dest=FP32/src=FP16, narrow dest=FP16/
     //  src=FP32 (the FP32<->FP64 cvt assumptions don't apply at e16).
-    wire        vf_dest64  = vf_zfh ? 1'b0 : ((vf_is_wcvt || vf_is_warith) ? 1'b1 : (vf_is_ncvt ? 1'b0 : vf_is_d));
-    wire        vf_src64   = vf_zfh ? 1'b0 : (vf_is_ncvt ? 1'b1 : (vf_is_wcvt ? 1'b0 : vf_is_d));
+    wire        vf_dest64;
+    assign vf_dest64 = vf_zfh ? 1'b0 : ((vf_is_wcvt || vf_is_warith) ? 1'b1 : (vf_is_ncvt ? 1'b0 : vf_is_d));
+    wire        vf_src64;
+    assign vf_src64 = vf_zfh ? 1'b0 : (vf_is_ncvt ? 1'b1 : (vf_is_wcvt ? 1'b0 : vf_is_d));
     //  dest/src element width as log2(bytes): e16 (=1), e32 (=2), e64 (=3).
-    wire [2:0]  vf_dlg     = vf_zfh_n ? 3'd1 : (vf_dest64 ? 3'd3 : 3'd2);
-    wire [2:0]  vf_slg     = vf_zfh_w ? 3'd1 : (vf_src64  ? 3'd3 : 3'd2);
-    wire        vf_cvt_long = vf_cvt_f2i ? vf_dest64 : vf_src64;
-    wire        vf_cvt_isd  = vf_cvt_f2i ? vf_src64 : (vf_cvt_i2f ? vf_dest64 : vf_is_ncvt);
-    wire        vf_use_fpu  = !vf_is_merge && !vf_is_vmvsf && !vf_is_fsl1up && !vf_is_fsl1dn && !vf_is_vmvfs && !vf_is_est && !vf_zfh;
+    wire [2:0]  vf_dlg;
+    assign vf_dlg = vf_zfh_n ? 3'd1 : (vf_dest64 ? 3'd3 : 3'd2);
+    wire [2:0]  vf_slg;
+    assign vf_slg = vf_zfh_w ? 3'd1 : (vf_src64  ? 3'd3 : 3'd2);
+    wire        vf_cvt_long;
+    assign vf_cvt_long = vf_cvt_f2i ? vf_dest64 : vf_src64;
+    wire        vf_cvt_isd;
+    assign vf_cvt_isd = vf_cvt_f2i ? vf_src64 : (vf_cvt_i2f ? vf_dest64 : vf_is_ncvt);
+    wire        vf_use_fpu;
+    assign vf_use_fpu = !vf_is_merge && !vf_is_vmvsf && !vf_is_fsl1up && !vf_is_fsl1dn && !vf_is_vmvfs && !vf_is_est && !vf_zfh;
 
     //  ================================================================
     //  Read-use classification (the adapter contract; doc/architecture.md
@@ -1680,13 +1874,16 @@ module karu_varith (
     //  dispatch priority (is_vcrypto/is_keccak over the f6 classes) mirrored
     //  here.
     localparam [1:0] RDU_NONE = 2'b00, RDU_GRAN = 2'b01, RDU_WHOLE = 2'b10;
-    wire grp_gran = !cz_q && is_grp && !((BS_MUL && (is_mul || is_mac || is_vsmul)) || (BS_DIV && is_div));
-    wire [1:0] rdu_vs1 = cz_q ? RDU_WHOLE
-                       : ((is_grp && (b_vx || b_vi)) || is_vid || is_vxunary_lane) ? RDU_NONE
-                       : grp_gran                               ? RDU_GRAN : RDU_WHOLE;
-    wire [1:0] rdu_vs2 = cz_q ? RDU_WHOLE
-                       : (is_vmvsx || is_vid || (is_mvmerge && vm_q)) ? RDU_NONE
-                       : grp_gran ? RDU_GRAN : RDU_WHOLE;
+    wire grp_gran;
+    assign grp_gran = !cz_q && is_grp && !((BS_MUL && (is_mul || is_mac || is_vsmul)) || (BS_DIV && is_div));
+    wire [1:0] rdu_vs1;
+    assign rdu_vs1 = cz_q ? RDU_WHOLE
+                   : ((is_grp && (b_vx || b_vi)) || is_vid || is_vxunary_lane) ? RDU_NONE
+                   : grp_gran                               ? RDU_GRAN : RDU_WHOLE;
+    wire [1:0] rdu_vs2;
+    assign rdu_vs2 = cz_q ? RDU_WHOLE
+                   : (is_vmvsx || is_vid || (is_mvmerge && vm_q)) ? RDU_NONE
+                   : grp_gran ? RDU_GRAN : RDU_WHOLE;
     //  cz_q hoisted above (latched at accept: op is Zvk/vkeccak, issue-cycle inputs)
     //  GRAN classes (every op belongs to exactly one; the per-class arms
     //  below pick the need flags and granule indices). Beyond the lane
@@ -1708,12 +1905,15 @@ module karu_varith (
     //  vf_is_cvt = ALL of VFUNARY0 (vs1 is a selector, never data) -- the
     //  parallel subset here is i2f/f2i/single-width f2f; wcvt/ncvt are
     //  already excluded by vf_seqop.
-    wire vf_unary = vf_is_sqrt || vf_is_class || vf_is_est || vf_is_cvt;
-    wire fp_gran  = is_fp_q && !vf_seqop && !cz_q;
+    wire vf_unary;
+    assign vf_unary = vf_is_sqrt || vf_is_class || vf_is_est || vf_is_cvt;
+    wire fp_gran;
+    assign fp_gran = is_fp_q && !vf_seqop && !cz_q;
     //  FP SEQUENTIAL family: fe-indexed element reads, now granule-sourced.
     //  Needs are op-scoped (the write phases change no indices, so they
     //  trigger no fills).
-    wire fseq_gran = is_fp_q && vf_seqop && !cz_q;
+    wire fseq_gran;
+    assign fseq_gran = is_fp_q && vf_seqop && !cz_q;
     //  FP source needs are STATE-gated to the consuming phase (S_FPAR /
     //  S_FPWAIT; assigned near the FSM): fp_gran itself stays op-scoped so
     //  the adapter keeps gneed-mode through S_FPWR, but with every need
@@ -1721,34 +1921,51 @@ module karu_varith (
     //  triggers no source refills.
     wire fp_src_ph;
     wire cmp_src_ph, cmp_wr_ph; //  S_RUN / S_CMW (assigned near the FSM)
-    wire cmp_gran = (is_cmp || is_carry_m) && !is_fp_q && !cz_q;
-    wire red_gran = is_reduce && !is_fp_q && !cz_q;
-    wire red_ph   = (state == S_RED_A) || (state == S_RED_B);   //  assigned states
+    wire cmp_gran;
+    assign cmp_gran = (is_cmp || is_carry_m) && !is_fp_q && !cz_q;
+    wire red_gran;
+    assign red_gran = is_reduce && !is_fp_q && !cz_q;
+    wire red_ph;   //  assigned states
+    assign red_ph = (state == S_RED_A) || (state == S_RED_B);
     //  serial mul/div + serial widening-mul classes (compile-active only
     //  under the BS_* configs; the parallel forms ride grp_gran/wide paths)
-    wire ser_gran  = ((BS_MUL && (is_mul || is_mac || is_vsmul))
-                   || (BS_DIV && is_div)) && !is_fp_q && !cz_q;
-    wire wser_gran = (BS_MUL && is_wide && (wide_mul || wide_mac)) && !is_fp_q && !cz_q;
-    wire wpar_gran = is_wide && !(BS_MUL && (wide_mul || wide_mac)) && !is_fp_q && !cz_q;
-    wire nar_gran  = is_narrow && !is_fp_q && !cz_q;
-    wire ext_gran  = is_vext && !cz_q;
-    wire wpar_ph   = (state == S_WRUN);
-    wire nar_ph    = (state == S_NA);
+    wire ser_gran;
+    assign ser_gran = ((BS_MUL && (is_mul || is_mac || is_vsmul))
+                    || (BS_DIV && is_div)) && !is_fp_q && !cz_q;
+    wire wser_gran;
+    assign wser_gran = (BS_MUL && is_wide && (wide_mul || wide_mac)) && !is_fp_q && !cz_q;
+    wire wpar_gran;
+    assign wpar_gran = is_wide && !(BS_MUL && (wide_mul || wide_mac)) && !is_fp_q && !cz_q;
+    wire nar_gran;
+    assign nar_gran = is_narrow && !is_fp_q && !cz_q;
+    wire ext_gran;
+    assign ext_gran = is_vext && !cz_q;
+    wire wpar_ph;
+    assign wpar_ph = (state == S_WRUN);
+    wire nar_ph;
+    assign nar_ph = (state == S_NA);
     wire fpw_ph;    //  S_FPWR (assigned near the FSM)
-    wire msk_gran = (is_mlg || is_mscan || is_vfirst || is_vcpop || is_vmvxs)
-                 && !is_fp_q && !cz_q;
-    wire mv_gran  = is_vmvnr && !is_fp_q && !cz_q;
-    wire pl_gran  = is_perm && !is_fp_q && !cz_q;   //  RAM-backed perm buffers
+    wire msk_gran;
+    assign msk_gran = (is_mlg || is_mscan || is_vfirst || is_vcpop || is_vmvxs)
+                   && !is_fp_q && !cz_q;
+    wire mv_gran;
+    assign mv_gran = is_vmvnr && !is_fp_q && !cz_q;
+    wire pl_gran;   //  RAM-backed perm buffers
+    assign pl_gran = is_perm && !is_fp_q && !cz_q;
 `ifdef KARU_EN_ZVK
-    wire czv_gran = czv_q;
+    wire czv_gran;
+    assign czv_gran = czv_q;
 `else
-    wire czv_gran = 1'b0;
+    wire czv_gran;
+    assign czv_gran = 1'b0;
 `endif
 `ifdef KARU_EN_KECCAK
-    wire czk_gran = czk_q;
+    wire czk_gran;
+    assign czk_gran = czk_q;
     wire czk_ld_ph;     //  S_KLOAD (assigned near the FSM)
 `else
-    wire czk_gran = 1'b0;
+    wire czk_gran;
+    assign czk_gran = 1'b0;
 `endif
     assign rdu_gran  = (grp_gran || fp_gran || mv_gran || pl_gran || cmp_gran || msk_gran
                      || red_gran || ser_gran || wser_gran
@@ -1793,7 +2010,8 @@ module karu_varith (
                      || (fp_gran && vf_is_cmp && fpw_ph)
                      || czv_gran
                      ;
-    wire rdu_gdef = (pl_gran && ld_active) ? plw[WPW-1] : gpass[0];
+    wire rdu_gdef;
+    assign rdu_gdef = (pl_gran && ld_active) ? plw[WPW-1] : gpass[0];
     assign rdu_g1 =
                     czk_gran ? 1'b0 :
 `ifdef KARU_EN_ZVK
@@ -1840,8 +2058,10 @@ module karu_varith (
     assign vf_seqop = vf_is_warith || vf_is_wcvt || vf_is_ncvt
                        || vf_is_fred || vf_is_wred
                        || vf_is_fsl1up || vf_is_fsl1dn || vf_is_vmvsf || vf_is_vmvfs;
-    wire        vf_seq   = is_fp_q && vf_seqop;
-    wire [3:0]  vf_epc   = epc_w;                   //  FP elements per 64-bit chunk (2 e32, 1 e64)
+    wire        vf_seq;
+    assign vf_seq = is_fp_q && vf_seqop;
+    wire [3:0]  vf_epc;                   //  FP elements per 64-bit chunk (2 e32, 1 e64)
+    assign vf_epc = epc_w;
 
     //  ---- karu_fpu sub selection ----
     reg [4:0] vf_fop;
@@ -1889,20 +2109,31 @@ module karu_varith (
     end
 
     //  ---- element geometry (dual-width for widen/narrow) ----
-    wire [31:0] vf_eprd   = (vf_is_wcvt || vf_is_warith) ? (epr >> 1) : epr;
-    wire [31:0] vf_eprs   = vf_is_ncvt ? (epr >> 1) : epr;
+    wire [31:0] vf_eprd;
+    assign vf_eprd = (vf_is_wcvt || vf_is_warith) ? (epr >> 1) : epr;
+    wire [31:0] vf_eprs;
+    assign vf_eprs = vf_is_ncvt ? (epr >> 1) : epr;
     //  vf_eprd/vf_eprs are epr or epr/2 -> powers of 2; use shift/mask geometry.
-    wire [5:0]  vf_eprd_lg = (vf_is_wcvt || vf_is_warith) ? eprw_lg : epr_lg;
-    wire [5:0]  vf_eprs_lg = vf_is_ncvt ? eprw_lg : epr_lg;
+    wire [5:0]  vf_eprd_lg;
+    assign vf_eprd_lg = (vf_is_wcvt || vf_is_warith) ? eprw_lg : epr_lg;
+    wire [5:0]  vf_eprs_lg;
+    assign vf_eprs_lg = vf_is_ncvt ? eprw_lg : epr_lg;
     // Scalar moves ignore LMUL: only vd[0], never vd+1's element zero.
-    wire [3:0]  vf_nregd  = vf_is_vmvsf ? 4'd1 :
-                           (vf_is_wcvt || vf_is_warith) ? (nreg_q << 1) : nreg_q;
-    wire [31:0] vf_ebase  = {28'b0, r} << vf_eprd_lg;   //  r*vf_eprd (shift)
-    wire [31:0] vf_geg    = vf_ebase + fe;
-    wire [4:0]  vf_srcreg = vs2_q + (vf_geg >> vf_eprs_lg);             //  /vf_eprs (shift)
-    wire [31:0] vf_src_el = vf_geg & ((32'd1 << vf_eprs_lg) - 32'd1);   //  %vf_eprs (mask)
-    wire [7:0]  vf_seew_b = 8'd8 << vf_slg;         //  src element bytes*8 (e16/e32/e64)
-    wire [5:0]  vf_seew_lg = {3'b0, vf_slg} + 6'd3; //  log2(vf_seew_b)
+    wire [3:0]  vf_nregd;
+    assign vf_nregd = vf_is_vmvsf ? 4'd1 :
+                     (vf_is_wcvt || vf_is_warith) ? (nreg_q << 1) : nreg_q;
+    wire [31:0] vf_ebase;   //  r*vf_eprd (shift)
+    assign vf_ebase = {28'b0, r} << vf_eprd_lg;
+    wire [31:0] vf_geg;
+    assign vf_geg = vf_ebase + fe;
+    wire [4:0]  vf_srcreg;             //  /vf_eprs (shift)
+    assign vf_srcreg = vs2_q + (vf_geg >> vf_eprs_lg);
+    wire [31:0] vf_src_el;   //  %vf_eprs (mask)
+    assign vf_src_el = vf_geg & ((32'd1 << vf_eprs_lg) - 32'd1);
+    wire [7:0]  vf_seew_b;         //  src element bytes*8 (e16/e32/e64)
+    assign vf_seew_b = 8'd8 << vf_slg;
+    wire [5:0]  vf_seew_lg; //  log2(vf_seew_b)
+    assign vf_seew_lg = {3'b0, vf_slg} + 6'd3;
 
     //  ---- 6a: ACTIVE-byte enables for the hot granule writes ----
     //  (doc/architecture.md) Byte i of the current pass's granule maps to
@@ -1966,8 +2197,10 @@ module karu_varith (
     endfunction
     //  vcompress: dest register r holds packed elements [ebase, ebase+epr);
     //  written = the part of cmp_count that falls in this register.
-    wire [31:0] cmpn_rem = (cmp_count > ebase) ? (cmp_count - ebase) : 32'd0;
-    wire [31:0] cmpn_n   = (cmpn_rem > epr) ? epr : cmpn_rem;
+    wire [31:0] cmpn_rem;
+    assign cmpn_rem = (cmp_count > ebase) ? (cmp_count - ebase) : 32'd0;
+    wire [31:0] cmpn_n;
+    assign cmpn_n = (cmpn_rem > epr) ? epr : cmpn_rem;
     reg  [`KARU_VLENB-1:0] cwb_be;
     reg         cwb_vlgov, cwb_mdest;
     reg  [2:0]  cwb_vsew;
@@ -1975,19 +2208,30 @@ module karu_varith (
 
     //  ---- per-element operand select (granule-sourced) ----
     //  element fe's bit offset / granule at the op's element width
-    wire [5:0]  vf_e_lg  = vf_is_d ? 6'd6 : 6'd5;
+    wire [5:0]  vf_e_lg;
+    assign vf_e_lg = vf_is_d ? 6'd6 : 6'd5;
     assign vf_e_sh  = fe << vf_e_lg;
-    wire [63:0] vf_e1raw = vs1_g  >> vf_e_sh[6:0];
-    wire [63:0] vf_e2raw = vs2_g  >> vf_e_sh[6:0];
-    wire [63:0] vf_evraw = vold_g >> vf_e_sh[6:0];
-    wire [63:0] vf_e_vs1  = vf_is_d ? vf_e1raw : {32'hFFFF_FFFF, vf_e1raw[31:0]};
-    wire [63:0] vf_e_vs2  = vf_is_d ? vf_e2raw : {32'hFFFF_FFFF, vf_e2raw[31:0]};
-    wire [63:0] vf_e_vold = vf_is_d ? vf_evraw : {32'hFFFF_FFFF, vf_evraw[31:0]};
-    wire [63:0] vf_sval   = frs1_q;
-    wire [63:0] vf_e_b    = vf_is_vf ? vf_sval : vf_e_vs1;
+    wire [63:0] vf_e1raw;
+    assign vf_e1raw = vs1_g  >> vf_e_sh[6:0];
+    wire [63:0] vf_e2raw;
+    assign vf_e2raw = vs2_g  >> vf_e_sh[6:0];
+    wire [63:0] vf_evraw;
+    assign vf_evraw = vold_g >> vf_e_sh[6:0];
+    wire [63:0] vf_e_vs1;
+    assign vf_e_vs1 = vf_is_d ? vf_e1raw : {32'hFFFF_FFFF, vf_e1raw[31:0]};
+    wire [63:0] vf_e_vs2;
+    assign vf_e_vs2 = vf_is_d ? vf_e2raw : {32'hFFFF_FFFF, vf_e2raw[31:0]};
+    wire [63:0] vf_e_vold;
+    assign vf_e_vold = vf_is_d ? vf_evraw : {32'hFFFF_FFFF, vf_evraw[31:0]};
+    wire [63:0] vf_sval;
+    assign vf_sval = frs1_q;
+    wire [63:0] vf_e_b;
+    assign vf_e_b = vf_is_vf ? vf_sval : vf_e_vs1;
     assign vf_src_sh = vf_src_el << vf_seew_lg;    //  cvt source bit offset
-    wire [63:0] vf_src_raw = vs2_g >> vf_src_sh[6:0];   //  granule vf_src_sh[7]
-    wire [63:0] vf_cvt_opf = vf_src64 ? vf_src_raw : {32'hFFFF_FFFF, vf_src_raw[31:0]};
+    wire [63:0] vf_src_raw;   //  granule vf_src_sh[7]
+    assign vf_src_raw = vs2_g >> vf_src_sh[6:0];
+    wire [63:0] vf_cvt_opf;
+    assign vf_cvt_opf = vf_src64 ? vf_src_raw : {32'hFFFF_FFFF, vf_src_raw[31:0]};
     //  Zvfhmin converters (combinational; validated vs SoftFloat-3e by
     //  test/fcvt_hs, 3.95M vectors x6RM incl ROD, 0-error). Widen is exact; narrow
     //  rounds per the effective rm (rod/rtz variants via lane_fp_rm).
@@ -1995,28 +2239,39 @@ module karu_varith (
     karu_fcvt_hs u_vhs (.a(vf_src_raw[15:0]), .res(vf_hs_res), .flags(vf_hs_fl));
     wire [15:0] vf_sh_res;  wire [4:0] vf_sh_fl;
     karu_fcvt_sh u_vsh (.rm(lane_fp_rm), .a(vf_src_raw[31:0]), .res(vf_sh_res), .flags(vf_sh_fl));
-    wire [63:0] vf_zfh_res = vf_zfh_w ? {32'b0, vf_hs_res} : {48'b0, vf_sh_res};
-    wire [4:0]  vf_zfh_fl  = vf_zfh_w ? vf_hs_fl : vf_sh_fl;
-    wire [63:0] vf_cvt_opi = vf_src64 ? vf_src_raw : {32'b0,        vf_src_raw[31:0]};
+    wire [63:0] vf_zfh_res;
+    assign vf_zfh_res = vf_zfh_w ? {32'b0, vf_hs_res} : {48'b0, vf_sh_res};
+    wire [4:0]  vf_zfh_fl;
+    assign vf_zfh_fl = vf_zfh_w ? vf_hs_fl : vf_sh_fl;
+    wire [63:0] vf_cvt_opi;
+    assign vf_cvt_opi = vf_src64 ? vf_src_raw : {32'b0,        vf_src_raw[31:0]};
 
     //  ---- widening-arith operands: widen narrow F element -> exact D ----
     localparam integer EPR32 = VLEN/32;
     localparam integer EPR32_LG = LOG2VLEN - 5;                 //  log2(EPR32 = VLEN/32)
-    wire [31:0] vf_w_eidx = vf_is_wred ? (({28'b0, r} << EPR32_LG) + fe) : vf_geg;  //  r*EPR32 (shift)
-    wire [4:0]  vf_wa_reg = vs1_q + (vf_w_eidx >> EPR32_LG);        //  /EPR32 (shift)
-    wire [4:0]  vf_wb_reg = vs2_q + (vf_w_eidx >> EPR32_LG);
+    wire [31:0] vf_w_eidx;  //  r*EPR32 (shift)
+    assign vf_w_eidx = vf_is_wred ? (({28'b0, r} << EPR32_LG) + fe) : vf_geg;
+    wire [4:0]  vf_wa_reg;        //  /EPR32 (shift)
+    assign vf_wa_reg = vs1_q + (vf_w_eidx >> EPR32_LG);
+    wire [4:0]  vf_wb_reg;
+    assign vf_wb_reg = vs2_q + (vf_w_eidx >> EPR32_LG);
     assign vf_wa_off = (vf_w_eidx & (EPR32-1)) << 5;       //  %EPR32 (mask)
     assign vf_wb_off = (vf_w_eidx & (EPR32-1)) << 5;
-    wire [31:0] vf_wa_raw = vf_is_vf ? frs1_q[31:0] : (vs1_g >> vf_wa_off[6:0]);    //  granule vf_wa_off[7]
-    wire [31:0] vf_wb_raw = vs2_g >> vf_wb_off[6:0];                                //  granule vf_wb_off[7]
+    wire [31:0] vf_wa_raw;    //  granule vf_wa_off[7]
+    assign vf_wa_raw = vf_is_vf ? frs1_q[31:0] : (vs1_g >> vf_wa_off[6:0]);
+    wire [31:0] vf_wb_raw;                                //  granule vf_wb_off[7]
+    assign vf_wb_raw = vs2_g >> vf_wb_off[6:0];
     wire [63:0] vf_wa_d, vf_wb_d;
     wire [4:0]  vf_wa_f, vf_wb_f;
     karu_fcvt_ds u_widen_a (.a(vf_wa_raw), .res(vf_wa_d), .flags(vf_wa_f));
     karu_fcvt_ds u_widen_b (.a(vf_wb_raw), .res(vf_wb_d), .flags(vf_wb_f));
     assign vf_w_sh       = fe << 6;                //  wide (64-bit) element offset
-    wire [63:0] vf_wide_vs2_w = vs2_g  >> vf_w_sh[6:0]; //  granule vf_w_sh[7]
-    wire [63:0] vf_vold_d     = vold_g >> vf_w_sh[6:0];
-    wire [4:0]  vf_widen_nv   = vf_wa_f | (vf_is_w_w ? 5'b0 : vf_wb_f);
+    wire [63:0] vf_wide_vs2_w; //  granule vf_w_sh[7]
+    assign vf_wide_vs2_w = vs2_g  >> vf_w_sh[6:0];
+    wire [63:0] vf_vold_d;
+    assign vf_vold_d = vold_g >> vf_w_sh[6:0];
+    wire [4:0]  vf_widen_nv;
+    assign vf_widen_nv = vf_wa_f | (vf_is_w_w ? 5'b0 : vf_wb_f);
 
     //  ---- operands (op1/op2/op3) ----
     reg [63:0] fop1, fop2, fop3;
@@ -2050,18 +2305,27 @@ module karu_varith (
     wire [NLANES-1:0]    vf_p_fire, vf_p_wr, vf_p_cmpbit;
     genvar PL;
     generate for (PL = 0; PL < NLANES; PL = PL + 1) begin : g_fpop
-        wire [31:0] geg = ({28'b0, r} << epr_lg) + ((gwin + PL[31:0]) << epc_lg) + {28'b0, fs}; //  r*epr + (granule-windowed PL)*epc_w; shifts
+        wire [31:0] geg; //  r*epr + (granule-windowed PL)*epc_w; shifts
+        assign geg = ({28'b0, r} << epr_lg) + ((gwin + PL[31:0]) << epc_lg) + {28'b0, fs};
         //  granule-windowed chunk: lane PL in pass gpass owns global chunk gwin+PL
         //  (== PL when VGRAN_C==1, byte-identical). Must match geg/act/fdbuf window.
         //  stage-4: FP-parallel GRAN ops take the adapter's granule latches
-        wire [63:0] ch2 = vs2_g [PL*64 +: 64];
-        wire [63:0] ch1 = vs1_g [PL*64 +: 64];
-        wire [63:0] chv = vold_g[PL*64 +: 64];
-        wire [63:0] e2  = vf_is_d ? ch2 : {32'hFFFF_FFFF, ch2[fs*32 +: 32]};
-        wire [63:0] e1  = vf_is_d ? ch1 : {32'hFFFF_FFFF, ch1[fs*32 +: 32]};
-        wire [63:0] ev  = vf_is_d ? chv : {32'hFFFF_FFFF, chv[fs*32 +: 32]};
-        wire [63:0] eb  = vf_is_vf ? frs1_q : e1;
-        wire [63:0] ci  = vf_is_d ? ch2 : {32'b0, ch2[fs*32 +: 32]};    //  i2f int source (raw)
+        wire [63:0] ch2;
+        assign ch2 = vs2_g [PL*64 +: 64];
+        wire [63:0] ch1;
+        assign ch1 = vs1_g [PL*64 +: 64];
+        wire [63:0] chv;
+        assign chv = vold_g[PL*64 +: 64];
+        wire [63:0] e2;
+        assign e2 = vf_is_d ? ch2 : {32'hFFFF_FFFF, ch2[fs*32 +: 32]};
+        wire [63:0] e1;
+        assign e1 = vf_is_d ? ch1 : {32'hFFFF_FFFF, ch1[fs*32 +: 32]};
+        wire [63:0] ev;
+        assign ev = vf_is_d ? chv : {32'hFFFF_FFFF, chv[fs*32 +: 32]};
+        wire [63:0] eb;
+        assign eb = vf_is_vf ? frs1_q : e1;
+        wire [63:0] ci;    //  i2f int source (raw)
+        assign ci = vf_is_d ? ch2 : {32'b0, ch2[fs*32 +: 32]};
         reg  [63:0] o1, o2, o3;
         always @(*) begin
             o1 = e2; o2 = eb; o3 = 64'b0;
@@ -2080,11 +2344,14 @@ module karu_varith (
         assign vf_p_op2[PL*64 +: 64] = o2;
         assign vf_p_op3[PL*64 +: 64] = o3;
         assign vf_p_geg[PL*32 +: 32] = geg;
-        wire act  = vm_q || v0_q[geg[7:0]];
-        wire invl = geg < vl_q;
+        wire act;
+        assign act = vm_q || v0_q[geg[7:0]];
+        wire invl;
+        assign invl = geg < vl_q;
         assign vf_p_fire[PL] = vf_use_fpu && act && invl;
         assign vf_p_wr[PL]   = vf_is_merge ? invl : (act && invl);
-        wire [63:0] mval = (vm_q || v0_q[geg[7:0]]) ? frs1_q : e2;  //  vfmerge / vfmv.v.f
+        wire [63:0] mval;  //  vfmerge / vfmv.v.f
+        assign mval = (vm_q || v0_q[geg[7:0]]) ? frs1_q : e2;
         assign vf_p_relem[PL*64 +: 64] = vf_is_est ? lane_est_res[PL*64 +: 64] : mval;
         assign vf_p_cmpbit[PL] = vf_is_ne ? ~lane_fp_res[PL*64] : lane_fp_res[PL*64];
     end endgenerate
@@ -2122,37 +2389,55 @@ module karu_varith (
     end
 
     //  lane 0 FPU / estimate outputs
-    wire        vf_fpu_busy  = lane_fp_busy[0];
-    wire        vf_fpu_done  = lane_fp_done[0];
-    wire [63:0] vf_fpu_res   = lane_fp_res[63:0];
-    wire [4:0]  vf_fpu_flags = lane_fp_flags[4:0];
-    wire [63:0] vf_est_res   = lane_est_res[63:0];
-    wire [4:0]  vf_est_flags = lane_est_flags[4:0];
+    wire        vf_fpu_busy;
+    assign vf_fpu_busy = lane_fp_busy[0];
+    wire        vf_fpu_done;
+    assign vf_fpu_done = lane_fp_done[0];
+    wire [63:0] vf_fpu_res;
+    assign vf_fpu_res = lane_fp_res[63:0];
+    wire [4:0]  vf_fpu_flags;
+    assign vf_fpu_flags = lane_fp_flags[4:0];
+    wire [63:0] vf_est_res;
+    assign vf_est_res = lane_est_res[63:0];
+    wire [4:0]  vf_est_flags;
+    assign vf_est_flags = lane_est_flags[4:0];
 
     //  ---- result -> element / mask bit ----
-    wire        vf_cmp_bit   = vf_is_ne ? ~vf_fpu_res[0] : vf_fpu_res[0];
-    wire [63:0] vf_merge_val = (vm_q || v0_q[vf_geg[7:0]]) ? vf_sval : vf_e_vs2;
-    wire [31:0] vf_sl_src    = vf_is_fsl1up ? (vf_geg==32'd0 ? 32'd0 : vf_geg-32'd1) : (vf_geg+32'd1);
+    wire        vf_cmp_bit;
+    assign vf_cmp_bit = vf_is_ne ? ~vf_fpu_res[0] : vf_fpu_res[0];
+    wire [63:0] vf_merge_val;
+    assign vf_merge_val = (vm_q || v0_q[vf_geg[7:0]]) ? vf_sval : vf_e_vs2;
+    wire [31:0] vf_sl_src;
+    assign vf_sl_src = vf_is_fsl1up ? (vf_geg==32'd0 ? 32'd0 : vf_geg-32'd1) : (vf_geg+32'd1);
     //  epr is a power of two (VLEN >> (3+vsew)), so the element -> (register,
     //  element-in-register) split is a shift and a mask. NOT `/` and `%`: with a
     //  runtime divisor those synthesize a real 32-bit divider (caught by the
     //  yosys area/depth flow).
-    wire [4:0]  vf_sl_reg    = vs2_q + (vf_sl_src >> epr_lg);
-    wire [31:0] vf_sl_el     = vf_sl_src & (epr - 32'd1);
+    wire [4:0]  vf_sl_reg;
+    assign vf_sl_reg = vs2_q + (vf_sl_src >> epr_lg);
+    wire [31:0] vf_sl_el;
+    assign vf_sl_el = vf_sl_src & (epr - 32'd1);
     assign vf_sl_sh     = vf_sl_el << vf_e_lg;     //  slide-source bit offset
-    wire [63:0] vf_sl_raw    = vs2_g >> vf_sl_sh[6:0];  //  granule vf_sl_sh[7]
-    wire [63:0] vf_slide_e   = vf_is_d ? vf_sl_raw : {32'hFFFF_FFFF, vf_sl_raw[31:0]};
-    wire        vf_sl_bound  = vf_is_fsl1up ? (vf_geg==32'd0) : (vf_geg==(vl_q-32'd1));
-    wire [63:0] vf_res_elem  = vf_is_vmvsf ? vf_sval :
-                               vf_zfh ? vf_zfh_res :
-                               vf_is_est ? vf_est_res :
-                               (vf_is_fsl1up || vf_is_fsl1dn) ? (vf_sl_bound ? vf_sval : vf_slide_e) :
-                               (vf_is_merge ? vf_merge_val : vf_fpu_res);
-    wire        vf_active    = vm_q || v0_q[vf_geg[7:0]];
-    wire        vf_write_el  = vf_is_vmvsf ? (vf_geg == 32'd0 && vl_q != 0)
-                              : vf_is_merge ? (vf_geg < vl_q)
-                              : (vf_active && (vf_geg < vl_q));
-    wire [31:0] vf_red_g     = ebase + fe;          //  r*epr via ebase (shift)
+    wire [63:0] vf_sl_raw;  //  granule vf_sl_sh[7]
+    assign vf_sl_raw = vs2_g >> vf_sl_sh[6:0];
+    wire [63:0] vf_slide_e;
+    assign vf_slide_e = vf_is_d ? vf_sl_raw : {32'hFFFF_FFFF, vf_sl_raw[31:0]};
+    wire        vf_sl_bound;
+    assign vf_sl_bound = vf_is_fsl1up ? (vf_geg==32'd0) : (vf_geg==(vl_q-32'd1));
+    wire [63:0] vf_res_elem;
+    assign vf_res_elem = vf_is_vmvsf ? vf_sval :
+                         vf_zfh ? vf_zfh_res :
+                         vf_is_est ? vf_est_res :
+                         (vf_is_fsl1up || vf_is_fsl1dn) ? (vf_sl_bound ? vf_sval : vf_slide_e) :
+                         (vf_is_merge ? vf_merge_val : vf_fpu_res);
+    wire        vf_active;
+    assign vf_active = vm_q || v0_q[vf_geg[7:0]];
+    wire        vf_write_el;
+    assign vf_write_el = vf_is_vmvsf ? (vf_geg == 32'd0 && vl_q != 0)
+                        : vf_is_merge ? (vf_geg < vl_q)
+                        : (vf_active && (vf_geg < vl_q));
+    wire [31:0] vf_red_g;          //  r*epr via ebase (shift)
+    assign vf_red_g = ebase + fe;
 
     //  FP read addresses (muxed into r_vs1/r_vs2/r_vold when is_fp_q)
     assign vf_r_vs1  = vf_is_warith ? vf_wa_reg : (vs1_q + {1'b0, r});
@@ -2163,23 +2448,28 @@ module karu_varith (
     assign vf_r_vold = vf_is_cmp ? vd_q : (vd_q + {1'b0, r});
 
     //  req-time FP detection (input fields; _q not yet valid at S_IDLE)
-    wire req_is_fp  = (vfunct3 == 3'b001) || (vfunct3 == 3'b101);
+    wire req_is_fp;
+    assign req_is_fp = (vfunct3 == 3'b001) || (vfunct3 == 3'b101);
     //  vkeccak (only ever asserted under KARU_EN_KECCAK; 0 otherwise)
-    wire req_is_keccak = is_keccak;
-    wire req_is_vcrypto = is_vcrypto;
-    wire req_fp_red = (vfunct3 == 3'b001) &&
-                      ((vfunct6==6'b000001)||(vfunct6==6'b000011)||
-                       (vfunct6==6'b000101)||(vfunct6==6'b000111)||
-                       (vfunct6==6'b110001)||(vfunct6==6'b110011));
+    wire req_is_keccak;
+    assign req_is_keccak = is_keccak;
+    wire req_is_vcrypto;
+    assign req_is_vcrypto = is_vcrypto;
+    wire req_fp_red;
+    assign req_fp_red = (vfunct3 == 3'b001) &&
+                        ((vfunct6==6'b000001)||(vfunct6==6'b000011)||
+                         (vfunct6==6'b000101)||(vfunct6==6'b000111)||
+                         (vfunct6==6'b110001)||(vfunct6==6'b110011));
     //  sequential FP ops (lane-0 path): widen arith, widen/narrow cvt, slides,
     //  vfmv.s.f / vfmv.f.s. (Reductions are routed by req_fp_red above.)
-    wire req_fp_seq =
+    wire req_fp_seq;                 //  vfmv.f.s
+    assign req_fp_seq =
            (req_is_fp && (vfunct6[5:4] == 2'b11))                               //  widen arith (11xxxx)
         || ((vfunct3 == 3'b001) && (vfunct6 == 6'b010010)                   //  wcvt/ncvt
             && (vs1_base[4:3] == 2'b01 || vs1_base[4:3] == 2'b10))
         || ((vfunct3 == 3'b101) && (vfunct6 == 6'b001110 || vfunct6 == 6'b001111))  //  slides
         || ((vfunct3 == 3'b101) && (vfunct6 == 6'b010000))                  //  vfmv.s.f
-        || ((vfunct3 == 3'b001) && (vfunct6 == 6'b010000));                 //  vfmv.f.s
+        || ((vfunct3 == 3'b001) && (vfunct6 == 6'b010000));
 
     //  ========================================================
     //  multi-cycle control
@@ -2211,7 +2501,8 @@ module karu_varith (
 `endif
     reg       wmul_q;   //  serial path is a widening multiply (shares S_MSTEP)
     //  widening iterates 2*LMUL dest registers
-    wire [4:0] wide_iter = vlmul_q[2] ? 5'd1 : {nreg_q, 1'b0};
+    wire [4:0] wide_iter;
+    assign wide_iter = vlmul_q[2] ? 5'd1 : {nreg_q, 1'b0};
     reg       vsat_q;       //  sticky saturation across the op (output at done)
     assign busy = (state != S_IDLE);
     assign vsat = vsat_q;
@@ -2229,9 +2520,11 @@ module karu_varith (
     //     is_grp skips the S_RUN advance, and the toggle forbids two warm cycles in
     //     a row, so "exactly one warm cycle per (r,gpass)" follows from this + that.)
 `ifdef KARU_V_LANE_PIPE
-    wire dbg_lane_warm_bad = lane_warm && !((state == S_RUN) && is_grp);
+    wire dbg_lane_warm_bad;
+    assign dbg_lane_warm_bad = lane_warm && !((state == S_RUN) && is_grp);
 `else
-    wire dbg_lane_warm_bad = 1'b0;
+    wire dbg_lane_warm_bad;
+    assign dbg_lane_warm_bad = 1'b0;
 `endif
 
 `ifdef KARU_EN_KECCAK
@@ -2252,12 +2545,14 @@ module karu_varith (
     reg                     kreq;
     wire                    kbusy, kdone;
     wire [1599:0]           kstate_o;
-    wire [4:0]              krounds = imm_q[0] ? 5'd12 : 5'd24;
+    wire [4:0]              krounds;
+    assign krounds = imm_q[0] ? 5'd12 : 5'd24;
     keccak i_keccak (
         .clk(clk), .rst(rst), .req(kreq), .rounds_i(krounds),
         .state_i(ksbuf[1599:0]), .busy(kbusy), .done(kdone), .state_o(kstate_o)
     );
-    wire _kunused = &{1'b0, kbusy};
+    wire _kunused;
+    assign _kunused = &{1'b0, kbusy};
 `endif
 
 `ifdef KARU_EN_ZVK
@@ -2271,40 +2566,53 @@ module karu_varith (
     reg [4:0]   ccop_q;
     wire        cbusy, cdone;
     wire [255:0] cres;
-    wire c_sha2 = (ccop_q == `VCRYPTO_SHA2CH) || (ccop_q == `VCRYPTO_SHA2CL) ||
-                  (ccop_q == `VCRYPTO_SHA2MS);
-    wire c_egw256 = (ccop_q == `VCRYPTO_SM3C) || (ccop_q == `VCRYPTO_SM3ME) ||
-                    (c_sha2 && (vsew_q == 3'd3));
-    wire [4:0] caux = c_sha2 ? {4'b0, (vsew_q == 3'd3)} : imm_q[4:0];
-    wire [31:0] c_egs128 =
+    wire c_sha2;
+    assign c_sha2 = (ccop_q == `VCRYPTO_SHA2CH) || (ccop_q == `VCRYPTO_SHA2CL) ||
+                    (ccop_q == `VCRYPTO_SHA2MS);
+    wire c_egw256;
+    assign c_egw256 = (ccop_q == `VCRYPTO_SM3C) || (ccop_q == `VCRYPTO_SM3ME) ||
+                      (c_sha2 && (vsew_q == 3'd3));
+    wire [4:0] caux;
+    assign caux = c_sha2 ? {4'b0, (vsew_q == 3'd3)} : imm_q[4:0];
+    wire [31:0] c_egs128;
+    assign c_egs128 =
         (vsew_q == 3'd0) ? 32'd16 :
         (vsew_q == 3'd1) ? 32'd8  :
         (vsew_q == 3'd2) ? 32'd4  : 32'd2;
-    wire [31:0] c_egs256 =
+    wire [31:0] c_egs256;
+    assign c_egs256 =
         (vsew_q == 3'd0) ? 32'd32 :
         (vsew_q == 3'd1) ? 32'd16 :
         (vsew_q == 3'd2) ? 32'd8  : 32'd4;
-    wire [31:0] c_egs = c_egw256 ? c_egs256 : c_egs128;
-    wire [31:0] c_base_elem = ebase + (chalf ? c_egs : 32'd0);  //  r*epr via ebase (shift)
-    wire c_group_active = c_base_elem < vl_q;
+    wire [31:0] c_egs;
+    assign c_egs = c_egw256 ? c_egs256 : c_egs128;
+    wire [31:0] c_base_elem;  //  r*epr via ebase (shift)
+    assign c_base_elem = ebase + (chalf ? c_egs : 32'd0);
+    wire c_group_active;
+    assign c_group_active = c_base_elem < vl_q;
     //  EGW128: the granule latches ARE the half-register group (index =
     //  chalf). EGW256: the LOW halves are prefetched into clo_* (the
     //  S_CREQ !cpre_q pass, index 0), the latches then serve the highs.
     reg  [127:0] clo_vd, clo_vs1, clo_vs2;
     reg          cpre_q;
     assign czv_idx = c_egw256 ? cpre_q : chalf;
-    wire [255:0] c_egw_vd  = c_egw256 ? {vold_g, clo_vd } : {128'b0, vold_g};
-    wire [255:0] c_egw_vs1 = c_egw256 ? {vs1_g,  clo_vs1} : {128'b0, vs1_g};
-    wire [255:0] c_egw_vs2 = c_egw256 ? {vs2_g,  clo_vs2} : {128'b0, vs2_g};
+    wire [255:0] c_egw_vd;
+    assign c_egw_vd = c_egw256 ? {vold_g, clo_vd } : {128'b0, vold_g};
+    wire [255:0] c_egw_vs1;
+    assign c_egw_vs1 = c_egw256 ? {vs1_g,  clo_vs1} : {128'b0, vs1_g};
+    wire [255:0] c_egw_vs2;
+    assign c_egw_vs2 = c_egw256 ? {vs2_g,  clo_vs2} : {128'b0, vs2_g};
     //  EGW128 writes ONLY its computed granule (S_CWR; no old-half merge);
     //  c_wdata serves the EGW256 whole-register drain.
-    wire [`KARU_VLEN-1:0] c_wdata = cres[`KARU_VLEN-1:0];
+    wire [`KARU_VLEN-1:0] c_wdata;
+    assign c_wdata = cres[`KARU_VLEN-1:0];
     karu_vcrypto i_vcrypto (
         .clk(clk), .rst(rst), .req(creq), .cop(ccop_q), .aux(caux),
         .egw_vd(c_egw_vd), .egw_vs1(c_egw_vs1), .egw_vs2(c_egw_vs2),
         .busy(cbusy), .done(cdone), .egw_res(cres)
     );
-    wire _cunused = &{1'b0, cbusy};
+    wire _cunused;
+    assign _cunused = &{1'b0, cbusy};
 `endif
 
 
@@ -3141,7 +3449,8 @@ module karu_varith (
     reg           va_grp_hold_q;    //  last cyc: is_grp non-last granule pass, !stall
     //  the granule pass that writes/advances: S_RUN normally, S_GWB under WB_STAGE
     //  (GLR3 = no write before last_g; GLR4 = r held until last_g).
-    wire va_grp_wbstate = (state == S_GWB);
+    wire va_grp_wbstate;
+    assign va_grp_wbstate = (state == S_GWB);
     always @(posedge clk) begin
         va_gp_q       <= gpass;
         va_r_q        <= r;

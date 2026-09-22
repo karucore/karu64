@@ -63,14 +63,16 @@ module karu_clint #(
     //  tick divider: pulse `tick` once per TICK_DIV cycles.
     localparam  DIVW = (TICK_DIV <= 1) ? 1 : $clog2(TICK_DIV);
     reg  [DIVW-1:0] div_cnt;
-    wire        tick = (div_cnt == (TICK_DIV - 1));
+    wire        tick;
+    assign tick = (div_cnt == (TICK_DIV - 1));
 
     assign mtip = (mtime >= mtimecmp);
     assign msip = msip_r;
     assign mtime_o = mtime;
 
     //  -------- reads (lane-aligned result, exact byte address accepted) ----
-    wire [15:0] roff = {raddr[15:3], 3'b0} - CLINT_BASE[15:0];
+    wire [15:0] roff;
+    assign roff = {raddr[15:3], 3'b0} - CLINT_BASE[15:0];
     assign rdata =
         (roff == OFF_MSIP)     ? {63'b0, msip_r} :
         (roff == OFF_MTIMECMP) ? mtimecmp        :
@@ -78,7 +80,8 @@ module karu_clint #(
         64'b0;
 
     //  -------- writes (byte-granular within the addressed 8-byte word) ------
-    wire [15:0] woff = {waddr[15:3], 3'b0} - CLINT_BASE[15:0];
+    wire [15:0] woff;
+    assign woff = {waddr[15:3], 3'b0} - CLINT_BASE[15:0];
     integer b;
 
     always @(posedge clk) begin

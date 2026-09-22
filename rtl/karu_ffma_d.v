@@ -81,62 +81,107 @@ module karu_ffma_d (
     // STAGE 1 (combinational on the issue-cycle inputs a/b/c/rm/np/nc)
     // unpack + 53x53 multiply
     // ================================================================
-    wire        signA = a[63];  wire [10:0] expA_r = a[62:52];  wire [51:0] sigA_r = a[51:0];
-    wire        signB = b[63];  wire [10:0] expB_r = b[62:52];  wire [51:0] sigB_r = b[51:0];
-    wire        signC = c[63] ^ neg_c;
-    wire [10:0] expC_r = c[62:52];  wire [51:0] sigC_r = c[51:0];
-    wire        signZ0 = signA ^ signB ^ neg_prod;
+    wire        signA; assign signA = a[63];  wire [10:0] expA_r; assign expA_r = a[62:52];  wire [51:0] sigA_r;
+    assign sigA_r = a[51:0];
+    wire        signB; assign signB = b[63];  wire [10:0] expB_r; assign expB_r = b[62:52];  wire [51:0] sigB_r;
+    assign sigB_r = b[51:0];
+    wire        signC;
+    assign signC = c[63] ^ neg_c;
+    wire [10:0] expC_r; assign expC_r = c[62:52];  wire [51:0] sigC_r;
+    assign sigC_r = c[51:0];
+    wire        signZ0;
+    assign signZ0 = signA ^ signB ^ neg_prod;
 
-    wire a_is_nan = (expA_r == 11'h7FF) && (sigA_r != 0);
-    wire b_is_nan = (expB_r == 11'h7FF) && (sigB_r != 0);
-    wire c_is_nan = (expC_r == 11'h7FF) && (sigC_r != 0);
-    wire a_snan = a_is_nan && !sigA_r[51];
-    wire b_snan = b_is_nan && !sigB_r[51];
-    wire c_snan = c_is_nan && !sigC_r[51];
-    wire a_inf = (expA_r == 11'h7FF) && (sigA_r == 0);
-    wire b_inf = (expB_r == 11'h7FF) && (sigB_r == 0);
-    wire c_inf = (expC_r == 11'h7FF) && (sigC_r == 0);
+    wire a_is_nan;
+    assign a_is_nan = (expA_r == 11'h7FF) && (sigA_r != 0);
+    wire b_is_nan;
+    assign b_is_nan = (expB_r == 11'h7FF) && (sigB_r != 0);
+    wire c_is_nan;
+    assign c_is_nan = (expC_r == 11'h7FF) && (sigC_r != 0);
+    wire a_snan;
+    assign a_snan = a_is_nan && !sigA_r[51];
+    wire b_snan;
+    assign b_snan = b_is_nan && !sigB_r[51];
+    wire c_snan;
+    assign c_snan = c_is_nan && !sigC_r[51];
+    wire a_inf;
+    assign a_inf = (expA_r == 11'h7FF) && (sigA_r == 0);
+    wire b_inf;
+    assign b_inf = (expB_r == 11'h7FF) && (sigB_r == 0);
+    wire c_inf;
+    assign c_inf = (expC_r == 11'h7FF) && (sigC_r == 0);
 
-    wire        a_sub = (expA_r == 0) && (sigA_r != 0);
-    wire        b_sub = (expB_r == 0) && (sigB_r != 0);
-    wire        c_sub = (expC_r == 0) && (sigC_r != 0);
-    wire [6:0]  a_sd = clz52(sigA_r) + 7'd1;
-    wire [6:0]  b_sd = clz52(sigB_r) + 7'd1;
-    wire [6:0]  c_sd = clz52(sigC_r) + 7'd1;
-    wire signed [15:0] expA = a_sub ? (16'sd1 - {{9{1'b0}}, a_sd}) : $signed({5'b0, expA_r});
-    wire signed [15:0] expB = b_sub ? (16'sd1 - {{9{1'b0}}, b_sd}) : $signed({5'b0, expB_r});
-    wire signed [15:0] expC = c_sub ? (16'sd1 - {{9{1'b0}}, c_sd}) : $signed({5'b0, expC_r});
-    wire [51:0] sigA_n = a_sub ? (sigA_r << a_sd) : sigA_r;
-    wire [51:0] sigB_n = b_sub ? (sigB_r << b_sd) : sigB_r;
-    wire [51:0] sigC_n = c_sub ? (sigC_r << c_sd) : sigC_r;
+    wire        a_sub;
+    assign a_sub = (expA_r == 0) && (sigA_r != 0);
+    wire        b_sub;
+    assign b_sub = (expB_r == 0) && (sigB_r != 0);
+    wire        c_sub;
+    assign c_sub = (expC_r == 0) && (sigC_r != 0);
+    wire [6:0]  a_sd;
+    assign a_sd = clz52(sigA_r) + 7'd1;
+    wire [6:0]  b_sd;
+    assign b_sd = clz52(sigB_r) + 7'd1;
+    wire [6:0]  c_sd;
+    assign c_sd = clz52(sigC_r) + 7'd1;
+    wire signed [15:0] expA;
+    assign expA = a_sub ? (16'sd1 - {{9{1'b0}}, a_sd}) : $signed({5'b0, expA_r});
+    wire signed [15:0] expB;
+    assign expB = b_sub ? (16'sd1 - {{9{1'b0}}, b_sd}) : $signed({5'b0, expB_r});
+    wire signed [15:0] expC;
+    assign expC = c_sub ? (16'sd1 - {{9{1'b0}}, c_sd}) : $signed({5'b0, expC_r});
+    wire [51:0] sigA_n;
+    assign sigA_n = a_sub ? (sigA_r << a_sd) : sigA_r;
+    wire [51:0] sigB_n;
+    assign sigB_n = b_sub ? (sigB_r << b_sd) : sigB_r;
+    wire [51:0] sigC_n;
+    assign sigC_n = c_sub ? (sigC_r << c_sd) : sigC_r;
 
-    wire a_is_zero = (expA_r == 0) && (sigA_r == 0);
-    wire b_is_zero = (expB_r == 0) && (sigB_r == 0);
-    wire c_is_zero = (expC_r == 0) && (sigC_r == 0);
+    wire a_is_zero;
+    assign a_is_zero = (expA_r == 0) && (sigA_r == 0);
+    wire b_is_zero;
+    assign b_is_zero = (expB_r == 0) && (sigB_r == 0);
+    wire c_is_zero;
+    assign c_is_zero = (expC_r == 0) && (sigC_r == 0);
 
-    wire any_snan = a_snan || b_snan || c_snan;
-    wire any_input_nan = a_is_nan || b_is_nan || c_is_nan;
-    wire prodInf_argInf = a_inf || b_inf;
-    wire prod_inf_times_zero = (a_inf && b_is_zero) || (b_inf && a_is_zero);
-    wire prod_is_inf = prodInf_argInf && !prod_inf_times_zero && !a_is_nan && !b_is_nan;
-    wire inf_minus_inf = prod_is_inf && c_inf && (signZ0 != signC);
-    wire nv = any_snan || prod_inf_times_zero || inf_minus_inf;
-    wire special_active = any_input_nan || prod_inf_times_zero || prod_is_inf || c_inf;
-    wire [63:0] special_res =
+    wire any_snan;
+    assign any_snan = a_snan || b_snan || c_snan;
+    wire any_input_nan;
+    assign any_input_nan = a_is_nan || b_is_nan || c_is_nan;
+    wire prodInf_argInf;
+    assign prodInf_argInf = a_inf || b_inf;
+    wire prod_inf_times_zero;
+    assign prod_inf_times_zero = (a_inf && b_is_zero) || (b_inf && a_is_zero);
+    wire prod_is_inf;
+    assign prod_is_inf = prodInf_argInf && !prod_inf_times_zero && !a_is_nan && !b_is_nan;
+    wire inf_minus_inf;
+    assign inf_minus_inf = prod_is_inf && c_inf && (signZ0 != signC);
+    wire nv;
+    assign nv = any_snan || prod_inf_times_zero || inf_minus_inf;
+    wire special_active;
+    assign special_active = any_input_nan || prod_inf_times_zero || prod_is_inf || c_inf;
+    wire [63:0] special_res;
+    assign special_res =
         (any_input_nan || prod_inf_times_zero || inf_minus_inf) ? `FP_D_QNAN :
         prod_is_inf ? {signZ0, 11'h7FF, 52'h0} :
         c_inf       ? {signC, 11'h7FF, 52'h0} :
                       64'b0;
-    wire [4:0] special_flags = nv ? (5'b1 << `FF_NV) : 5'b0;
+    wire [4:0] special_flags;
+    assign special_flags = nv ? (5'b1 << `FF_NV) : 5'b0;
 
-    wire zero_prod   = a_is_zero || b_is_zero;
-    wire cancel_zero = c_is_zero && (signZ0 != signC);
-    wire [63:0] zeroprod_res =
+    wire zero_prod;
+    assign zero_prod = a_is_zero || b_is_zero;
+    wire cancel_zero;
+    assign cancel_zero = c_is_zero && (signZ0 != signC);
+    wire [63:0] zeroprod_res;
+    assign zeroprod_res =
         cancel_zero ? {(rm == `FRM_RDN), 63'b0} : {signC, c[62:0]};
 
-    wire signed [15:0] expProd0 = expA + expB - 16'sd1022;
-    wire [62:0] sigA63 = {1'b1, sigA_n, 10'b0};
-    wire [62:0] sigB63 = {1'b1, sigB_n, 10'b0};
+    wire signed [15:0] expProd0;
+    assign expProd0 = expA + expB - 16'sd1022;
+    wire [62:0] sigA63;
+    assign sigA63 = {1'b1, sigA_n, 10'b0};
+    wire [62:0] sigB63;
+    assign sigB63 = {1'b1, sigB_n, 10'b0};
 
     //  stage-0 registers (unpack/normalize). The multiply operands are
     //  registered so the 53x53 DSP gets registered inputs (its own cycle),
@@ -149,7 +194,8 @@ module karu_ffma_d (
     reg [63:0]          s0_special_res, s0_zeroprod_res;
     reg [4:0]           s0_special_flags;
     reg [2:0]           s0_rm;
-    wire [127:0] s1_sig128_0_w = {65'b0, s0_sigA63} * {65'b0, s0_sigB63};
+    wire [127:0] s1_sig128_0_w;
+    assign s1_sig128_0_w = {65'b0, s0_sigA63} * {65'b0, s0_sigB63};
 
     //  stage-1 registers
     reg [127:0]         s1_sig128_0;
@@ -166,31 +212,50 @@ module karu_ffma_d (
     // ================================================================
     // STAGE 2 (from s1): product-normalize + alignment
     // ================================================================
-    wire        prod_lt = (s1_sig128_0[127:64] < 64'h2000_0000_0000_0000);
-    wire signed [15:0] expProd = prod_lt ? (s1_expProd0 - 16'sd1) : s1_expProd0;
-    wire [127:0] sig128p = prod_lt ? (s1_sig128_0 << 1) : s1_sig128_0;
+    wire        prod_lt;
+    assign prod_lt = (s1_sig128_0[127:64] < 64'h2000_0000_0000_0000);
+    wire signed [15:0] expProd;
+    assign expProd = prod_lt ? (s1_expProd0 - 16'sd1) : s1_expProd0;
+    wire [127:0] sig128p;
+    assign sig128p = prod_lt ? (s1_sig128_0 << 1) : s1_sig128_0;
 
-    wire [63:0]  sigC62  = {2'b0, 1'b1, s1_sigC_n, 9'b0};
-    wire [127:0] sigC128 = {sigC62, 64'b0};
+    wire [63:0]  sigC62;
+    assign sigC62 = {2'b0, 1'b1, s1_sigC_n, 9'b0};
+    wire [127:0] sigC128;
+    assign sigC128 = {sigC62, 64'b0};
 
-    wire signed [15:0] cz_exp  = expProd - 16'sd1;
-    wire [63:0]        cz_sigZ = (sig128p[127:64] << 1) | {63'b0, (|sig128p[63:0])};
+    wire signed [15:0] cz_exp;
+    assign cz_exp = expProd - 16'sd1;
+    wire [63:0]        cz_sigZ;
+    assign cz_sigZ = (sig128p[127:64] << 1) | {63'b0, (|sig128p[63:0])};
 
-    wire signed [15:0] expDiff   = expProd - s1_expC;
-    wire signed [31:0] expDiff32 = expDiff;
-    wire        same_sign = (s1_signZ0 == s1_signC);
+    wire signed [15:0] expDiff;
+    assign expDiff = expProd - s1_expC;
+    wire signed [31:0] expDiff32;
+    assign expDiff32 = expDiff;
+    wire        same_sign;
+    assign same_sign = (s1_signZ0 == s1_signC);
 
-    wire [31:0]  nd = -expDiff32;
-    wire [63:0]  aln_v64_jam = srj64(sig128p[127:64], nd);
-    wire [127:0] aln_short1  = (sig128p >> 1) | {127'b0, (|sig128p[0])};
-    wire         align_jamv64 = (same_sign || (expDiff < -16'sd1));
-    wire [127:0] sig128Z_neg = align_jamv64 ? {aln_v64_jam, sig128p[63:0]} : aln_short1;
-    wire [127:0] sig128C_gt  = srj128(sigC128, expDiff32);
+    wire [31:0]  nd;
+    assign nd = -expDiff32;
+    wire [63:0]  aln_v64_jam;
+    assign aln_v64_jam = srj64(sig128p[127:64], nd);
+    wire [127:0] aln_short1;
+    assign aln_short1 = (sig128p >> 1) | {127'b0, (|sig128p[0])};
+    wire         align_jamv64;
+    assign align_jamv64 = (same_sign || (expDiff < -16'sd1));
+    wire [127:0] sig128Z_neg;
+    assign sig128Z_neg = align_jamv64 ? {aln_v64_jam, sig128p[63:0]} : aln_short1;
+    wire [127:0] sig128C_gt;
+    assign sig128C_gt = srj128(sigC128, expDiff32);
 
-    wire [127:0] sig128Z = (expDiff < 0) ? sig128Z_neg : sig128p;
-    wire [127:0] sig128C = (expDiff < 0) ? sigC128 :
-                           (expDiff == 0) ? sigC128 : sig128C_gt;
-    wire signed [15:0] expZ_al = (expDiff < 0) ? s1_expC : expProd;
+    wire [127:0] sig128Z;
+    assign sig128Z = (expDiff < 0) ? sig128Z_neg : sig128p;
+    wire [127:0] sig128C;
+    assign sig128C = (expDiff < 0) ? sigC128 :
+                     (expDiff == 0) ? sigC128 : sig128C_gt;
+    wire signed [15:0] expZ_al;
+    assign expZ_al = (expDiff < 0) ? s1_expC : expProd;
 
     //  stage-2 registers
     reg [127:0]         s2_sig128Z, s2_sig128C, s2_sig128p;
@@ -206,27 +271,44 @@ module karu_ffma_d (
     // ================================================================
     // STAGE 3 (from s2): add (same sign) + sub (opposite sign), raw
     // ================================================================
-    wire [63:0]  add_sigZ_le = (s2_sigC62 + s2_sig128Z[127:64]) | {63'b0, (|s2_sig128Z[63:0])};
-    wire [127:0] add_sum128  = s2_sig128Z + s2_sig128C;
-    wire [63:0]  add_sigZ_gt = add_sum128[127:64] | {63'b0, (|add_sum128[63:0])};
-    wire         add_le = (s2_expDiff <= 0);
-    wire [63:0]  add_sigZ0 = add_le ? add_sigZ_le : add_sigZ_gt;
-    wire         add_norm = (add_sigZ0 < 64'h4000_0000_0000_0000);
-    wire signed [15:0] add_expZ = add_norm ? (s2_expZ_al - 16'sd1) : s2_expZ_al;
-    wire [63:0]  add_sigZ  = add_norm ? (add_sigZ0 << 1) : add_sigZ0;
+    wire [63:0]  add_sigZ_le;
+    assign add_sigZ_le = (s2_sigC62 + s2_sig128Z[127:64]) | {63'b0, (|s2_sig128Z[63:0])};
+    wire [127:0] add_sum128;
+    assign add_sum128 = s2_sig128Z + s2_sig128C;
+    wire [63:0]  add_sigZ_gt;
+    assign add_sigZ_gt = add_sum128[127:64] | {63'b0, (|add_sum128[63:0])};
+    wire         add_le;
+    assign add_le = (s2_expDiff <= 0);
+    wire [63:0]  add_sigZ0;
+    assign add_sigZ0 = add_le ? add_sigZ_le : add_sigZ_gt;
+    wire         add_norm;
+    assign add_norm = (add_sigZ0 < 64'h4000_0000_0000_0000);
+    wire signed [15:0] add_expZ;
+    assign add_expZ = add_norm ? (s2_expZ_al - 16'sd1) : s2_expZ_al;
+    wire [63:0]  add_sigZ;
+    assign add_sigZ = add_norm ? (add_sigZ0 << 1) : add_sigZ0;
 
-    wire [127:0] sub_lt_128 = s2_sig128C - s2_sig128Z;
-    wire [63:0]  sub_eq_v64 = s2_sig128p[127:64] - s2_sigC62;
-    wire [127:0] sub_eq_128_pre = {sub_eq_v64, s2_sig128p[63:0]};
-    wire         sub_eq_zero = (s2_expDiff == 0) && (sub_eq_v64 == 0) && (s2_sig128p[63:0] == 0);
-    wire         eq_neg = (s2_expDiff == 0) && sub_eq_v64[63];
-    wire [127:0] sub_eq_128 = eq_neg ? (~sub_eq_128_pre + 128'b1) : sub_eq_128_pre;
-    wire [127:0] sub_gt_128 = s2_sig128Z - s2_sig128C;
-    wire [127:0] sub_128 =
+    wire [127:0] sub_lt_128;
+    assign sub_lt_128 = s2_sig128C - s2_sig128Z;
+    wire [63:0]  sub_eq_v64;
+    assign sub_eq_v64 = s2_sig128p[127:64] - s2_sigC62;
+    wire [127:0] sub_eq_128_pre;
+    assign sub_eq_128_pre = {sub_eq_v64, s2_sig128p[63:0]};
+    wire         sub_eq_zero;
+    assign sub_eq_zero = (s2_expDiff == 0) && (sub_eq_v64 == 0) && (s2_sig128p[63:0] == 0);
+    wire         eq_neg;
+    assign eq_neg = (s2_expDiff == 0) && sub_eq_v64[63];
+    wire [127:0] sub_eq_128;
+    assign sub_eq_128 = eq_neg ? (~sub_eq_128_pre + 128'b1) : sub_eq_128_pre;
+    wire [127:0] sub_gt_128;
+    assign sub_gt_128 = s2_sig128Z - s2_sig128C;
+    wire [127:0] sub_128;
+    assign sub_128 =
         (s2_expDiff < 0)  ? sub_lt_128 :
         (s2_expDiff == 0) ? sub_eq_128 :
                             sub_gt_128;
-    wire sub_signZ =
+    wire sub_signZ;
+    assign sub_signZ =
         (s2_expDiff < 0)  ? s2_signC :
         (s2_expDiff == 0) ? (eq_neg ? !s2_signZ0 : s2_signZ0) :
                             s2_signZ0;
@@ -246,25 +328,41 @@ module karu_ffma_d (
     // ================================================================
     // STAGE 4 (from s3): sub normalize (CLZ + shift) + pick rp_*
     // ================================================================
-    wire        sub_v64_zero = (s3_sub_128[127:64] == 64'b0);
-    wire [63:0] sub_hi = sub_v64_zero ? s3_sub_128[63:0] : s3_sub_128[127:64];
-    wire [63:0] sub_lo = sub_v64_zero ? 64'b0 : s3_sub_128[63:0];
-    wire signed [15:0] sub_expZ_b0 = s3_expZ_al - (sub_v64_zero ? 16'sd64 : 16'sd0);
-    wire [6:0]  sub_clz = clz64(sub_hi);
-    wire signed [15:0] sub_shiftDist = {{9{1'b0}}, sub_clz} - 16'sd1;
-    wire signed [15:0] sub_expZ = sub_expZ_b0 - sub_shiftDist;
-    wire        sd_neg = (sub_shiftDist < 0);
-    wire [63:0] ssrj = srj64(sub_hi, 32'd1);
-    wire [127:0] ssl128 = {sub_hi, sub_lo} << sub_shiftDist[6:0];
-    wire [63:0] sub_sigZ_raw = sd_neg ? ssrj : ssl128[127:64];
-    wire [63:0] sub_sigZ = sub_sigZ_raw | {63'b0, (sd_neg ? 1'b0 : (|ssl128[63:0]))
-                                                | (sd_neg ? (|sub_lo) : 1'b0)};
+    wire        sub_v64_zero;
+    assign sub_v64_zero = (s3_sub_128[127:64] == 64'b0);
+    wire [63:0] sub_hi;
+    assign sub_hi = sub_v64_zero ? s3_sub_128[63:0] : s3_sub_128[127:64];
+    wire [63:0] sub_lo;
+    assign sub_lo = sub_v64_zero ? 64'b0 : s3_sub_128[63:0];
+    wire signed [15:0] sub_expZ_b0;
+    assign sub_expZ_b0 = s3_expZ_al - (sub_v64_zero ? 16'sd64 : 16'sd0);
+    wire [6:0]  sub_clz;
+    assign sub_clz = clz64(sub_hi);
+    wire signed [15:0] sub_shiftDist;
+    assign sub_shiftDist = {{9{1'b0}}, sub_clz} - 16'sd1;
+    wire signed [15:0] sub_expZ;
+    assign sub_expZ = sub_expZ_b0 - sub_shiftDist;
+    wire        sd_neg;
+    assign sd_neg = (sub_shiftDist < 0);
+    wire [63:0] ssrj;
+    assign ssrj = srj64(sub_hi, 32'd1);
+    wire [127:0] ssl128;
+    assign ssl128 = {sub_hi, sub_lo} << sub_shiftDist[6:0];
+    wire [63:0] sub_sigZ_raw;
+    assign sub_sigZ_raw = sd_neg ? ssrj : ssl128[127:64];
+    wire [63:0] sub_sigZ;
+    assign sub_sigZ = sub_sigZ_raw | {63'b0, (sd_neg ? 1'b0 : (|ssl128[63:0]))
+                                           | (sd_neg ? (|sub_lo) : 1'b0)};
 
-    wire        rp_sign_w = s3_use_czero ? s3_signZ0 : (s3_same_sign ? s3_signZ0 : s3_sub_signZ);
-    wire signed [15:0] rp_exp_w = s3_use_czero ? s3_cz_exp : (s3_same_sign ? s3_add_expZ : sub_expZ);
-    wire [63:0] rp_sig_w = s3_use_czero ? s3_cz_sigZ : (s3_same_sign ? s3_add_sigZ : sub_sigZ);
-    wire        complete_cancel_w = !s3_special_active && !s3_zero_prod && !s3_use_czero
-                                  && !s3_same_sign && s3_sub_eq_zero;
+    wire        rp_sign_w;
+    assign rp_sign_w = s3_use_czero ? s3_signZ0 : (s3_same_sign ? s3_signZ0 : s3_sub_signZ);
+    wire signed [15:0] rp_exp_w;
+    assign rp_exp_w = s3_use_czero ? s3_cz_exp : (s3_same_sign ? s3_add_expZ : sub_expZ);
+    wire [63:0] rp_sig_w;
+    assign rp_sig_w = s3_use_czero ? s3_cz_sigZ : (s3_same_sign ? s3_add_sigZ : sub_sigZ);
+    wire        complete_cancel_w;
+    assign complete_cancel_w = !s3_special_active && !s3_zero_prod && !s3_use_czero
+                             && !s3_same_sign && s3_sub_eq_zero;
 
     //  stage-4 registers
     reg                 s4_rp_sign, s4_complete_cancel;
@@ -278,46 +376,71 @@ module karu_ffma_d (
     // ================================================================
     // STAGE 5 (from s4): roundPackToF64
     // ================================================================
-    wire roundNearEven = (s4_rm == `FRM_RNE);
-    wire roundNearMax  = (s4_rm == `FRM_RMM);
-    wire [10:0] roundIncrement =
+    wire roundNearEven;
+    assign roundNearEven = (s4_rm == `FRM_RNE);
+    wire roundNearMax;
+    assign roundNearMax = (s4_rm == `FRM_RMM);
+    wire [10:0] roundIncrement;
+    assign roundIncrement =
         (roundNearEven || roundNearMax) ? 11'h200 :
         ((s4_rm == (s4_rp_sign ? `FRM_RDN : `FRM_RUP)) ? 11'h3FF : 11'h000);
 
-    wire enter_block = (s4_rp_exp < 0) || (s4_rp_exp >= 16'sd2045);
-    wire subn = enter_block && (s4_rp_exp < 0);
-    wire [31:0] srj_amt = -{{16{s4_rp_exp[15]}}, s4_rp_exp};
-    wire [63:0] sub_sig_sh = srj64(s4_rp_sig, srj_amt);
-    wire [63:0] eff_sig = subn ? sub_sig_sh : s4_rp_sig;
-    wire signed [15:0] eff_exp = subn ? 16'sd0 : s4_rp_exp;
-    wire [9:0]  roundBits = eff_sig[9:0];
+    wire enter_block;
+    assign enter_block = (s4_rp_exp < 0) || (s4_rp_exp >= 16'sd2045);
+    wire subn;
+    assign subn = enter_block && (s4_rp_exp < 0);
+    wire [31:0] srj_amt;
+    assign srj_amt = -{{16{s4_rp_exp[15]}}, s4_rp_exp};
+    wire [63:0] sub_sig_sh;
+    assign sub_sig_sh = srj64(s4_rp_sig, srj_amt);
+    wire [63:0] eff_sig;
+    assign eff_sig = subn ? sub_sig_sh : s4_rp_sig;
+    wire signed [15:0] eff_exp;
+    assign eff_exp = subn ? 16'sd0 : s4_rp_exp;
+    wire [9:0]  roundBits;
+    assign roundBits = eff_sig[9:0];
 
-    wire [64:0] sig_plus_inc = {1'b0, s4_rp_sig} + {54'b0, roundIncrement};
-    wire isTiny = subn && ((s4_rp_exp < -16'sd1) || (sig_plus_inc < 65'h0_8000_0000_0000_0000));
-    wire overflow = enter_block && !subn
-                 && ((s4_rp_exp > 16'sd2045) || (sig_plus_inc >= 65'h0_8000_0000_0000_0000));
+    wire [64:0] sig_plus_inc;
+    assign sig_plus_inc = {1'b0, s4_rp_sig} + {54'b0, roundIncrement};
+    wire isTiny;
+    assign isTiny = subn && ((s4_rp_exp < -16'sd1) || (sig_plus_inc < 65'h0_8000_0000_0000_0000));
+    wire overflow;
+    assign overflow = enter_block && !subn
+                   && ((s4_rp_exp > 16'sd2045) || (sig_plus_inc >= 65'h0_8000_0000_0000_0000));
 
-    wire [64:0] sig_rnd = ({1'b0, eff_sig} + {54'b0, roundIncrement}) >> 10;
-    wire        tie_even = (roundBits == 10'h200) && roundNearEven;
-    wire [63:0] sig_final0 = sig_rnd[63:0] & ~(tie_even ? 64'b1 : 64'b0);
-    wire [63:0] exp_for_pack = (sig_final0 == 0) ? 64'b0 : {48'b0, eff_exp};
-    wire [63:0] rp_packed = {s4_rp_sign, 63'b0} + (exp_for_pack << 52) + sig_final0;
+    wire [64:0] sig_rnd;
+    assign sig_rnd = ({1'b0, eff_sig} + {54'b0, roundIncrement}) >> 10;
+    wire        tie_even;
+    assign tie_even = (roundBits == 10'h200) && roundNearEven;
+    wire [63:0] sig_final0;
+    assign sig_final0 = sig_rnd[63:0] & ~(tie_even ? 64'b1 : 64'b0);
+    wire [63:0] exp_for_pack;
+    assign exp_for_pack = (sig_final0 == 0) ? 64'b0 : {48'b0, eff_exp};
+    wire [63:0] rp_packed;
+    assign rp_packed = {s4_rp_sign, 63'b0} + (exp_for_pack << 52) + sig_final0;
 
-    wire        rp_inexact = |roundBits;
-    wire        rp_uf      = isTiny && (|roundBits);
-    wire [63:0] over_res   = {s4_rp_sign, 11'h7FF, 52'h0} - ((roundIncrement == 0) ? 64'b1 : 64'b0);
+    wire        rp_inexact;
+    assign rp_inexact = |roundBits;
+    wire        rp_uf;
+    assign rp_uf = isTiny && (|roundBits);
+    wire [63:0] over_res;
+    assign over_res = {s4_rp_sign, 11'h7FF, 52'h0} - ((roundIncrement == 0) ? 64'b1 : 64'b0);
 
-    wire [63:0] roundpack_res = overflow ? over_res : rp_packed;
-    wire [4:0]  roundpack_flags =
+    wire [63:0] roundpack_res;
+    assign roundpack_res = overflow ? over_res : rp_packed;
+    wire [4:0]  roundpack_flags;
+    assign roundpack_flags =
         overflow ? ((5'b1 << `FF_OF) | (5'b1 << `FF_NX)) :
         ((rp_uf ? (5'b1 << `FF_UF) : 5'b0) | (rp_inexact ? (5'b1 << `FF_NX) : 5'b0));
 
-    wire [63:0] res_w =
+    wire [63:0] res_w;
+    assign res_w =
         s4_special_active  ? s4_special_res :
         s4_zero_prod       ? s4_zeroprod_res :
         s4_complete_cancel ? {(s4_rm == `FRM_RDN), 63'b0} :
                              roundpack_res;
-    wire [4:0]  flags_w =
+    wire [4:0]  flags_w;
+    assign flags_w =
         s4_special_active  ? s4_special_flags :
         (s4_zero_prod || s4_complete_cancel) ? 5'b0 :
                              roundpack_flags;
@@ -331,8 +454,10 @@ module karu_ffma_d (
     // fmul_d 53x53->106 bit-serial recurrence on the 53-bit significands then
     // shifts <<20 -- the latched s1_sig128_0 is bit-identical to the `*` product.
     // ================================================================
-    wire [52:0] sigA53 = sigA63[62:10];     //  {1'b1, sigA_n} (combinational at req)
-    wire [52:0] sigB53 = sigB63[62:10];
+    wire [52:0] sigA53;     //  {1'b1, sigA_n} (combinational at req)
+    assign sigA53 = sigA63[62:10];
+    wire [52:0] sigB53;
+    assign sigB53 = sigB63[62:10];
     wire         mul_done;
     wire [127:0] mul_prod;
     //  FSM state encodings hoisted to module scope -- Genus rejects localparam
@@ -347,8 +472,10 @@ module karu_ffma_d (
         reg [6:0]   scnt;
         reg [105:0] sacc;
         reg [52:0]  sma;
-        wire [53:0]  smul_sum  = sacc[105:53] + (sacc[0] ? sma : 53'b0);
-        wire [105:0] smul_next = { smul_sum, sacc[52:1] };
+        wire [53:0]  smul_sum;
+        assign smul_sum = sacc[105:53] + (sacc[0] ? sma : 53'b0);
+        wire [105:0] smul_next;
+        assign smul_next = { smul_sum, sacc[52:1] };
         always @(posedge clk) begin
             if (rst) sstate <= SS_IDLE;
             else case (sstate)
@@ -480,7 +607,8 @@ module karu_ffma_d (
         end
     end
 
-    wire _unused = &{c_sub, 1'b0};
+    wire _unused;
+    assign _unused = &{c_sub, 1'b0};
 
 // synthesis translate_off
     //  FMA handshake invariants (sim only). The serial mantissa-multiply mode

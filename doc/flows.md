@@ -262,9 +262,9 @@ for the configuration manifest and verdicts, and the
 
 ### Hypervisor regressions
 
-Current release evidence: both matched-profile ACT4 checkpoints pass
-2872/2872. The shipping bitstream meets routed timing and passes Linux board
-acceptance, including vector ABI and KVM API checks. See
+Both matched-profile ACT4 reference checkpoints pass 2872/2872. The
+September 22 shipping bitstream passes Linux 7.2.6-zvk board acceptance,
+including vector ABI and both KVM guest tests. See
 [diagnostics](release-diagnostics-2026-09-14.md) for the exact scope and the
 [FPGA boot procedure](fpga.md#opt-in-rva23s64-boot-selection) for hardware.
 

@@ -92,10 +92,14 @@ module karu_vrf_bram #(
 `ifndef KARU_ASIC
     initial         v0_q = {VLEN{1'b0}};
 `endif
-    wire            a_is0 = (a_addr[AW-1:GB] == 5'd0);
-    wire            b_is0 = (b_addr[AW-1:GB] == 5'd0);
-    wire [GB-1:0]   a_g   = a_addr[GB-1:0];
-    wire [GB-1:0]   b_g   = b_addr[GB-1:0];
+    wire            a_is0;
+    assign a_is0 = (a_addr[AW-1:GB] == 5'd0);
+    wire            b_is0;
+    assign b_is0 = (b_addr[AW-1:GB] == 5'd0);
+    wire [GB-1:0]   a_g;
+    assign a_g = a_addr[GB-1:0];
+    wire [GB-1:0]   b_g;
+    assign b_g = b_addr[GB-1:0];
     integer         va, vb;
     always @(posedge clk) begin
         if (a_en && a_we && a_is0)

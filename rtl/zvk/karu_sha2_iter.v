@@ -31,26 +31,42 @@ module karu_sha2_iter
     reg [31:0] ms32_9, ms32_10, ms32_11, ms32_12, ms32_13, ms32_14, ms32_15;
     reg [31:0] ms32_16, ms32_17, ms32_18;
 
-    wire [63:0] comp_w_64 = (step == 2'd0) ? w0_64 : w1_64;
-    wire [31:0] comp_w_32 = (step == 2'd0) ? w0_32 : w1_32;
-    wire [63:0] s0_64 = sum0_64(a64);
-    wire [63:0] s1_64 = sum1_64(e64);
-    wire [63:0] chv_64 = ch_64(e64, f64, g64);
-    wire [63:0] majv_64 = maj_64(a64, b64, c64);
-    wire [63:0] a_next_64 = add6_64(h64, s1_64, chv_64, comp_w_64, s0_64, majv_64);
-    wire [63:0] e_next_64 = add5_64(d64, h64, s1_64, chv_64, comp_w_64);
-    wire [31:0] s0_32 = sum0_32(a32);
-    wire [31:0] s1_32 = sum1_32(e32);
-    wire [31:0] chv_32 = ch_32(e32, f32, g32);
-    wire [31:0] majv_32 = maj_32(a32, b32, c32);
-    wire [31:0] a_next_32 = add6_32(h32, s1_32, chv_32, comp_w_32, s0_32, majv_32);
-    wire [31:0] e_next_32 = add5_32(d32, h32, s1_32, chv_32, comp_w_32);
-    wire [63:0] ms64_next =
+    wire [63:0] comp_w_64;
+    assign comp_w_64 = (step == 2'd0) ? w0_64 : w1_64;
+    wire [31:0] comp_w_32;
+    assign comp_w_32 = (step == 2'd0) ? w0_32 : w1_32;
+    wire [63:0] s0_64;
+    assign s0_64 = sum0_64(a64);
+    wire [63:0] s1_64;
+    assign s1_64 = sum1_64(e64);
+    wire [63:0] chv_64;
+    assign chv_64 = ch_64(e64, f64, g64);
+    wire [63:0] majv_64;
+    assign majv_64 = maj_64(a64, b64, c64);
+    wire [63:0] a_next_64;
+    assign a_next_64 = add6_64(h64, s1_64, chv_64, comp_w_64, s0_64, majv_64);
+    wire [63:0] e_next_64;
+    assign e_next_64 = add5_64(d64, h64, s1_64, chv_64, comp_w_64);
+    wire [31:0] s0_32;
+    assign s0_32 = sum0_32(a32);
+    wire [31:0] s1_32;
+    assign s1_32 = sum1_32(e32);
+    wire [31:0] chv_32;
+    assign chv_32 = ch_32(e32, f32, g32);
+    wire [31:0] majv_32;
+    assign majv_32 = maj_32(a32, b32, c32);
+    wire [31:0] a_next_32;
+    assign a_next_32 = add6_32(h32, s1_32, chv_32, comp_w_32, s0_32, majv_32);
+    wire [31:0] e_next_32;
+    assign e_next_32 = add5_32(d32, h32, s1_32, chv_32, comp_w_32);
+    wire [63:0] ms64_next;
+    assign ms64_next =
         (step == 2'd0) ? add4_64(sig1_64(ms64_14), ms64_9,  sig0_64(ms64_1), ms64_0) :
         (step == 2'd1) ? add4_64(sig1_64(ms64_15), ms64_10, sig0_64(ms64_2), ms64_1) :
         (step == 2'd2) ? add4_64(sig1_64(ms64_16), ms64_11, sig0_64(ms64_3), ms64_2) :
                          add4_64(sig1_64(ms64_17), ms64_12, sig0_64(ms64_4), ms64_3);
-    wire [31:0] ms32_next =
+    wire [31:0] ms32_next;
+    assign ms32_next =
         (step == 2'd0) ? add4_32(sig1_32(ms32_14), ms32_9,  sig0_32(ms32_1), ms32_0) :
         (step == 2'd1) ? add4_32(sig1_32(ms32_15), ms32_10, sig0_32(ms32_2), ms32_1) :
         (step == 2'd2) ? add4_32(sig1_32(ms32_16), ms32_11, sig0_32(ms32_3), ms32_2) :

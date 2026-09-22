@@ -20,7 +20,8 @@ module encdec
     reg  [127:0] shift_state_s;
     reg  [127:0] ark_state_s;
     reg  [127:0] mix_state_s;
-    wire         sbox_encdec_sel_s = aes_op_i[1];
+    wire         sbox_encdec_sel_s;
+    assign sbox_encdec_sel_s = aes_op_i[1];
     integer word;
 
     assign rnd_state_o = words_s;

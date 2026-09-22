@@ -245,14 +245,14 @@ Waveform replay alone is a debugging result.
 
 ## Coverage boundary
 
-The September 14 VCU118 run on Linux 7.2.4-zvk passes both
-`riscv/ebreak_test` and `arch_timer -n 1 -i 2 -p 1 -m 0 -e 1000`, with the
-strengthened timer completion/interrupt-count checks. This closes the initial
-hardware guest-execution gates. The board kernel already includes the guest
-debug correction needed by the pinned 7.1.2 simulation fixture. See the
+The September 22 VCU118 image `03eeb088` on Linux 7.2.6-zvk passes both
+`riscv/ebreak_test` and `arch_timer -n 1 -i 2 -p 1 -m 0 -e 1000`, each
+with exit 0; the timer reports `PASS(vCPU-0)`. The initial hardware
+guest-execution gates remain closed. The board kernel already includes the
+guest debug correction needed by the pinned 7.1.2 simulation fixture. See the
 [release diagnostics](../../doc/release-diagnostics-2026-09-14.md) for the
-image identity and current evidence. The September 15 board acceptance log
-covers the KVM API only; guest execution requires these separate selftests.
+image identity and evidence. These guest results supplement the KVM API
+creation/mapping probe in `board_accept.sh`.
 
 The fixture's fifteen runner tests include host-boot-only, missing-marker,
 skip, duplicate-result/completion, trailing failure, timeout, EOF, and panic

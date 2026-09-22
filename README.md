@@ -27,8 +27,8 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 - [FPGA bring-up](doc/fpga.md) — VCU118 build/programming instructions,
   UART capture, Linux netboot, memory map and board acceptance.
-- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 15
-  profile measurements, board results and current verification status.
+- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 22
+  board results, reference synthesis measurements and verification status.
 - [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
   pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
   the build-time configuration knobs, and RVA23 feature coverage.
@@ -74,9 +74,9 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   ACT4 dependency patches and exact reproduction flow are documented in
   [test/act4-karu/README.md](test/act4-karu/README.md); configured-suite
   coverage is not a certification claim.
-- The shipping VCU118 image meets routed timing and bus-skew constraints at
-  75 MHz and passes Linux 7.2.4-zvk board acceptance, including vector ABI,
-  memory and crypto checks. Results and coverage limits are in
+- The shipping VCU118 image runs at 75 MHz and passes Linux 7.2.6-zvk
+  board acceptance, including both KVM guest tests, vector ABI, memory,
+  cache and crypto checks. Results and coverage limits are in
   [the diagnostics](doc/release-diagnostics-2026-09-14.md).
 - Full Zvbb is cross-checked against Spike by `make zvbb-test-all`. Zvk known
   answers, decode, multi-element-group `.vs` semantics and Keccak are covered
@@ -187,12 +187,12 @@ floating-point registers (NaN-boxed singles, raw 64-bit doubles):
   [H test recipe](doc/flows.md#hypervisor-regressions).
   Software FP/vector/resident-Keccak context switches and directed asynchronous
   preemption pass. The RVA23S64 board configuration boots Linux and passes
-  the KVM API probe; guest-test coverage is recorded in the
+  the KVM `ebreak_test` and `arch_timer` guest tests; coverage is recorded in the
   [release diagnostics](doc/release-diagnostics-2026-09-14.md).
 - **Vector/crypto**: RVV, full Zvbb, Zvk, and Zvknhk have directed simulation
   coverage. Vector loads/stores use the shared Sv39 DMMU preflight path.
-  The corrected VCU118 DDR/SGMII ROM image meets routed timing and passes
-  Debian NFS-root board acceptance, including OpenSSL checks and 39 riscv-pqc
+  The VCU118 DDR/SGMII ROM image passes Debian NFS-root board acceptance,
+  including 92 OpenSSL known-answer/scalar comparisons and 39 riscv-pqc
   instruction vectors.
 - PC is 64-bit internally for Sv39 high-half kernel/user addresses. The
   current FPGA/sim memory maps still place RAM and MMIO in the low 4 GiB.
