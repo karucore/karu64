@@ -117,8 +117,8 @@ and report **0 errors** across every op and rounding mode.
 
     make testfloat-build             # one-time: build SoftFloat + TestFloat into _build/
     make fp-test OP=f32_add          # one op; env RM=<rne|rtz|rdn|rup|rmm|dyn> FRM=<rne..rmm>
-    make fp-test-regression          # RNE × 17 ops (~45 min: the mulAdd suites are 6.13M vectors)
-    make fp-test-all                 # 5 rm × 17 ops + DYN sanity (~3 min, PARALLEL=20)
+    make fp-test-regression          # RNE × 36 ops (~45 min: the mulAdd suites are 6.13M vectors)
+    make fp-test-all                 # 5 rm × 36 ops + DYN sanity (~3 min, PARALLEL=20)
     make fp-test-dyn                 # DYN-only sanity (read frm CSR)
 
 Pipeline per op: `testfloat_gen` → `flow/run_fp_test.sh` chunks the operands,

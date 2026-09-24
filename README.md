@@ -270,8 +270,8 @@ and `verilator` on `$PATH`.
     make fp-test OP=f32_add        # one op, RNE, ~1s
     make fp-test OP=f32_mul RM=rtz # other rounding modes: rne/rtz/rdn/rup/rmm
     make fp-test OP=f32_div RM=dyn FRM=rdn  # DYN: firmware sets fcsr.frm
-    make fp-test-regression        # RNE x 17 ops, ~25s with PARALLEL=20
-    make fp-test-all               # 5 rounding modes x 17 ops + DYN sanity, ~3 min
+    make fp-test-regression        # RNE x 36 ops, ~25s with PARALLEL=20
+    make fp-test-all               # 5 rounding modes x 36 ops + DYN sanity, ~3 min
 
 ### Basic Tests and Berkeley TestFloat
 

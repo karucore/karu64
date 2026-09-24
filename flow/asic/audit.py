@@ -31,7 +31,7 @@ def classify(module, name, writes):
     if module == 'karu_1w2r_async_ram':
         return 'macro_candidate', '1W2R; asynchronous reads; full-word write; no bit enable'
     if module in ('karu_regfile', 'karu_fregfile'):
-        return 'register_file', ('1W2R' if module == 'karu_regfile' else '1W3R') + '; asynchronous reads; full-word write'
+        return 'register_file', '1W2R; asynchronous reads; full-word write'
     if module == 'karu_vlsu_buf':
         return 'scratch_refactor', 'async multi-access scratch; retain flops or redesign banking; see README'
     return 'control_flops', 'parallel control/state array; retain flip-flops; see README'

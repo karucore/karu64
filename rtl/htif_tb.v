@@ -920,7 +920,28 @@ module htif_tb (input wire clk);
         .csr_op_addr    (cpu.csr_addr),
         .csr_illegal    (cpu.csr_illegal),
         .csr_mcounteren (cpu.csr.csr_mcounteren[31:0]),
-        .csr_scounteren (cpu.csr.csr_scounteren[31:0])
+        .csr_scounteren (cpu.csr.csr_scounteren[31:0]),
+        //  FP regfile port-B time-sharing (INV38): steer, ownership, shadow sequencing
+        .frf_rs3_phase  (cpu.frf_rs3_phase),
+        .frf_rb_addr    (cpu.frf_rb_addr),
+        .dec_rs2        (cpu.dec_rs2),
+        .ex_rs1         (cpu.ex_rs1),
+        .ex_rs2         (cpu.ex_rs2),
+        .ex_rs3         (cpu.ex_rs3),
+        .ex_rs1_is_f    (cpu.ex_rs1_is_f),
+        .ex_rs2_is_f    (cpu.ex_rs2_is_f),
+        .ex_rs3_is_f    (cpu.ex_rs3_is_f),
+        .ex_unit        (cpu.ex_unit),
+        .ex_sub         (cpu.ex_sub),
+        .ex_fp_is_d     (cpu.ex_fp_is_d),
+        .id_accept      (cpu.id_accept),
+        .fwb_rd         (cpu.fwb_rd),
+        .fwb_v          (cpu.fwb_v),
+        .fpu_op1        (cpu.ex_rs1_v),
+        .fpu_op2        (cpu.ex_rs2_v),
+        .fpu_op3        (cpu.frs2_v),   //  live port-B output = FPU op3
+        .varith_frs1    (cpu.ex_frs1_v),
+        .lsu_wdata      (cpu.lsu_wdata)
     );
 `endif
 

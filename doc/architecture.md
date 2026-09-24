@@ -39,7 +39,7 @@ decode and execute:
    └────┬────────────────────────────────────────────────┘
         │ writeback (integer / FP / vector regfile)
    ┌────▼─────┐
-   │ REGFILES │  integer 2R/1W, FP 3R/1W, vector VRF (BRAM-backed)
+   │ REGFILES │  integer 2R/1W, FP 2R/1W, vector VRF (BRAM-backed)
    └──────────┘
 ```
 
@@ -438,7 +438,9 @@ FP16↔FP32 conversions; every other e16/e8 vector-FP encoding traps cause-2.
 ### Register files
 
 - **`karu_regfile`** — integer 2R/1W.
-- **`karu_fregfile`** — FP 3R/1W, 32 × 64-bit.
+- **`karu_fregfile`** — FP 2R/1W, 32 × 64-bit. FMA's rs3 is read on port B
+  during the FMA's issue window (the port is idle then, since decode cannot
+  accept behind a long-latency op), so FMA costs no extra cycle.
 - The vector VRF is the BRAM-backed macro-VRF described above.
 
 ## Memory map and AXI
