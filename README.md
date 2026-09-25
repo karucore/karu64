@@ -27,8 +27,8 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 - [FPGA bring-up](doc/fpga.md) — VCU118 build/programming instructions,
   UART capture, Linux netboot, memory map and board acceptance.
-- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 22
-  board results, reference synthesis measurements and verification status.
+- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 25
+  board results, routed FPGA timing and reference synthesis measurements.
 - [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
   pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
   the build-time configuration knobs, and RVA23 feature coverage.
@@ -74,9 +74,11 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   ACT4 dependency patches and exact reproduction flow are documented in
   [test/act4-karu/README.md](test/act4-karu/README.md); configured-suite
   coverage is not a certification claim.
-- The shipping VCU118 image runs at 75 MHz and passes Linux 7.2.6-zvk
-  board acceptance, including both KVM guest tests, vector ABI, memory,
-  cache and crypto checks. Results and coverage limits are in
+- The current 1W2R FP register-file image (`b11d5efb…3b809`) runs at 75 MHz,
+  meets routed timing and passes Linux 7.2.6-zvk board acceptance, including
+  memory, cache, crypto and KVM API checks. An on-board FP probe completed;
+  full TestFloat3 is running. The previous image passed the KVM guest and
+  extended vector ABI suites. Image-specific results are in
   [the diagnostics](doc/release-diagnostics-2026-09-14.md).
 - Full Zvbb is cross-checked against Spike by `make zvbb-test-all`. Zvk known
   answers, decode, multi-element-group `.vs` semantics and Keccak are covered
@@ -229,7 +231,7 @@ The top-level core wires together:
 - `karu_csr`: M/S/U CSRs, Sstc timer and fcsr/frm/fflags. FPU op completions
   sticky-OR into fflags.
 - `karu_regfile` / `karu_fregfile`: integer and FP register files
-  (separate, the FP file has 3 read ports for FMA).
+  (separate 1W2R files; FP port B also reads FMA's third source at issue).
 
 The implementation is single-issue and in-order, but the code is
 structured around explicit front-end, execute, LSU, M, FPU, CSR, and
@@ -270,8 +272,8 @@ and `verilator` on `$PATH`.
     make fp-test OP=f32_add        # one op, RNE, ~1s
     make fp-test OP=f32_mul RM=rtz # other rounding modes: rne/rtz/rdn/rup/rmm
     make fp-test OP=f32_div RM=dyn FRM=rdn  # DYN: firmware sets fcsr.frm
-    make fp-test-regression        # RNE x 17 ops, ~25s with PARALLEL=20
-    make fp-test-all               # 5 rounding modes x 17 ops + DYN sanity, ~3 min
+    make fp-test-regression        # RNE x 36 ops, ~25s with PARALLEL=20
+    make fp-test-all               # 5 rounding modes x 36 ops + DYN sanity, ~3 min
 
 ### Basic Tests and Berkeley TestFloat
 

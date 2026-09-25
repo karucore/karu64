@@ -49,10 +49,12 @@ not inside of, and reports the one shape it does not rewrite (a shared
 `wire x =` head with one body per `ifdef` branch). The 2026-09-21 rewrite was
 verified equivalent by a per-file Yosys RTLIL diff before/after, strict
 `iverilog -g2001` parses in eight configurations, the simulation
-regressions, and the Vivado elaboration check. The rebuilt FPGA image
-`03eeb088` also passes the September 22 Linux, KVM guest, crypto, vector ABI
-and cache checks; forced vector SM4 matches reference and scalar outputs.
-See the [board results](../../doc/release-diagnostics-2026-09-14.md#board-acceptance--2026-09-22).
+regressions, and the Vivado elaboration check. The Genus-cleanup FPGA image
+`03eeb088` passed the September 22 Linux, KVM guest, crypto, vector ABI
+and cache checks; forced vector SM4 matched reference and scalar outputs.
+The later 1W2R FP image `b11d5efb` closes FPGA routed timing and passes
+September 25 board acceptance and the FP probe. See the
+[image-specific board results](../../doc/release-diagnostics-2026-09-14.md).
 
 Use the definitions as well as the file list. **`KARU_ASIC` is required** to
 exclude FPGA power-up initialization. Do not define `SIM_TB`,
@@ -107,7 +109,7 @@ memory-macro area or timing estimate.
 | `karu64.varith_u.pram_u` | 64 × 32 | 1W2R, two asynchronous read addresses | None |
 | `karu64.varith_u.iram_u` | 64 × 32 | 1W2R, two asynchronous read addresses | None |
 | `karu64.rf.rx` | 64 × 32 | 1W2R register file, asynchronous reads | None; x0 writes suppressed/reads zero |
-| `karu64.frf.fx` | 64 × 32 | 1W3R register file, asynchronous reads | None; f0 is writable |
+| `karu64.frf.fx` | 64 × 32 | 1W2R register file, asynchronous reads; port B time-shared for FMA rs3 | None; f0 is writable |
 | `karu64.vlsu.buf_u.membuf` | 128 × 18 | Multi-read scratch, one full-word write | None |
 | `karu64.vlsu.buf_u.regbuf` | 128 × 16 | Multi-read scratch, one full-word write | None |
 | `karu64.vlsu.buf_u.pib` | 8 × 256 | Byte-addressed multi-access scratch | 16 consecutive bytes written together |
@@ -137,8 +139,12 @@ memory-macro area or timing estimate.
   broadcast writes are one option if 1W2R is unavailable, doubling storage.
   A one-read-port SP macro alone cannot preserve this interface.
 - **Scalar/FP RF:** retain flops or use compiled RFs with the stated async
-  read ports. 3R1W is not ordinary TDP. No combinational write-through bypass
-  is present. Preserve x0 handling externally; only 31 integer words hold
+  read ports; both files are 1W2R (the FP file reads FMA rs3 on port B during
+  the issue window, so no third port is needed). No combinational
+  write-through bypass is present. The rs3 steer adds one same-cycle path,
+  `ex_rs3` register -> 5-bit address mux -> asynchronous FP RF read -> FMA
+  stage-1 unpack, that STA must cover with the compiled macro's actual
+  address-to-data delay; the mapped-to-logic reference flows do not model it. Preserve x0 handling externally; only 31 integer words hold
   useful state, though the declared address space is 32 words.
 - **VLSU scratch:** retain flops for initial integration unless deliberately
   refactored. `membuf`/`regbuf` each have 16 raw word-read expressions that

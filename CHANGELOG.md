@@ -6,6 +6,34 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Changed — FP register file is 1W2R (was 1W3R)
+
+- `karu_fregfile` now has two asynchronous read ports, the same shape as the
+  integer register file, so a standard two-read compiled register file can
+  implement it (the 1W3R macro was the memory-generator blocker). FMA still
+  costs no extra cycle: decode reads rs1/rs2 as before, and port B is steered
+  to `ex_rs3` while the FMA holds the ID/EX packet and while the FPU runs it,
+  a window in which decode cannot accept and no FP writeback can land. The
+  FPU's `op3` is the live port-B output; the 64-flop `ex_frs3_v` latch is gone.
+- New `karu_assert` group INV38a..l: port-B ownership/steer integrity, no FP
+  write in an issue or accept cycle, and a shadow copy of the FP register file
+  that checks every FP source operand consumed by the FPU, the vector `.vf`
+  path and FP stores against the latest write to that register. A local
+  `[FRF-ASSERT]` in `karu_fregfile` rejects writes with an unknown address.
+- New `make fma-hazard-test-all`: every f-register producer feeding the rs3 of
+  an immediately following FMA, chains, aliasing, malformed NaN boxes and FMAs
+  accepted as a busy unit drains, digest-compared with Spike. `flow/asic` inventory and
+  `test/tb_asic_mem.sv` updated for the two-port file.
+- VCU118 profile image built from this change (`7c2563e`, Vivado 2026.1,
+  `vcu118-ddr-sgmii-rom-rva23s64`): `b11d5efb…3b809`, routed setup/hold
+  0.000/+0.012 ns whole-design and +0.077/+0.012 ns on `cpu_clk`, 14/14 bus
+  skew, 0 DRC errors, 349,701 LUTs; no worst path touches the FP register
+  file. Pre-synth gate: H fixtures, preemption and full ACT4 2872/2872. The
+  programmed image boots Linux 7.2.6-zvk and passes `board_accept.sh`, including
+  memory, cache, crypto and KVM API checks; the FP probe completed. Full
+  on-board TestFloat3 remains in progress. See the
+  [release diagnostics](doc/release-diagnostics-2026-09-14.md#1w2r-fp-register-file-image--2026-09-24).
+
 ### Board validation — 2026-09-22
 
 - The Genus-cleanup VCU118 image `03eeb088` passes Linux 7.2.6-zvk acceptance:

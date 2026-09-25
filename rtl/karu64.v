@@ -451,14 +451,25 @@ module karu64 #(
     wire        fwb_we;
     wire [4:0]  fwb_rd;
     wire [63:0] fwb_v;
-    wire [63:0] frs1_v, frs2_v, frs3_v;
+    wire [63:0] frs1_v, frs2_v;
+
+    //  The FP regfile has two read ports (1W2R, like the integer file). FMA
+    //  needs rs3 as well: port B is time-shared. Decode reads dec_rs2 on it;
+    //  once an FMA sits in the ID/EX packet the port switches to ex_rs3 and
+    //  stays there until the FPU has finished. id_accept is impossible in
+    //  that window (an FMA is issue_long, and exec_busy holds afterwards),
+    //  so decode never captures the steered value, and no FP writeback can
+    //  land in the FMA issue cycle (all FP writers are *_active && done, and
+    //  issue requires !exec_busy). frf_rs3_phase is driven below, after the
+    //  ex_* packet and fpu_active are declared.
+    wire        frf_rs3_phase;
+    wire [4:0]  frf_rb_addr;    //  assigned after the ex_* packet is declared
 
 `ifdef KARU_EN_F
     karu_fregfile frf (
         .clk(clk),
-        .rs1(dec_rs1), .rs1_v(frs1_v),
-        .rs2(dec_rs2), .rs2_v(frs2_v),
-        .rs3(dec_rs3), .rs3_v(frs3_v),
+        .rs1(dec_rs1),     .rs1_v(frs1_v),
+        .rs2(frf_rb_addr), .rs2_v(frs2_v),
         .we(fwb_we), .rd(fwb_rd), .rd_v(fwb_v)
     );
 `else
@@ -466,7 +477,6 @@ module karu64 #(
     //  dec_*_is_f is always 0 and these reads are never selected.
     assign frs1_v = 64'b0;
     assign frs2_v = 64'b0;
-    assign frs3_v = 64'b0;
 `endif
 
     //  Combined source operands: pick f or x per decoder flag.
@@ -486,8 +496,6 @@ module karu64 #(
     assign id_frs1_v = (fwb_we && fwb_rd != 5'd0 && fwb_rd == dec_rs1) ? fwb_v : frs1_v;
     wire [63:0] id_frs2_v;
     assign id_frs2_v = (fwb_we && fwb_rd != 5'd0 && fwb_rd == dec_rs2) ? fwb_v : frs2_v;
-    wire [63:0] id_frs3_v;
-    assign id_frs3_v = (fwb_we && fwb_rd != 5'd0 && fwb_rd == dec_rs3) ? fwb_v : frs3_v;
     wire [63:0] id_rs1_v;
     assign id_rs1_v = dec_rs1_is_f ? id_frs1_v : id_xrs1_v;
     wire [63:0] id_rs2_v;
@@ -513,7 +521,10 @@ module karu64 #(
     reg [5:0]   ex_vfunct6;
     reg [63:0]  ex_xrs1_v, ex_xrs2_v;
     reg [63:0]  ex_rs1_v, ex_rs2_v;
-    reg [63:0]  ex_frs1_v, ex_frs2_v, ex_frs3_v;
+    reg [63:0]  ex_frs1_v, ex_frs2_v;
+    //  FP regfile port B: decode's rs2, or the FMA's rs3 while it holds the
+    //  packet / runs in the FPU (frf_rs3_phase is driven next to fpu_active).
+    assign frf_rb_addr = frf_rs3_phase ? ex_rs3 : dec_rs2;
 
     //  ==================================================================
     //  CSR
@@ -1972,6 +1983,8 @@ module karu64 #(
     assign fpu_rm = (inst_rm == 3'b111) ? csr_frm : inst_rm;
 
     reg         fpu_active;
+    //  FP regfile port-B steering for FMA rs3 (declared/used above at frf).
+    assign frf_rs3_phase = ex_rs3_is_f && (ex_valid || fpu_active);
     reg [4:0]   fpu_rd_pending;
     reg         fpu_rd_is_f_q;      //  target regfile of pending FPU op
     reg         vlsu_active;        //  vector load/store in flight
@@ -1988,7 +2001,10 @@ module karu64 #(
         .fp_zfa(ex_fp_zfa),
         //  fli's "operand" is its 5-bit index, carried in ex_imm (FPZ_FLI=4'd8).
         .op1((ex_fp_zfa == 4'd8) ? ex_imm : ex_rs1_v),
-        .op2(ex_rs2_v), .op3(ex_frs3_v),
+        //  op3 is the live port-B read of ex_rs3 (see frf_rb_addr): stable
+        //  from the issue cycle until fpu_done, since nothing else can write
+        //  the FP regfile or move the packet while the FPU is active.
+        .op2(ex_rs2_v), .op3(frs2_v),
         .done(fpu_done), .res(fpu_res), .fflags(fpu_flags)
     );
 `else
@@ -2622,7 +2638,6 @@ module karu64 #(
                 ex_rs2_v        <= id_rs2_v;
                 ex_frs1_v       <= id_frs1_v;
                 ex_frs2_v       <= id_frs2_v;
-                ex_frs3_v       <= id_frs3_v;
             end
 
             if (issue_lsu) begin

@@ -24,9 +24,9 @@ module tb_asic_mem;
     reg we = 0;
     reg [4:0] addr = 1;
     reg [63:0] data = 0;
-    wire [63:0] r1, r2, f1, f2, f3, m1, m2, m3;
+    wire [63:0] r1, r2, f1, f2, m1, m2, m3;
     karu_regfile rf(clk, addr, r1, 5'd0, r2, we, addr, data);
-    karu_fregfile frf(clk, addr, f1, addr, f2, addr, f3, we, addr, data);
+    karu_fregfile frf(clk, addr, f1, addr, f2, we, addr, data);
     karu_1w1r_async_ram #(.DEPTH(4), .ADDR_W(2)) one(
         clk, we, addr[1:0], data, addr[1:0], m1);
     karu_1w2r_async_ram #(.DEPTH(4), .ADDR_W(2)) two(
@@ -38,7 +38,7 @@ module tb_asic_mem;
 
     initial begin
         #1;
-        if (r1 !== 64'bx || f1 !== 64'bx || f2 !== 64'bx || f3 !== 64'bx ||
+        if (r1 !== 64'bx || f1 !== 64'bx || f2 !== 64'bx ||
             m1 !== 64'bx || m2 !== 64'bx || m3 !== 64'bx ||
             aq !== 128'bx || bq !== 128'bx || mask !== 256'bx)
             $fatal(1, "ASIC data storage unexpectedly has a power-up value");
@@ -49,7 +49,7 @@ module tb_asic_mem;
         ae = 1; aw = 1; abe = 16'hffff; ad = {16{8'ha5}};
         be = 1; bw = 1; bbe = 16'hffff; bd = {16{8'h3c}};
         tick;
-        if (r1 !== data || f1 !== data || f2 !== data || f3 !== data ||
+        if (r1 !== data || f1 !== data || f2 !== data ||
             m1 !== data || m2 !== data || m3 !== data || mask !== {bd,ad})
             $fatal(1, "explicit writes did not establish coherent data");
         if (aq !== 128'bx || bq !== 128'bx)

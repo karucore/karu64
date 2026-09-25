@@ -24,6 +24,7 @@
 //  pre-edge (current-cycle) values -- standard assertion sampling.
 
 `include "karu_axi_defs.vh"
+`include "karu_uop_defs.vh"
 
 module karu_assert #(
     //  Per-FU completion deadline: a multi-cycle unit that stays active
@@ -230,7 +231,35 @@ module karu_assert #(
     input  wire [11:0]  csr_op_addr,
     input  wire         csr_illegal,
     input  wire [31:0]  csr_mcounteren,
-    input  wire [31:0]  csr_scounteren
+    input  wire [31:0]  csr_scounteren,
+
+    //  ---- FP regfile port-B time-sharing (1W2R fregfile; FMA rs3 on port B) ----
+    //  karu_fregfile has two asynchronous read ports. Decode owns port B
+    //  (dec_rs2); once an FMA holds the ID/EX packet, and for as long as the
+    //  FPU executes it, port B is steered to ex_rs3 and its live output is the
+    //  FPU's op3. INV38 checks that steer, its ownership hand-off, and -- via a
+    //  shadow copy of the register file -- that every FP source operand any
+    //  unit consumes equals the latest value written to that register.
+    input  wire         frf_rs3_phase,  //  port B steered to ex_rs3
+    input  wire [4:0]   frf_rb_addr,    //  actual port-B read address
+    input  wire [4:0]   dec_rs2,        //  decode's rs2 (port B owner when not steered)
+    input  wire [4:0]   ex_rs1,
+    input  wire [4:0]   ex_rs2,
+    input  wire [4:0]   ex_rs3,
+    input  wire         ex_rs1_is_f,
+    input  wire         ex_rs2_is_f,
+    input  wire         ex_rs3_is_f,
+    input  wire [3:0]   ex_unit,
+    input  wire [4:0]   ex_sub,
+    input  wire         ex_fp_is_d,
+    input  wire         id_accept,      //  ID/EX packet captured this cycle
+    input  wire [4:0]   fwb_rd,
+    input  wire [63:0]  fwb_v,
+    input  wire [63:0]  fpu_op1,        //  operands presented to karu_fpu (op1 before the fli mux)
+    input  wire [63:0]  fpu_op2,
+    input  wire [63:0]  fpu_op3,        //  = live port-B output
+    input  wire [63:0]  varith_frs1,    //  scalar f operand presented to karu_varith (.vf forms)
+    input  wire [63:0]  lsu_wdata       //  store data presented to the scalar LSU
 );
     // Recompute complete permissions rather than exempting guests from the
     // checker. Machine and guest controls have different exception classes.
@@ -378,6 +407,16 @@ module karu_assert #(
         p_dmem_wstrb   <= dmem_wstrb;
         p_dmem_wlast   <= dmem_wlast;
     end
+
+    //  FP regfile shadow (INV38h..l): the architecturally latest value of every
+    //  f-register, rebuilt from the single write port. shadow_ok marks registers
+    //  written since reset, so unwritten contents (unspecified in KARU_ASIC
+    //  builds, X under --x-initial unique) are never compared. fma_q/fma_rs3_q
+    //  remember the in-flight FPU op's rs3 to check packet/steer stability.
+    reg [63:0]  frf_shadow [0:31];
+    reg [31:0]  frf_shadow_ok;
+    reg         fma_q;
+    reg [4:0]   fma_rs3_q;
 
     //  CBO op tracker state (the checks live in the main block, below the KCHK
     //  macro definition).
@@ -705,6 +744,47 @@ module karu_assert #(
               "INV37 younger instruction-fetch fault overtook older execution")
 
         //  ==============================================================
+        //  INV38: FP regfile port-B time-sharing (1W2R karu_fregfile).
+        //  Ownership: decode reads dec_rs2 on port B; an FMA in the ID/EX
+        //  packet (or running in the FPU) owns port B for its rs3. The two
+        //  owners must never overlap, the steer must hold for the FMA's whole
+        //  lifetime, and no FP write may land in a cycle where a unit samples
+        //  its operands (there is no write-through bypass on the f side).
+        //  ==============================================================
+        `KCHK(frf_rb_addr == (frf_rs3_phase ? ex_rs3 : dec_rs2),
+              "INV38a FP regfile port-B address does not follow the steer select")
+        `KCHK(!(frf_rs3_phase && id_accept),
+              "INV38b decode captured operands while port B was steered to rs3")
+        `KCHK(!(fpu_req && ex_rs3_is_f) || (frf_rs3_phase && frf_rb_addr == ex_rs3),
+              "INV38c FMA requested without its rs3 on FP regfile port B")
+        `KCHK(!(fpu_active && fma_q) || (frf_rs3_phase && ex_rs3_is_f && ex_rs3 == fma_rs3_q),
+              "INV38d port-B steer or ID/EX rs3 changed while an FMA was in flight")
+        `KCHK(!(fwb_we && issuing),
+              "INV38e FP regfile write in an issue cycle (operand read-before-write violated)")
+        `KCHK(!(fwb_we && id_accept),
+              "INV38f FP regfile write in a decode-accept cycle (no f-side bypass exists)")
+        //  (ex_* metadata is deliberately not reset, so only a live packet or
+        //  an in-flight FPU op is judged; random-initialised ASIC startup must
+        //  not trip this.)
+        `KCHK(!(ex_valid || fpu_active) || !ex_rs3_is_f || (ex_unit == `UNIT_FPU),
+              "INV38g rs3_is_f set on a non-FPU packet")
+        //  Read/write sequencing against the shadow model: every FP source
+        //  operand a unit consumes equals the latest value written to that
+        //  register, whichever port and cycle actually read it.
+        `KCHK(!(fpu_req && ex_rs3_is_f && frf_shadow_ok[ex_rs3]) || (fpu_op3 == frf_shadow[ex_rs3]),
+              "INV38h FMA rs3 operand != latest write to f[rs3]")
+        `KCHK(!(fpu_req && ex_rs1_is_f && frf_shadow_ok[ex_rs1]) || (fpu_op1 == frf_shadow[ex_rs1]),
+              "INV38i FPU rs1 operand != latest write to f[rs1]")
+        `KCHK(!(fpu_req && ex_rs2_is_f && frf_shadow_ok[ex_rs2]) || (fpu_op2 == frf_shadow[ex_rs2]),
+              "INV38j FPU rs2 operand != latest write to f[rs2]")
+        `KCHK(!(varith_req && ex_rs1_is_f && frf_shadow_ok[ex_rs1]) || (varith_frs1 == frf_shadow[ex_rs1]),
+              "INV38k vector .vf scalar operand != latest write to f[rs1]")
+        `KCHK(!(lsu_req && (ex_sub == `LSU_FSTORE) && frf_shadow_ok[ex_rs2])
+              || (ex_fp_is_d ? (lsu_wdata == frf_shadow[ex_rs2])
+                             : (lsu_wdata[31:0] == frf_shadow[ex_rs2][31:0])),
+              "INV38l FP store data != latest write to f[rs2]")
+
+        //  ==============================================================
         //  Hang guards / liveness watchdogs
         //  ==============================================================
         if (lsu_cnt    > STALL_LIMIT) k_hang("LSU op exceeded STALL_LIMIT cycles");
@@ -722,6 +802,17 @@ module karu_assert #(
         //  monotonic cbo.zero beats. (State regs declared above; checks here so
         //  they sit inside the KCHK macro's scope.)
         //  ==============================================================
+        //  FP regfile shadow + in-flight FMA tracker (state for INV38d/h..l).
+        if (rst) begin
+            frf_shadow_ok <= 32'b0; fma_q <= 1'b0; fma_rs3_q <= 5'd0;
+        end else begin
+            if (fwb_we) begin
+                frf_shadow[fwb_rd]    <= fwb_v;
+                frf_shadow_ok[fwb_rd] <= 1'b1;
+            end
+            if (fpu_req) begin fma_q <= ex_rs3_is_f; fma_rs3_q <= ex_rs3; end
+        end
+
         if (rst) begin
             cbo_track <= 1'b0; cbo_track_zero <= 1'b0; cbo_xlated <= 1'b0;
             cbo_first <= 1'b0; cbo_beats <= 5'd0; cbo_prev_addr <= 32'd0;
@@ -878,6 +969,21 @@ module karu_assert #(
         !wb_we && !fwb_we && !lsu_req && !dmmu_req_lsu && !vlsu_req && !varith_req &&
         !perf_retire && !fp_dirty && !v_dirty && !sys_sret && !sys_mret && !sys_sfencevma));
     a_inv37_ifault_order: assert property (ifu_page_fault |-> (!ex_valid && !exec_busy));
+    //  INV38: FP regfile port-B time-sharing (the shadow regs are module state,
+    //  so the sequencing properties h..l are expressible here as well).
+    a_inv38a_frf_sel:   assert property (frf_rb_addr == (frf_rs3_phase ? ex_rs3 : dec_rs2));
+    a_inv38b_frf_own:   assert property (!(frf_rs3_phase && id_accept));
+    a_inv38c_fma_rs3:   assert property ((fpu_req && ex_rs3_is_f) |-> (frf_rs3_phase && frf_rb_addr == ex_rs3));
+    a_inv38d_fma_hold:  assert property ((fpu_active && fma_q) |-> (frf_rs3_phase && ex_rs3_is_f && ex_rs3 == fma_rs3_q));
+    a_inv38e_fwb_issue: assert property (!(fwb_we && issuing));
+    a_inv38f_fwb_accept:assert property (!(fwb_we && id_accept));
+    a_inv38g_rs3_fpu:   assert property (((ex_valid || fpu_active) && ex_rs3_is_f) |-> (ex_unit == `UNIT_FPU));
+    a_inv38h_rs3_seq:   assert property ((fpu_req && ex_rs3_is_f && frf_shadow_ok[ex_rs3]) |-> (fpu_op3 == frf_shadow[ex_rs3]));
+    a_inv38i_rs1_seq:   assert property ((fpu_req && ex_rs1_is_f && frf_shadow_ok[ex_rs1]) |-> (fpu_op1 == frf_shadow[ex_rs1]));
+    a_inv38j_rs2_seq:   assert property ((fpu_req && ex_rs2_is_f && frf_shadow_ok[ex_rs2]) |-> (fpu_op2 == frf_shadow[ex_rs2]));
+    a_inv38k_vf_seq:    assert property ((varith_req && ex_rs1_is_f && frf_shadow_ok[ex_rs1]) |-> (varith_frs1 == frf_shadow[ex_rs1]));
+    a_inv38l_fst_seq:   assert property ((lsu_req && ex_sub == `LSU_FSTORE && frf_shadow_ok[ex_rs2]) |->
+        (ex_fp_is_d ? (lsu_wdata == frf_shadow[ex_rs2]) : (lsu_wdata[31:0] == frf_shadow[ex_rs2][31:0])));
     //  NOTE: the sequential CBO tracker checks (INV22b / INV23b/c/d -- translated-
     //  first, exactly-8-aligned-monotonic cbo.zero beats) are runtime-checker-only
     //  (they need a small state machine); they are not mirrored as SVA here.
@@ -1005,6 +1111,14 @@ bind karu64 karu_assert u_karu_assert (
     .csr_tvm(csr_tvm), .csr_tw(csr_tw), .csr_tsr(csr_tsr),
     .sys_sret_raw(sys_sret_raw), .sys_sfence_raw(sys_sfence_raw), .sys_wfi_raw(sys_wfi_raw),
     .csr_op_req(csr_req), .csr_op_addr(csr_addr), .csr_illegal(csr_illegal),
-    .csr_mcounteren(csr.csr_mcounteren[31:0]), .csr_scounteren(csr.csr_scounteren[31:0])
+    .csr_mcounteren(csr.csr_mcounteren[31:0]), .csr_scounteren(csr.csr_scounteren[31:0]),
+    //  FP regfile port-B time-sharing (INV38)
+    .frf_rs3_phase(frf_rs3_phase), .frf_rb_addr(frf_rb_addr), .dec_rs2(dec_rs2),
+    .ex_rs1(ex_rs1), .ex_rs2(ex_rs2), .ex_rs3(ex_rs3),
+    .ex_rs1_is_f(ex_rs1_is_f), .ex_rs2_is_f(ex_rs2_is_f), .ex_rs3_is_f(ex_rs3_is_f),
+    .ex_unit(ex_unit), .ex_sub(ex_sub), .ex_fp_is_d(ex_fp_is_d), .id_accept(id_accept),
+    .fwb_rd(fwb_rd), .fwb_v(fwb_v),
+    .fpu_op1(ex_rs1_v), .fpu_op2(ex_rs2_v), .fpu_op3(frs2_v),
+    .varith_frs1(ex_frs1_v), .lsu_wdata(lsu_wdata)
 );
 `endif

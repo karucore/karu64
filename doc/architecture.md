@@ -39,7 +39,7 @@ decode and execute:
    └────┬────────────────────────────────────────────────┘
         │ writeback (integer / FP / vector regfile)
    ┌────▼─────┐
-   │ REGFILES │  integer 2R/1W, FP 3R/1W, vector VRF (BRAM-backed)
+   │ REGFILES │  integer 2R/1W, FP 2R/1W, vector VRF (BRAM-backed)
    └──────────┘
 ```
 
@@ -438,7 +438,9 @@ FP16↔FP32 conversions; every other e16/e8 vector-FP encoding traps cause-2.
 ### Register files
 
 - **`karu_regfile`** — integer 2R/1W.
-- **`karu_fregfile`** — FP 3R/1W, 32 × 64-bit.
+- **`karu_fregfile`** — FP 2R/1W, 32 × 64-bit. FMA's rs3 is read on port B
+  during the FMA's issue window (the port is idle then, since decode cannot
+  accept behind a long-latency op), so FMA costs no extra cycle.
 - The vector VRF is the BRAM-backed macro-VRF described above.
 
 ## Memory map and AXI
@@ -518,7 +520,7 @@ Svpbmt for verification. Architectural, integrated bus-observer and directed
 fault tests pass, including physical-device native-width behavior. Broader
 platform/profile assurance and hardware boot are separate results, not implied
 by those focused tests. The current profile's independent area/timing,
-September 22 board acceptance and KVM guest results
+September 25 board acceptance and September 22 KVM guest results
 are in the [release diagnostics](release-diagnostics-2026-09-14.md).
 
 ## Invariants and hang guards (`rtl/karu_assert.sv`)

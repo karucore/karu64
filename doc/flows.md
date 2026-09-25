@@ -117,8 +117,8 @@ and report **0 errors** across every op and rounding mode.
 
     make testfloat-build             # one-time: build SoftFloat + TestFloat into _build/
     make fp-test OP=f32_add          # one op; env RM=<rne|rtz|rdn|rup|rmm|dyn> FRM=<rne..rmm>
-    make fp-test-regression          # RNE × 17 ops (~45 min: the mulAdd suites are 6.13M vectors)
-    make fp-test-all                 # 5 rm × 17 ops + DYN sanity (~3 min, PARALLEL=20)
+    make fp-test-regression          # RNE × 36 ops (~45 min: the mulAdd suites are 6.13M vectors)
+    make fp-test-all                 # 5 rm × 36 ops + DYN sanity (~3 min, PARALLEL=20)
     make fp-test-dyn                 # DYN-only sanity (read frm CSR)
 
 Pipeline per op: `testfloat_gen` → `flow/run_fp_test.sh` chunks the operands,
@@ -263,8 +263,9 @@ for the configuration manifest and verdicts, and the
 ### Hypervisor regressions
 
 Both matched-profile ACT4 reference checkpoints pass 2872/2872. The
-September 22 shipping bitstream passes Linux 7.2.6-zvk board acceptance,
-including vector ABI and both KVM guest tests. See
+September 25 1W2R FP bitstream passes Linux 7.2.6-zvk board acceptance,
+including KVM API checks. The September 22 image passed both KVM guest
+tests and extended vector ABI coverage. See
 [diagnostics](release-diagnostics-2026-09-14.md) for the exact scope and the
 [FPGA boot procedure](fpga.md#opt-in-rva23s64-boot-selection) for hardware.
 

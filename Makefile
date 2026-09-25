@@ -2471,6 +2471,37 @@ zfa-test-all: $(VERI_FP_BIN) $(BUILD)/zfa_subj.hex
 	 zfa_ref=$$(sed -n 's/^\[ZFA\] digest=//p' $(BUILD)/zfa.spike.log); \
 	 test -n "$$zfa_dut" && test "$$zfa_dut" = "$$zfa_ref" && echo 'Zfa result/flags digest matches Spike'
 
+#	---- FMA rs3 hazard test (1W2R FP regfile: port B time-shared for rs3) ----
+#	Every producer of an f-register feeds the rs3 of an immediately following
+#	FMA (LSU, FPU multi-cycle/immediate, vector vfmv.f.s), plus chains, register
+#	aliasing, malformed boxes and FMAs accepted as busy units drain; digest
+#	compared with Spike.
+#	The karu_assert INV38 group (port-B ownership + shadow-regfile sequencing)
+#	is active during the run.
+FMAH_ISA	=	rv64gcv_zfhmin
+FMAH_CFLAGS	=	-O2 -Wall -g -mabi=lp64d -march=$(FMAH_ISA)_zicntr -mcmodel=medany \
+				-ffreestanding -fno-builtin -nostdlib -static -Itest/fw
+FMAH_SRCS	=	test/fw/htif_start.S test/fw/htif.c test/fw/fma_hazard_subj.c
+$(BUILD)/fma_hazard_subj.elf: $(FMAH_SRCS) flow/fp_subj.ld | $(BUILD)
+	$(XCHAIN)gcc $(FMAH_CFLAGS) -T flow/fp_subj.ld -o $@ $(FMAH_SRCS)
+$(BUILD)/fma_hazard_subj.hex: $(BUILD)/fma_hazard_subj.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/fma_hazard_subj.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/fma_hazard_subj.bin > $@
+.PHONY: fma-hazard-test fma-hazard-test-spike fma-hazard-test-all
+fma-hazard-test:	$(VERI_FP_BIN) $(BUILD)/fma_hazard_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/fma_hazard_subj.hex +tohost=8000 +max_cycles=4000000
+fma-hazard-test-spike:	$(BUILD)/fma_hazard_subj.elf
+	spike --isa=$(FMAH_ISA)_zvl256b_zicntr $(BUILD)/fma_hazard_subj.elf
+fma-hazard-test-all: $(VERI_FP_BIN) $(BUILD)/fma_hazard_subj.hex
+	$(VERI_FP_BIN) +hex=$(BUILD)/fma_hazard_subj.hex +tohost=8000 +max_cycles=4000000 > $(BUILD)/fma_hazard.log 2>&1
+	spike --isa=$(FMAH_ISA)_zvl256b_zicntr $(BUILD)/fma_hazard_subj.elf > $(BUILD)/fma_hazard.spike.log 2>&1
+	@cat $(BUILD)/fma_hazard.log
+	@grep -q '\[HTIF\] exit 0 ' $(BUILD)/fma_hazard.log && grep -q '\[FMA rs3 hazard\] ALL PASS' $(BUILD)/fma_hazard.spike.log
+	@grep '=0x' $(BUILD)/fma_hazard.spike.log > $(BUILD)/fma_hazard.spike.digest; \
+	 grep '=0x' $(BUILD)/fma_hazard.log > $(BUILD)/fma_hazard.digest; \
+	 diff $(BUILD)/fma_hazard.spike.digest $(BUILD)/fma_hazard.digest \
+	 && echo 'FMA rs3 hazard digest matches Spike'
+
 #	---- Supm: pointer masking (Smnpm S-mode + Ssnpm U-mode) ----
 $(BUILD)/karu_supm_test.elf: test/karu_supm_test.S test/karu_priv_test.ld | $(BUILD)
 	$(XCHAIN)gcc -march=rv64gc_ssnpm_smnpm -mabi=lp64d -nostdlib -nostartfiles -static \

@@ -22,7 +22,7 @@ Paths use elaborated RTL instance names; mapping may rename them.
 
 | Hierarchical path | Width × depth | Contract |
 | --- | ---: | --- |
-| `karu64.frf.fx` | 64 × 32 | 1W3R; asynchronous reads; full-word write |
+| `karu64.frf.fx` | 64 × 32 | 1W2R; asynchronous reads; full-word write |
 | `karu64.rf.rx` | 64 × 32 | 1W2R; asynchronous reads; full-word write |
 
 ## scratch_refactor (4 arrays)
@@ -76,20 +76,20 @@ Paths use elaborated RTL instance names; mapping may rename them.
 
 | Hierarchical path | Width × depth | Contract |
 | --- | ---: | --- |
-| `karu64.fpu.constant_lookup@rtl/karu_fpu.v:187.9-204.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
-| `karu64.fpu.constant_lookup@rtl/karu_fpu.v:207.9-224.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
+| `karu64.fpu.constant_lookup@rtl/karu_fpu.v:221.9-238.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
+| `karu64.fpu.constant_lookup@rtl/karu_fpu.v:241.9-258.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
 | `karu64.varith_u.g_lane[0].u_lane.u_est.constant_lookup@rtl/karu_vest7.v:23.9-57.16#090a8100461d[0]` | 7 × 128 | case/function lookup; not power-up state |
 | `karu64.varith_u.g_lane[0].u_lane.u_est.constant_lookup@rtl/karu_vest7.v:61.9-95.16#623f009af113[0]` | 7 × 128 | case/function lookup; not power-up state |
-| `karu64.varith_u.g_lane[0].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:187.9-204.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
-| `karu64.varith_u.g_lane[0].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:207.9-224.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
+| `karu64.varith_u.g_lane[0].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:221.9-238.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
+| `karu64.varith_u.g_lane[0].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:241.9-258.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
 | `karu64.varith_u.g_lane[1].u_lane.u_est.constant_lookup@rtl/karu_vest7.v:23.9-57.16#090a8100461d[0]` | 7 × 128 | case/function lookup; not power-up state |
 | `karu64.varith_u.g_lane[1].u_lane.u_est.constant_lookup@rtl/karu_vest7.v:61.9-95.16#623f009af113[0]` | 7 × 128 | case/function lookup; not power-up state |
-| `karu64.varith_u.g_lane[1].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:187.9-204.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
-| `karu64.varith_u.g_lane[1].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:207.9-224.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
+| `karu64.varith_u.g_lane[1].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:221.9-238.16#375227cc43bc[0]` | 32 × 32 | case/function lookup; not power-up state |
+| `karu64.varith_u.g_lane[1].u_lane.u_fpu.constant_lookup@rtl/karu_fpu.v:241.9-258.16#b7d9a249adba[0]` | 64 × 32 | case/function lookup; not power-up state |
 | `karu64.varith_u.i_keccak.constant_lookup@rtl/zvk/keccak.v:48.13-62.20#e4bb92968b41[0]` | 8 × 32 | case/function lookup; not power-up state |
 | `karu64.varith_u.i_vcrypto.i_aes_keyexp.constant_lookup@rtl/zvk/aes_key_expansion.v:148.13-160.20#f978f985792a[0]` | 32 × 16 | case/function lookup; not power-up state |
 | `karu64.varith_u.i_vcrypto.i_aes_keyexp.constant_lookup@rtl/zvk/aes_key_expansion.v:148.13-160.20#f978f985792a[1]` | 32 × 16 | case/function lookup; not power-up state |
-| `karu64.varith_u.i_vcrypto.i_sm4.constant_lookup@rtl/zvk/karu_sm4_iter.v:77.13-111.20#c24c9ad60f66[0]` | 32 × 32 | case/function lookup; not power-up state |
+| `karu64.varith_u.i_vcrypto.i_sm4.constant_lookup@rtl/zvk/karu_sm4_iter.v:81.13-115.20#c24c9ad60f66[0]` | 32 × 32 | case/function lookup; not power-up state |
 
 No initial processes, memory initialization cells or initialized nets
 remain in the elaborated ASIC design. Constant lookup tables generated
