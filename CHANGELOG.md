@@ -28,8 +28,10 @@ yet; unreleased changes appear first, followed by merged checkpoints.
   `vcu118-ddr-sgmii-rom-rva23s64`): `b11d5efb…3b809`, routed setup/hold
   0.000/+0.012 ns whole-design and +0.077/+0.012 ns on `cpu_clk`, 14/14 bus
   skew, 0 DRC errors, 349,701 LUTs; no worst path touches the FP register
-  file. Pre-synth gate: H fixtures, preemption and full ACT4 2872/2872. Board
-  acceptance pending; see the
+  file. Pre-synth gate: H fixtures, preemption and full ACT4 2872/2872. The
+  programmed image boots Linux 7.2.6-zvk and passes `board_accept.sh`, including
+  memory, cache, crypto and KVM API checks; the FP probe completed. Full
+  on-board TestFloat3 remains in progress. See the
   [release diagnostics](doc/release-diagnostics-2026-09-14.md#1w2r-fp-register-file-image--2026-09-24).
 
 ### Board validation — 2026-09-22

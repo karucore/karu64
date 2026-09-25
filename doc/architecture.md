@@ -520,7 +520,7 @@ Svpbmt for verification. Architectural, integrated bus-observer and directed
 fault tests pass, including physical-device native-width behavior. Broader
 platform/profile assurance and hardware boot are separate results, not implied
 by those focused tests. The current profile's independent area/timing,
-September 22 board acceptance and KVM guest results
+September 25 board acceptance and September 22 KVM guest results
 are in the [release diagnostics](release-diagnostics-2026-09-14.md).
 
 ## Invariants and hang guards (`rtl/karu_assert.sv`)

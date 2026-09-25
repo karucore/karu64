@@ -49,10 +49,12 @@ not inside of, and reports the one shape it does not rewrite (a shared
 `wire x =` head with one body per `ifdef` branch). The 2026-09-21 rewrite was
 verified equivalent by a per-file Yosys RTLIL diff before/after, strict
 `iverilog -g2001` parses in eight configurations, the simulation
-regressions, and the Vivado elaboration check. The rebuilt FPGA image
-`03eeb088` also passes the September 22 Linux, KVM guest, crypto, vector ABI
-and cache checks; forced vector SM4 matches reference and scalar outputs.
-See the [board results](../../doc/release-diagnostics-2026-09-14.md#board-acceptance--2026-09-22).
+regressions, and the Vivado elaboration check. The Genus-cleanup FPGA image
+`03eeb088` passed the September 22 Linux, KVM guest, crypto, vector ABI
+and cache checks; forced vector SM4 matched reference and scalar outputs.
+The later 1W2R FP image `b11d5efb` closes FPGA routed timing and passes
+September 25 board acceptance and the FP probe. See the
+[image-specific board results](../../doc/release-diagnostics-2026-09-14.md).
 
 Use the definitions as well as the file list. **`KARU_ASIC` is required** to
 exclude FPGA power-up initialization. Do not define `SIM_TB`,

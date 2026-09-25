@@ -4,7 +4,9 @@ This file records the current release measurements for the `karu64` processor
 top. Older checkpoints and superseded tool runs are intentionally omitted;
 the retained output manifests under `_build/syn_out` bind each result to its
 exact RTL, scripts, tools and Liberty input. These September 15 measurements
-predate the Genus declaration cleanup; September 22 board results are in the
+predate the Genus declaration cleanup and the 1W2R FP register-file change;
+no updated Yosys/OpenSTA area matrix is claimed for that image. Its FPGA
+routed timing and board results are in the
 [release diagnostics](../../doc/release-diagnostics-2026-09-14.md).
 
 These are comparative NanGate45 standard-cell estimates. They are not an ASIC

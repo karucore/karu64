@@ -1,22 +1,24 @@
-# RVA23S64 release diagnostics — updated 2026-09-22
+# RVA23S64 release diagnostics — updated 2026-09-25
 
 This is the current handoff record for the opt-in RVA23S64 shipping
 configuration. It reports source, simulation, synthesis and board evidence as
 separate results. A passing configured suite or mapped estimate is not by
 itself an ISA certification or physical signoff result.
 
-The September 22 image passes board acceptance and the thorough Linux
-7.2.6-zvk test run, including both KVM guests and vector SM4. No functional
-regression was observed against the September 15 image.
+The current `b11d5efb…3b809` image with the 1W2R FP register file boots
+Linux 7.2.6-zvk and passes board acceptance. Its FP probe completed;
+full on-board TestFloat3 is still running. The September 22 reference image
+also passed the separately recorded KVM guest and vector SM4 tests.
 
 ## Source scope
 
-The Genus declaration-order cleanup is recorded in commit `26b421c` on
-`mjos-dev`; its source checks are described in the
+The Genus declaration-order cleanup is in merged commit `6fb913e`; its
+source checks are described in the
 [ASIC handoff](../flow/asic/README.md#coding-rules-for-the-genus-front-end).
 The simulation, ACT4 and synthesis reference results below belong to the
 September 15 checkpoint `a0062b9`, before that cleanup. The September 22
-hardware results are tied to the new bitstream hash separately.
+and September 25 hardware results are tied to their bitstream hashes separately.
+The 1W2R FP register file was built from `7c2563e`.
 
 The shipping composition is:
 
@@ -113,25 +115,24 @@ The standard target writes `_build/vcu118_ddr.bit`, reports under
 `_build/fpga_rpt`, and `_build/vcu118_ddr_build.log`; it does not program the
 board. This release implementation uses Vivado 2026.1.
 
-The current transfer contains only these files:
+The September 22 reference transfer contained:
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
 | `_build/vcu118_ddr.bit` | 80,159,322 | `03eeb088971ef3a19183516ea53675cbaa141b8a935155cd8c80fb403a2e73d2` |
 | `_build/vcu118_ddr.ltx` | 1,010 | `b4b1ce76f88f53501ca477b1c9203509a74dfbee529023656c78e5610b58c3f7` |
 
-The bitstream header identifies Vivado 2026.1, `vcu118_ddr_top`, part
-`xcvu9p-flga2104-2L-e`, and build date September 22. Programming with
-Vivado/hw_server 2025.2.1 completed successfully; live UART capture remains
-`_build/boot.log`.
+That bitstream was programmed and accepted on September 22. The current
+`_build/vcu118_ddr.bit` is the September 24 build listed below. The standard
+UART capture location is `_build/boot.log`.
 
-The retained routed reports under `_build/fpga_rpt` describe the September
-15 `c61da577…ed0da` reference image: CPU setup/hold **+0.046/+0.010 ns** at
+The September 15 reference reports for `c61da577…ed0da` measured CPU
+setup/hold **+0.046/+0.010 ns** at
 75 MHz, whole-design **+0.009/+0.010 ns**, all 14 bus-skew constraints PASS,
 and zero bitgen DRC errors. Reference utilization is 366,098 LUTs, 86,857
 registers, 317.5 BRAM tiles and 29 DSPs. September 22 timing/utilization
-reports were not transferred; these figures must not be relabelled as new
-measurements.
+reports were not transferred, and neither reference report set is in this
+programming bundle. These figures must not be relabelled as new measurements.
 
 ## Board acceptance — 2026-09-22
 
@@ -187,9 +188,12 @@ routing 31 min, post-route `phys_opt_design` 47 s, bitstream 2 min.
 | `_build/vcu118_ddr.ltx` | 1,010 | `b4b1ce76f88f53501ca477b1c9203509a74dfbee529023656c78e5610b58c3f7` |
 
 The bitstream header identifies `vcu118_ddr_top`, `xcvu9p-flga2104-2L-e`,
-2026/09/24 20:27. `_build/vcu118_programming.tgz` packs both files.
+2026/09/24 20:27. `_build/vcu118_programming.tgz` packs both files; its SHA-256
+is `e8c3081005a9dcb96830f524385ce6fa43e5d4e1e696b2d976fe2b05c784eba8`.
 
-Routed timing at 75 MHz, from `_build/fpga_rpt/ddr_rva23s64_sgmii_75_rom__*`:
+Routed timing at 75 MHz, from the build host's
+`_build/fpga_rpt/ddr_rva23s64_sgmii_75_rom__*` reports (the programming
+transfer contains only the bitstream and `.ltx`):
 
 | Metric | Result |
 | --- | --- |
@@ -213,8 +217,37 @@ and the complete ACT4 profile inventory (2872/2872) in addition to the FP,
 FMA-hazard, TestFloat, ASIC and lint checks recorded in the changelog. Boot
 inputs (`make rva23-boot-inputs-check`) are the unchanged karudeb `main`
 (`96ccaca`): `karu64-rva23s64-ddr.dtb`, OpenSBI `fw_jump.bin` and the staged
-`rva23s64-ddr` netboot one-liner. **Board programming and acceptance of this
-image have not been run**; `03eeb088…e73d2` remains the last accepted image.
+`rva23s64-ddr` netboot one-liner.
+
+### Board validation — 2026-09-25
+
+The programming host verified the bundle hash, programmed `b11d5efb…3b809`
+over JTAG with Vivado/hw_server 2025.2.1, and captured UART at
+`_build/boot.log`. The bitstream reached DDR calibration, fu-boot,
+OpenSBI 1.8.1, U-Boot 2025.01, Linux 7.2.6-zvk and the Debian NFS-root
+console. The karudeb agent ran `board_accept.sh` as root and reported PASS.
+
+| Check on the new image | Result |
+| --- | --- |
+| NFS root, Ethernet, ISA/DT profile leaves | PASS |
+| KVM API VM/vCPU creation and run-area mapping | PASS; no guest execution in this check |
+| Userspace memory patterns | 256 MiB, three patterns PASS |
+| Zvknhk OpenSSL checks | 17 PASS across vector and software backends |
+| `vill_probe` | 6/6 PASS |
+| Cache-window probe | PASS; fetch 4.42/4.39 cycles per instruction, loads 14.21/14.30 cycles per load inside/outside the former 256 MiB boundary |
+| User-only PMU probe | PASS under `board_accept.sh`'s 20% tolerance; x1.16 instruction ratio |
+| `fp_probe` | Completed; independent `fmadd.d` 65.883, `fmul.d` 62.715 and `fadd.d` 6.932 cycles/op (best of five) |
+| On-board TestFloat3 | Running; preliminary `f64_mul` level-1 calibration: 46,464 tests, zero errors; full result pending |
+
+The new image is accepted for the FPGA bring-up trial on the completed board
+checks. The prior September 22 image's KVM guest tests, 92 OpenSSL known-answer
+comparisons and other extended suites remain reference results until repeated
+on this hash. The FP probe gives useful timing data but is not a before/after
+latency comparison.
+
+The agent's raw acceptance files are under `/root/accept-20260925/` in the
+NFS root; the FP and TestFloat transcripts are in its scratchpad. A local
+snapshot and the programming log are under `_build/board-results-20260925/`.
 
 ## Retained artifacts
 

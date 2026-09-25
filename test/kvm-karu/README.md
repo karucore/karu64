@@ -254,6 +254,10 @@ guest debug correction needed by the pinned 7.1.2 simulation fixture. See the
 image identity and evidence. These guest results supplement the KVM API
 creation/mapping probe in `board_accept.sh`.
 
+The September 25 1W2R FP image `b11d5efb` passes the KVM API probe on the
+same kernel. Its two guest selftests have not yet been repeated; the
+September 22 results above remain tied to their original image.
+
 The fixture's fifteen runner tests include host-boot-only, missing-marker,
 skip, duplicate-result/completion, trailing failure, timeout, EOF, and panic
 negative controls. Kernel and guest

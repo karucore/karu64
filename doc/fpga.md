@@ -17,23 +17,22 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Current profile image — 2026-09-22
+## Current profile image — 2026-09-25
 
-The RVA23S64 DDR/SGMII ROM image `03eeb088…e73d2` was built with Vivado
-2026.1 after the Genus declaration-order cleanup. It boots Linux 7.2.6-zvk
-and passes board acceptance plus the thorough crypto, vector ABI, cache and
-KVM guest tests. OpenSSL has 92/92 known-answer and scalar-reference matches;
-both `ebreak_test` and `arch_timer` exit zero.
+The RVA23S64 DDR/SGMII ROM image `b11d5efb…3b809` contains the 1W2R FP
+register file (`7c2563e`). Vivado 2026.1 closed routed timing at 75 MHz:
+whole-design setup/hold 0.000/+0.012 ns, `cpu_clk` +0.077/+0.012 ns,
+14/14 bus-skew constraints met and zero bitstream DRC errors. The routed
+reports remain on the build host; this programming host received the `.bit`
+and `.ltx` bundle.
 
-The latest transferred artifacts are the `.bit` and `.ltx` only. Retained
-routed timing/utilization reports belong to the September 15 reference build.
-See [diagnostics and result hashes](release-diagnostics-2026-09-14.md)
-and the [matching boot selection](#opt-in-rva23s64-boot-selection).
-
-A newer image, `b11d5efb…3b809` (2026-09-24, commit `7c2563e`, two-read-port
-FP register file), is built and timing-closed with fresh routed reports under
-`_build/fpga_rpt`, but has not been programmed or board-accepted yet; see the
-[2026-09-24 diagnostics entry](release-diagnostics-2026-09-14.md#1w2r-fp-register-file-image--2026-09-24).
+The image was programmed on September 25. It boots Linux 7.2.6-zvk from NFS
+and passes `board_accept.sh` (memory, cache, crypto, KVM API and profile checks).
+An FP probe completed; full on-board TestFloat3 is running. The September 22
+reference image `03eeb088…e73d2` passed additional KVM guest, OpenSSL and
+vector ABI tests, recorded separately by image hash. See
+[diagnostics and result hashes](release-diagnostics-2026-09-14.md) and the
+[matching boot selection](#opt-in-rva23s64-boot-selection).
 
 ## Tool environment
 
@@ -332,8 +331,10 @@ An address-space limit is not a resident-memory limit.
 ## Hardware status and repeat-build checks
 
 The current image passes Linux/NFS-root boot, memory and cache probes,
-OpenSSL/riscv-pqc checks, vector ABI selftests and both KVM exception/timer
-guests. Detailed counts and evidence are in the release diagnostics.
+Zvknhk OpenSSL checks, `vill_probe` and the KVM API check. The FP probe has
+completed; full TestFloat3 is in progress. The extended vector ABI,
+riscv-pqc and KVM guest results in the release diagnostics belong to the
+September 22 reference image.
 
 For each new build, retain its routed timing reports, rerun `board_accept.sh`
 as root with `perf_run`-enabled cache counters, and record crypto and KVM
