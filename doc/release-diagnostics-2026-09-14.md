@@ -172,6 +172,50 @@ This run used `scp` for the twelve selftest binaries. An optional ACL grant
 in karudeb's `install-nfs-root.sh` would make repeated deployment easier;
 no installer change was made here.
 
+## 1W2R FP register file image — 2026-09-24
+
+Built from commit `7c2563e` (two-read-port `karu_fregfile`, FMA rs3 on the
+time-shared port B; see the [changelog](../CHANGELOG.md)) with
+`flow/with_vivado.sh make vcu118-ddr-sgmii-rom-rva23s64 VIVADO_THREADS=8`,
+Vivado 2026.1, from an empty `_build` (all IP, U-Boot and ROM inputs
+regenerated). Wall clock 1 h 54 min: synthesis 19 min, placement 37 min,
+routing 31 min, post-route `phys_opt_design` 47 s, bitstream 2 min.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `_build/vcu118_ddr.bit` | 80,159,322 | `b11d5efb79a544f9205c893a7fd0b038302f71adc5e7fd12b54459bb3bc3b809` |
+| `_build/vcu118_ddr.ltx` | 1,010 | `b4b1ce76f88f53501ca477b1c9203509a74dfbee529023656c78e5610b58c3f7` |
+
+The bitstream header identifies `vcu118_ddr_top`, `xcvu9p-flga2104-2L-e`,
+2026/09/24 20:27. `_build/vcu118_programming.tgz` packs both files.
+
+Routed timing at 75 MHz, from `_build/fpga_rpt/ddr_rva23s64_sgmii_75_rom__*`:
+
+| Metric | Result |
+| --- | --- |
+| Whole design setup / hold / pulse width | **0.000 / +0.012 / +0.005 ns**, 0 failing of 238,917 endpoints |
+| `cpu_clk` setup / hold | **+0.077 / +0.012 ns**, 178,449 endpoints |
+| Zero-slack endpoints | AXI width-converter to clock-converter FIFO paths inside the Xilinx DDR interconnect IP (`u_dwc` → `u_cdc`), as in earlier images |
+| Bus skew | 14/14 constraints MET |
+| DRC before bitstream | 0 errors |
+| Synthesis log | 0 errors; 1 critical warning, the generated `ddr4_0_board.xdc` `BOARD_PART_PIN` line (Xilinx IP, benign) |
+| Utilization | 349,701 LUTs, 87,428 registers, 5,099 LUT-as-memory, 317.5 BRAM tiles, 29 DSPs |
+
+The router finished at −0.086 ns; the flow's automatic post-route
+`phys_opt_design` closed it. None of the 100 worst-slack paths involves the
+FP register file, the rs3 address steer or the FMA units; `frf/fx_reg` is
+inferred as LUTRAM with two read replicas instead of three. Utilization is
+16,397 LUTs below the September 15 reference figure, though that reference
+predates other changes, so it is not attributable to this change alone.
+
+Gate before synthesis, all on `7c2563e`: `h-test` fixtures, `h-preempt-test`
+and the complete ACT4 profile inventory (2872/2872) in addition to the FP,
+FMA-hazard, TestFloat, ASIC and lint checks recorded in the changelog. Boot
+inputs (`make rva23-boot-inputs-check`) are the unchanged karudeb `main`
+(`96ccaca`): `karu64-rva23s64-ddr.dtb`, OpenSBI `fw_jump.bin` and the staged
+`rva23s64-ddr` netboot one-liner. **Board programming and acceptance of this
+image have not been run**; `03eeb088…e73d2` remains the last accepted image.
+
 ## Retained artifacts
 
 Generated build products stay under `_build`. For handoff retain at least:

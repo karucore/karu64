@@ -24,6 +24,13 @@ yet; unreleased changes appear first, followed by merged checkpoints.
   an immediately following FMA, chains, aliasing, malformed NaN boxes and FMAs
   accepted as a busy unit drains, digest-compared with Spike. `flow/asic` inventory and
   `test/tb_asic_mem.sv` updated for the two-port file.
+- VCU118 profile image built from this change (`7c2563e`, Vivado 2026.1,
+  `vcu118-ddr-sgmii-rom-rva23s64`): `b11d5efb…3b809`, routed setup/hold
+  0.000/+0.012 ns whole-design and +0.077/+0.012 ns on `cpu_clk`, 14/14 bus
+  skew, 0 DRC errors, 349,701 LUTs; no worst path touches the FP register
+  file. Pre-synth gate: H fixtures, preemption and full ACT4 2872/2872. Board
+  acceptance pending; see the
+  [release diagnostics](doc/release-diagnostics-2026-09-14.md#1w2r-fp-register-file-image--2026-09-24).
 
 ### Board validation — 2026-09-22
 

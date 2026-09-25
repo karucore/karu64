@@ -30,6 +30,11 @@ routed timing/utilization reports belong to the September 15 reference build.
 See [diagnostics and result hashes](release-diagnostics-2026-09-14.md)
 and the [matching boot selection](#opt-in-rva23s64-boot-selection).
 
+A newer image, `b11d5efb…3b809` (2026-09-24, commit `7c2563e`, two-read-port
+FP register file), is built and timing-closed with fresh routed reports under
+`_build/fpga_rpt`, but has not been programmed or board-accepted yet; see the
+[2026-09-24 diagnostics entry](release-diagnostics-2026-09-14.md#1w2r-fp-register-file-image--2026-09-24).
+
 ## Tool environment
 
 Use the wrapper to load Vivado's settings for one command. It keeps bundled
