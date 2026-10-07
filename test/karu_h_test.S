@@ -4233,6 +4233,8 @@ hctx_keccak_init:
     li t0,0x40020800
     vsetivli zero,25,e64,m8,tu,mu
     vle64.v v0,(t0)
+    li t1,32                // Zvknhk element group: vkeccak.vi needs e64,m8,vl=32
+    vsetvli zero,t1,e64,m8,tu,mu
     .word 0xa6092077 // vkeccak.vi v0,0: 24 rounds; keep result resident.
     j hctx_guest_done
 hctx_keccak_other:
@@ -4242,8 +4244,9 @@ hctx_keccak_other:
     .word 0xa6092077
     j hctx_guest_done
 hctx_keccak_chain:
-    .word 0xa6192077 // vkeccak.vi v0,1: final12 rounds after guestA restore.
+    .word 0xa6192077 // vkeccak.vi v0,1: final12 rounds after guestA restore (restored vl=32).
     li t0,0x40020800
+    vsetivli zero,25,e64,m8,tu,mu   // store only the 25 live state words
     vse64.v v0,(t0)
     la t1,hctx_keccak_expected
     li t2,25

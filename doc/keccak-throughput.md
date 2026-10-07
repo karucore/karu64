@@ -65,11 +65,45 @@ and therefore should not be added as exact instruction costs:
 The secondary 200-byte load–permute–store wrapper falls from 428.06 to
 234.06 cycles (without a per-iteration vset).
 
+## Element-group `vl` switching — 2026-10-06
+
+`vkeccak.vi` now follows the Zvknhk element-group rules
+([rtl/zvk/README.md](../rtl/zvk/README.md#zvknhk-vkeccakvi-riscv-pqc)): at
+VLEN=256 it must run at `e64,m8,vl=32`, while a rate block is moved at
+`vl=21` or `vl=17` and the 25 live state words at `vl=25`. The resident
+sponge loops therefore switch `vl` twice per block
+(`vsetvli x0,t0,e64,m8,tu,mu` with `t0=32`, then `vsetivli` back to the rate).
+The permutation itself is unchanged. Same simulator configuration as above,
+old sequences on the previous RTL against new sequences on the new RTL:
+
+| Operation | Rate | Before | After | Change |
+|---|---:|---:|---:|---:|
+| SHAKE128 absorb | 168 B | 221.75 | 228.88 | +7.13 |
+| SHAKE256 absorb (also SHA3-256 rate) | 136 B | 197.75 | 209.56 | +11.81 |
+| SHAKE128 squeeze | 168 B | 156.88 | 163.75 | +6.87 |
+| SHAKE256 squeeze | 136 B | 144.56 | 151.56 | +7.00 |
+| Resident 24-round permutation | - | 79.06 | 79.38 | +0.32 |
+| Resident 12-round permutation | - | 67.38 | 67.06 | -0.32 |
+| `vl` switch pair (32 <-> rate), new component row | - | - | 7.06 | - |
+| Load 25, permute, store 25 wrapper (now with two `vl` switches) | 200 B | 237.38 | 250.38 | +13.00 |
+| ML-KEM-style out-of-line wrapper | 200 B | 301.06 | 309.06 | +8.00 |
+
+The switch pair costs about 7 cycles per block, 3% to 5% of a rate block.
+The unrelated load/store component rows moved by up to 5.5 cycles in either
+direction between the two binaries although their instructions are
+identical; with the instruction cache disabled these unrolled loops are
+sensitive to where the body falls relative to the 8-byte fetch word, and the
+136 B absorb difference includes such a shift. Treat single-cycle
+differences between binaries accordingly. The earlier "without a
+per-iteration vset" wrapper row no longer has a legal equivalent at
+`vl=25`; the benchmark's replacement moves a padded 32-word state at
+constant `vl=32` (270.06 cycles) and is not comparable with it.
+
 ## Implemented changes
 
 - Keccak reload uses both VRF BRAM ports, fetching a whole 256-bit register
-  per fill. It still reloads the fixed group and preserves the seven tail
-  lanes; no coherent shadow state was introduced.
+  per fill. It still reloads the whole element group and preserves the seven
+  tail lanes; no coherent shadow state was introduced.
 - Adapter demand fills launch their synchronous reads immediately when no
   write must first drain. Captured writes retain the existing replay
   suppression and read-before-write ordering.

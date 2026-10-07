@@ -27,8 +27,9 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 - [FPGA bring-up](doc/fpga.md) — VCU118 build/programming instructions,
   UART capture, Linux netboot, memory map and board acceptance.
-- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — September 25
-  board results, routed FPGA timing and reference synthesis measurements.
+- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — board
+  results through 2026-10-07, routed FPGA timing and reference synthesis
+  measurements.
 - [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
   pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
   the build-time configuration knobs, and RVA23 feature coverage.
@@ -45,7 +46,8 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   reproducible RV64GC / Zbb / vector-enabled C comparisons with the resident
   hardware path (`make keccak-compare`, harness in `test/keccak-sw/`).
 - [CHANGELOG.md](CHANGELOG.md) — release notes; the Zvknhk `vkeccak.vi`
-  encoding change is a breaking change for software built for the June tree.
+  changes (the riscv-pqc encoding, then the v0.2 element-group semantics) are
+  breaking for software built against earlier trees.
  
 ## Repo layout
 
@@ -74,11 +76,14 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   ACT4 dependency patches and exact reproduction flow are documented in
   [test/act4-karu/README.md](test/act4-karu/README.md); configured-suite
   coverage is not a certification claim.
-- The current 1W2R FP register-file image (`b11d5efb…3b809`) runs at 75 MHz,
-  meets routed timing and passes Linux 7.2.6-zvk board acceptance, including
-  memory, cache, crypto and KVM API checks. An on-board FP probe completed;
-  full TestFloat3 is running. The previous image passed the KVM guest and
-  extended vector ABI suites. Image-specific results are in
+- The current image (`28085356…abbd7`, element-group `vkeccak.vi` per Zvknhk
+  v0.2) runs at 75 MHz, meets routed timing and passes Linux 7.2.6-zvk board
+  acceptance (2026-10-07) plus the Zvknhk software checks: OpenSSL 4.0.2
+  17/17, riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs 720/720 and 20/20
+  encoding-conformance cases. The previous 1W2R FP register-file image
+  (`b11d5efb…3b809`) passed board acceptance, the FP probe and on-board
+  Berkeley TestFloat-3e (36 functions, 0 errors); earlier images passed the
+  KVM guest and extended vector ABI suites. Image-specific results are in
   [the diagnostics](doc/release-diagnostics-2026-09-14.md).
 - Full Zvbb is cross-checked against Spike by `make zvbb-test-all`. Zvk known
   answers, decode, multi-element-group `.vs` semantics and Keccak are covered

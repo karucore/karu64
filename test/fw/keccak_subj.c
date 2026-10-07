@@ -9,13 +9,23 @@
 //
 //  Known answers are the KECCAK-P / KECCAK-P12 vectors of riscv-pqc
 //  zvknhk/test (state element i = i), cross-checked against an independent
-//  Keccak-p[1600] model. Then the fixed-group rules of zvknhk.adoc are
-//  exercised: the op ignores vl (even vl=0) and LMUL, updates only elements
-//  0..24 of the 2048-bit group at vd (NREG=8 registers at VLEN=256), leaves
-//  the state tail (elements 25..31) and neighbouring registers untouched, and
-//  the reserved encodings trap (cause 2) without side effects.
+//  Keccak-p[1600] model. Then the element-group rules of zvknhk.adoc are
+//  exercised. The instruction permutes element groups vstart/32 .. vl/32-1 of
+//  the vd register group (EGS=32, EGW=2048, SEW=64); at VLEN=256 an LMUL=8
+//  group holds exactly one element group, so:
+//    - e64,m8, vl=32, vstart=0 permutes elements 0..24 of the group and leaves
+//      the state tail (elements 25..31, also under vta=1) and the neighbouring
+//      registers untouched;
+//    - an empty range (vl=0, or vstart a multiple of 32 and >= vl) is a no-op
+//      that completes and zeroes vstart;
+//    - SEW != 64, LMUL*VLEN < 2048 (any LMUL but 8, even at vl=0), vd not
+//      aligned to LMUL, vl or vstart not a multiple of 32, vm=0, imm5 > 1 and
+//      vill all raise illegal-instruction (cause 2) with no side effects and
+//      vstart preserved.
 //
-//  This is the karu64 counterpart of riscv-pqc zvknhk/test/keccak_insn.c.
+//  This is the karu64 counterpart of riscv-pqc zvknhk/test/keccak_insn.c,
+//  test_groups.c and edge_probe.c; `make keccak-test-all` runs the same ELF on
+//  the riscv-pqc reference Spike and compares every line.
 
 #include <stdint.h>
 #include "sio_generic.h"
@@ -105,149 +115,183 @@ static void check_lanes(const char *name, const uint64_t *got, const uint64_t *e
     fails += bad;
 }
 
-static void check_trap(const char *name, int got, int exp)
-{
-    //  Expected-trap cases must be cause-2 (illegal instruction); g_mcause holds
-    //  the last trap's mcause, set synchronously by kec_tvec during the op.
-    int bad = (got != exp) || (exp > 0 && g_mcause != 2);
-    if (!bad) { sio_puts("[PASS] "); sio_puts(name); sio_putc('\n'); }
-    else {
-        sio_puts("[FAIL] "); sio_puts(name);
-        sio_puts(" traps="); put_dec((uint32_t)got);
-        sio_puts(" exp="); put_dec((uint32_t)exp);
-        sio_puts(" mcause=0x"); put_hex64(g_mcause); sio_putc('\n');
-        fails++;
-    }
-}
-
 static void init_state(void)
 {
     for (int i = 0; i < 25; i++) st[i] = (uint64_t)i;
     for (int i = 25; i < 32; i++) st[i] = TAIL(i);
 }
 
+//  e64,m8 with vl=32 (one whole element group) / vl=25 (the live state words)
+#define VL32  "li t0,32\n vsetvli x0,t0,e64,m8,tu,mu\n"
+#define VL25  "vsetivli x0,25,e64,m8,tu,mu\n"
+
+static uint64_t g16[32] __attribute__((aligned(64)));
+static uint64_t g0[32]  __attribute__((aligned(64)));
+
+static void check_case(const char *name, int traps, int exp_traps,
+                       uint64_t vstart, uint64_t exp_vstart)
+{
+    //  Expected-trap cases must be cause-2 (illegal instruction); g_mcause holds
+    //  the last trap's mcause, set synchronously by kec_tvec during the op.
+    int bad = (traps != exp_traps) || (exp_traps > 0 && g_mcause != 2) ||
+              (vstart != exp_vstart);
+    if (!bad) { sio_puts("[PASS] "); sio_puts(name); sio_putc('\n'); }
+    else {
+        sio_puts("[FAIL] "); sio_puts(name);
+        sio_puts(" traps="); put_dec((uint32_t)traps);
+        sio_puts(" exp="); put_dec((uint32_t)exp_traps);
+        sio_puts(" mcause=0x"); put_hex64(g_mcause);
+        sio_puts(" vstart="); put_dec((uint32_t)vstart);
+        sio_puts(" exp="); put_dec((uint32_t)exp_vstart); sio_putc('\n');
+        fails++;
+    }
+}
+
 int main(void)
 {
     sio_puts("[Zvknhk vkeccak.vi]\n");
 
-    //  ---- 1. 24 rounds, vd=v0: the spec test's own sequence (vl=25, LMUL=8) ----
+    //  ---- 1. 24 rounds, vd=v0: the spec test's own sequence -- load the 25
+    //  live words, vl=32 for one element group, permute, vl=25 to store ----
     init_state();
     asm volatile(
-        "vsetivli x0, 25, e64, m8, tu, mu\n"
-        "vle64.v v0, (%[s])\n"
-        ".word %[w]\n"
-        "vse64.v v0, (%[s])\n"
-        :: [s]"r"(st), [w]"i"(VKECCAK_VI(0, 0)) : "memory");
+        VL25 "vle64.v v0, (%[s])\n"
+        VL32 ".word %[w]\n"
+        VL25 "vse64.v v0, (%[s])\n"
+        :: [s]"r"(st), [w]"i"(VKECCAK_VI(0, 0)) : "t0", "memory");
     check_lanes("KECCAK-P    vkeccak.vi v0,0  (24 rounds)", st, exp_p24, 25);
 
     //  ---- 2. 12 rounds, vd=v8 ----
     init_state();
     asm volatile(
-        "vsetivli x0, 25, e64, m8, tu, mu\n"
-        "vle64.v v8, (%[s])\n"
-        ".word %[w]\n"
-        "vse64.v v8, (%[s])\n"
-        :: [s]"r"(st), [w]"i"(VKECCAK_VI(8, 1)) : "memory");
+        VL25 "vle64.v v8, (%[s])\n"
+        VL32 ".word %[w]\n"
+        VL25 "vse64.v v8, (%[s])\n"
+        :: [s]"r"(st), [w]"i"(VKECCAK_VI(8, 1)) : "t0", "memory");
     check_lanes("KECCAK-P12  vkeccak.vi v8,1  (12 rounds)", st, exp_p12, 25);
 
     //  ---- 3. two dependent ops back to back: 24 then 12 rounds on v0 ----
     init_state();
     asm volatile(
-        "vsetivli x0, 25, e64, m8, tu, mu\n"
-        "vle64.v v0, (%[s])\n"
-        ".word %[w24]\n"
+        VL25 "vle64.v v0, (%[s])\n"
+        VL32 ".word %[w24]\n"
         ".word %[w12]\n"
-        "vse64.v v0, (%[s])\n"
-        :: [s]"r"(st), [w24]"i"(VKECCAK_VI(0, 0)), [w12]"i"(VKECCAK_VI(0, 1)) : "memory");
+        VL25 "vse64.v v0, (%[s])\n"
+        :: [s]"r"(st), [w24]"i"(VKECCAK_VI(0, 0)), [w12]"i"(VKECCAK_VI(0, 1)) : "t0", "memory");
     check_lanes("chained     vkeccak.vi v0,0 ; v0,1", st, exp_chain, 25);
 
-    //  ---- 4. fixed group at vd=v16 with vl=0 / LMUL=1 in vtype: still the full
-    //  permutation; the state tail (elements 25..31) and the neighbouring
-    //  registers v15 / v24 are untouched ----
+    //  ---- 4. element group at vd=v16: the state tail (elements 25..31) is
+    //  part of the body but must stay bit-for-bit unchanged, and the
+    //  neighbouring registers v15 / v24 are untouched ----
     init_state();
     asm volatile(
-        "vsetvli x0, %[n32], e64, m8, tu, mu\n"
-        "vle64.v v16, (%[s])\n"                //  whole 2048-bit group v16..v23
+        VL32 "vle64.v v16, (%[s])\n"            //  whole 2048-bit group v16..v23
         "vsetivli x0, 4, e64, m1, tu, mu\n"
         "vle64.v v15, (%[q])\n"                //  register just below the group
         "vle64.v v24, (%[q])\n"                //  register just above the group
-        "vsetivli x0, 0, e64, m1, tu, mu\n"    //  vl = 0, LMUL = 1: must not matter
-        ".word %[w]\n"
-        "vsetvli x0, %[n32], e64, m8, tu, mu\n"
+        VL32 ".word %[w]\n"
         "vse64.v v16, (%[s])\n"
         "vsetivli x0, 4, e64, m1, tu, mu\n"
         "vse64.v v15, (%[lo])\n"
         "vse64.v v24, (%[hi])\n"
         :: [s]"r"(st), [q]"r"(sent), [lo]"r"(nlo), [hi]"r"(nhi),
-           [n32]"r"(32L), [w]"i"(VKECCAK_VI(16, 0)) : "memory");
+           [w]"i"(VKECCAK_VI(16, 0)) : "t0", "memory");
     {
         uint64_t exp[32];
         for (int i = 0; i < 25; i++) exp[i] = exp_p24[i];
         for (int i = 25; i < 32; i++) exp[i] = TAIL(i);
-        check_lanes("fixed group v16 @vl=0,LMUL=1: state + tail", st, exp, 32);
+        check_lanes("group v16 @vl=32,m8: state + state tail", st, exp, 32);
         check_lanes("neighbour v15 untouched", nlo, sent, 4);
         check_lanes("neighbour v24 untouched", nhi, sent, 4);
     }
 
-    //  ---- 5. top group vd=v24 (v24..v31) with vl=4 / LMUL=1, 12 rounds ----
+    //  ---- 5. top group vd=v24, 12 rounds, tail-agnostic policy: the state
+    //  tail is not the architectural tail, so vta=1 must not disturb it ----
     init_state();
     asm volatile(
-        "vsetivli x0, 25, e64, m8, tu, mu\n"
-        "vle64.v v24, (%[s])\n"
-        "vsetivli x0, 4, e64, m1, tu, mu\n"    //  vl = 4, LMUL = 1: must not matter
+        VL32 "vle64.v v24, (%[s])\n"
+        "vsetvli x0, t0, e64, m8, ta, ma\n"     //  vl = 32, vta = vma = 1
         ".word %[w]\n"
-        "vsetivli x0, 25, e64, m8, tu, mu\n"
-        "vse64.v v24, (%[s])\n"
-        :: [s]"r"(st), [w]"i"(VKECCAK_VI(24, 1)) : "memory");
-    check_lanes("KECCAK-P12  vkeccak.vi v24,1 @vl=4,LMUL=1", st, exp_p12, 25);
+        VL32 "vse64.v v24, (%[s])\n"
+        :: [s]"r"(st), [w]"i"(VKECCAK_VI(24, 1)) : "t0", "memory");
+    {
+        uint64_t exp[32];
+        for (int i = 0; i < 25; i++) exp[i] = exp_p12[i];
+        for (int i = 25; i < 32; i++) exp[i] = TAIL(i);
+        check_lanes("KECCAK-P12  vkeccak.vi v24,1 @ta,ma: state + state tail", st, exp, 32);
+    }
 
-    //  ==== reserved encodings (zvknhk.adoc "Reserved Encodings" + vstart) ====
-    //  A reserved encoding must raise cause 2 and have NO side effects. v0..v7
-    //  are preloaded with A[i]=i so the two legal control cases permute them,
-    //  and v16..v23 hold the same state+tail pattern as the target of every
-    //  trapping case; both groups are checked afterwards.
-    sio_puts("[Zvknhk reserved encodings]\n");
+    //  ==== element-group range and reserved encodings ====
+    //  v0..v7 are preloaded with A[i]=i so the two legal control cases permute
+    //  them (24 then 12 rounds), and v16..v23 hold the same state + tail
+    //  pattern as the target of every empty-range and trapping case; both
+    //  groups are checked afterwards. Each case also reads vstart right after
+    //  the instruction: a completed vkeccak.vi (even an empty one) zeroes it,
+    //  a trapped one leaves it as written.
     init_state();
     asm volatile(
-        "vsetvli x0, %[n32], e64, m8, tu, mu\n"
-        "vle64.v v0, (%[s])\n"
+        VL32 "vle64.v v0, (%[s])\n"
         "vle64.v v16, (%[s])\n"
-        :: [s]"r"(st), [n32]"r"(32L) : "memory");
-    //  Install the skip-and-resume trap handler ONLY here.
+        :: [s]"r"(st) : "t0", "memory");
+    //  Install the skip-and-resume trap handler ONLY here. kec_tvec clobbers
+    //  t0 AND t1 (mret does not restore GPRs), so every asm that can trap
+    //  lists both; vstart is read into a register the compiler picks outside
+    //  that set.
     asm volatile("la t0,kec_tvec\n csrw mtvec,t0" ::: "t0");
-    //  kec_tvec clobbers t0 AND t1 (mret does not restore GPRs), so every asm
-    //  that can trap lists both.
-    #define TRAP_CASE(nm, setup, word, exp) do { uint32_t _t = g_traps; \
-        asm volatile(setup "\n .word %0\n" :: "i"(word) : "t0", "t1", "memory"); \
-        check_trap(nm, (int)(g_traps - _t), exp); } while (0)
-    TRAP_CASE("v0,0  @e64 m1 -> ok",                    "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(0, 0), 0);
-    TRAP_CASE("imm5=2 (reserved) -> trap",              "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(16, 2), 1);
-    TRAP_CASE("imm5=31 (reserved) -> trap",             "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(16, 31), 1);
-    TRAP_CASE("vm=0 -> trap",                           "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(16, 0) & ~(1u << 25), 1);
-    TRAP_CASE("SEW=32 -> trap",                         "vsetivli x0,4,e32,m1,tu,mu", VKECCAK_VI(16, 0), 1);
-    TRAP_CASE("SEW=16 -> trap",                         "vsetivli x0,4,e16,m1,tu,mu", VKECCAK_VI(16, 0), 1);
-    TRAP_CASE("SEW=8 @m8 -> trap",                      "vsetivli x0,4,e8,m8,tu,mu",  VKECCAK_VI(16, 0), 1);
-    TRAP_CASE("vd=v4 (not NREG-aligned) -> trap",       "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(4, 0), 1);
-    TRAP_CASE("vd=v17 (not NREG-aligned) -> trap",      "vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(17, 0), 1);
-    TRAP_CASE("vd=v28 (past v31) -> trap",              "vsetivli x0,4,e64,m8,tu,mu", VKECCAK_VI(28, 0), 1);
-    TRAP_CASE("vstart=1 -> trap",                       "vsetivli x0,4,e64,m1,tu,mu\n csrwi vstart,1", VKECCAK_VI(16, 0), 1);
-    asm volatile("csrwi vstart,0");
-    TRAP_CASE("old keccak-xrv word (x17,x24) -> trap",  "vsetivli x0,4,e64,m8,tu,mu", 0xa788a877u, 1);
-    TRAP_CASE("v0,1  @e64 m8 -> ok",                    "vsetivli x0,4,e64,m8,tu,mu", VKECCAK_VI(0, 1), 0);
-    #undef TRAP_CASE
+    #define CASE(nm, setup, word, exp_traps, exp_vstart) do {               \
+        uint32_t _t = g_traps; uint64_t _vs;                                \
+        asm volatile(setup "\n .word %[w]\n csrr %[vs],vstart\n csrwi vstart,0\n" \
+            : [vs]"=&r"(_vs) : [w]"i"(word) : "t0", "t1", "memory");        \
+        check_case(nm, (int)(g_traps - _t), exp_traps, _vs, exp_vstart); } while (0)
+    #define VSTART(n) "li t0," #n "\n csrw vstart,t0"
+    #define M8(vl)    "li t0," #vl "\n vsetvli x0,t0,e64,m8,tu,mu"
+
+    sio_puts("[Zvknhk element-group range]\n");
+    CASE("v0,0  @e64 m8 vl=32 -> ok",                M8(32), VKECCAK_VI(0, 0), 0, 0);
+    CASE("vl=0 -> no-op",                            M8(0),  VKECCAK_VI(16, 0), 0, 0);
+    CASE("vl=32 vstart=32 (>= vl) -> no-op",         M8(32) "\n" VSTART(32),  VKECCAK_VI(16, 0), 0, 0);
+    CASE("vl=0  vstart=32 -> no-op",                 M8(0)  "\n" VSTART(32),  VKECCAK_VI(16, 0), 0, 0);
+    CASE("vl=32 vstart=64 -> no-op",                 M8(32) "\n" VSTART(64),  VKECCAK_VI(16, 0), 0, 0);
+    CASE("vl=32 vstart=224 -> no-op",                M8(32) "\n" VSTART(224), VKECCAK_VI(16, 1), 0, 0);
+
+    sio_puts("[Zvknhk reserved encodings]\n");
+    CASE("imm5=2 (reserved) -> trap",                M8(32), VKECCAK_VI(16, 2), 1, 0);
+    CASE("imm5=31 (reserved) -> trap",               M8(32), VKECCAK_VI(16, 31), 1, 0);
+    CASE("vm=0 -> trap",                             M8(32), VKECCAK_VI(16, 0) & ~(1u << 25), 1, 0);
+    CASE("SEW=32 @m8 -> trap",                       "li t0,32\n vsetvli x0,t0,e32,m8,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("SEW=16 @m8 -> trap",                       "li t0,32\n vsetvli x0,t0,e16,m8,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("SEW=8  @m8 -> trap",                       "li t0,32\n vsetvli x0,t0,e8,m8,tu,mu",  VKECCAK_VI(16, 0), 1, 0);
+    CASE("LMUL=1 vl=0 (LMUL*VLEN < 2048) -> trap",   "vsetivli x0,0,e64,m1,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("LMUL=2 vl=0 -> trap",                      "vsetivli x0,0,e64,m2,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("LMUL=4 vl=0 -> trap",                      "vsetivli x0,0,e64,m4,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("LMUL=4 vl=16 (VLMAX) -> trap",             "vsetivli x0,16,e64,m4,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("LMUL=1 vl=4 (old fixed-group use) -> trap","vsetivli x0,4,e64,m1,tu,mu", VKECCAK_VI(16, 0), 1, 0);
+    CASE("vd=v4 (not LMUL-aligned) -> trap",         M8(32), VKECCAK_VI(4, 0), 1, 0);
+    CASE("vd=v17 (not LMUL-aligned) -> trap",        M8(32), VKECCAK_VI(17, 0), 1, 0);
+    CASE("vd=v28 (not LMUL-aligned) -> trap",        M8(32), VKECCAK_VI(28, 0), 1, 0);
+    CASE("vl=25 (old idiom, not mult of 32) -> trap",M8(25), VKECCAK_VI(16, 0), 1, 0);
+    CASE("vl=16 -> trap",                            M8(16), VKECCAK_VI(16, 0), 1, 0);
+    CASE("vl=31 -> trap",                            M8(31), VKECCAK_VI(16, 0), 1, 0);
+    CASE("vl=1 -> trap",                             M8(1),  VKECCAK_VI(16, 0), 1, 0);
+    CASE("vstart=1 -> trap, vstart kept",            M8(32) "\n" VSTART(1),  VKECCAK_VI(16, 0), 1, 1);
+    CASE("vstart=16 -> trap, vstart kept",           M8(32) "\n" VSTART(16), VKECCAK_VI(16, 0), 1, 16);
+    CASE("vstart=33 -> trap, vstart kept",           M8(32) "\n" VSTART(33), VKECCAK_VI(16, 0), 1, 33);
+    CASE("vill -> trap",                             "li t0,32\n li t1,4\n vsetvl x0,t0,t1", VKECCAK_VI(16, 0), 1, 0);
+    CASE("old keccak-xrv word (x17,x24) -> trap",    M8(32), 0xa788a877u, 1, 0);
+    CASE("v0,1  @e64 m8 vl=32 -> ok",                M8(32), VKECCAK_VI(0, 1), 0, 0);
+    #undef CASE
+    #undef VSTART
+    #undef M8
     {
-        static uint64_t got0[32]  __attribute__((aligned(64)));
-        static uint64_t got16[32] __attribute__((aligned(64)));
         uint64_t exp[32];
         asm volatile(
-            "vsetvli x0, %[n32], e64, m8, tu, mu\n"
-            "vse64.v v0, (%[a])\n"
+            VL32 "vse64.v v0, (%[a])\n"
             "vse64.v v16, (%[b])\n"
-            :: [a]"r"(got0), [b]"r"(got16), [n32]"r"(32L) : "memory");
+            :: [a]"r"(g0), [b]"r"(g16) : "t0", "memory");
         for (int i = 0; i < 25; i++) exp[i] = exp_chain[i];
         for (int i = 25; i < 32; i++) exp[i] = TAIL(i);
-        check_lanes("legal cases permuted v0..v7 (24 then 12 rounds)", got0, exp, 32);
-        check_lanes("trapping cases left v16..v23 untouched", got16, st, 32);
+        check_lanes("legal cases permuted v0..v7 (24 then 12 rounds)", g0, exp, 32);
+        check_lanes("empty-range and trapping cases left v16..v23 untouched", g16, st, 32);
     }
 
     if (fails) { sio_puts("[Zvknhk] FAIL "); put_dec((uint32_t)fails); sio_putc('\n'); }

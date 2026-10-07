@@ -25,6 +25,7 @@
 
 `include "karu_axi_defs.vh"
 `include "karu_uop_defs.vh"
+`include "karu_vcfg.vh"
 
 module karu_assert #(
     //  Per-FU completion deadline: a multi-cycle unit that stays active
@@ -259,7 +260,23 @@ module karu_assert #(
     input  wire [63:0]  fpu_op2,
     input  wire [63:0]  fpu_op3,        //  = live port-B output
     input  wire [63:0]  varith_frs1,    //  scalar f operand presented to karu_varith (.vf forms)
-    input  wire [63:0]  lsu_wdata       //  store data presented to the scalar LSU
+    input  wire [63:0]  lsu_wdata,      //  store data presented to the scalar LSU
+
+    //  ---- Zvknhk vkeccak.vi element-group rules (INV39) ----
+    //  The instruction permutes element groups vstart/32 .. vl/32-1 of the vd
+    //  register group (EGS=32, EGW=2048, SEW=64). INV39 recomputes the issue
+    //  legality from the CSRs, and tracks every vkeccak op to check that it
+    //  starts the Keccak core exactly once per active element group, writes
+    //  exactly one group's worth of VRF granules per active group and nothing
+    //  outside its vd register group, does neither for an empty range, and
+    //  leaves vstart zero.
+    input  wire [63:0]  v_vl,
+    input  wire [63:0]  v_vstart,
+    input  wire [63:0]  v_vtype,
+    input  wire [4:0]   varith_g_wd,    //  karu_varith granule write: destination register
+    input  wire         vrf_op_stall,   //  operand-fill freeze (a g_we pulse is held, count once)
+    input  wire         vkeccak_kreq,   //  Keccak core start pulse (0 without KARU_KECCAK)
+    input  wire         vkeccak_kbusy   //  Keccak core running
 );
     // Recompute complete permissions rather than exempting guests from the
     // checker. Machine and guest controls have different exception classes.
@@ -417,6 +434,30 @@ module karu_assert #(
     reg [31:0]  frf_shadow_ok;
     reg         fma_q;
     reg [4:0]   fma_rs3_q;
+
+    //  vkeccak tracker (INV39b..g). k_exp = active element groups of the
+    //  in-flight op; k_perms / k_gw count Keccak-core starts and accepted VRF
+    //  granule writes; k_vd/k_nreg bound the legal write registers.
+    localparam [31:0] K_VLEN     = `KARU_VLEN;
+    localparam [7:0]  K_GW_GROUP = 2048 / `KARU_VBUS_W;    //  granule writes per element group
+    reg         k_trk, k_done_q;
+    reg [6:0]   k_exp, k_perms;
+    reg [7:0]   k_gw;
+    reg [4:0]   k_vd;
+    reg [5:0]   k_nreg;
+    wire        k_issue;
+    assign k_issue = varith_req && (ex_unit == `UNIT_VKECCAK);
+    wire [31:0] k_lmul_bits;        //  LMUL*VLEN, recomputed from vtype
+    assign k_lmul_bits = v_vtype[2] ? (K_VLEN >> (4'd8 - {1'b0, v_vtype[2:0]}))
+                                    : (K_VLEN << v_vtype[1:0]);
+    wire [4:0]  k_amask;
+    assign k_amask = v_vtype[2] ? 5'd0 : ((5'd1 << v_vtype[1:0]) - 5'd1);
+    wire        k_gw_ev;            //  one accepted granule write this cycle
+    assign k_gw_ev = varith_g_we && !vrf_op_stall;
+    wire [7:0]  k_gw_n;
+    assign k_gw_n = k_gw + {7'b0, k_gw_ev};
+    wire [6:0]  k_perms_n;
+    assign k_perms_n = k_perms + {6'b0, vkeccak_kreq};
 
     //  CBO op tracker state (the checks live in the main block, below the KCHK
     //  macro definition).
@@ -785,6 +826,43 @@ module karu_assert #(
               "INV38l FP store data != latest write to f[rs2]")
 
         //  ==============================================================
+        //  INV39: Zvknhk vkeccak.vi element-group rules (riscv-pqc zvknhk.adoc).
+        //  ==============================================================
+        //  INV39a: an issued vkeccak has a legal configuration, recomputed
+        //  here from the CSRs rather than taken from the core's own wire:
+        //  vill clear, SEW=64, LMUL*VLEN >= EGW, vd aligned to LMUL, and vl and
+        //  vstart both multiples of EGS=32. This deliberately keeps the
+        //  specification's general LMUL*VLEN / alignment formula, while the
+        //  core uses the VLEN=256 specialisation (vlmul == m8, vd[2:0] == 0),
+        //  so the two formulations check each other.
+        `KCHK(!k_issue || (!v_vtype[63] && v_vtype[5:3] == 3'd3
+                           && k_lmul_bits >= 32'd2048
+                           && (ex_rd & k_amask) == 5'd0
+                           && v_vl[4:0] == 5'd0 && v_vstart[4:0] == 5'd0),
+              "INV39a vkeccak issued with a reserved SEW/LMUL/vd/vl/vstart")
+        //  INV39b: the Keccak core is only ever started inside a tracked
+        //  vkeccak op, and never while it is still running.
+        `KCHK(!vkeccak_kreq || (k_trk && !vkeccak_kbusy),
+              "INV39b Keccak core started outside a vkeccak op or while busy")
+        //  INV39c: every VRF granule a vkeccak op writes lies inside its own
+        //  vd register group (state tail and neighbours are never addressed
+        //  through any other register).
+        `KCHK(!(k_trk && k_gw_ev)
+              || ({1'b0, varith_g_wd} >= {1'b0, k_vd} && {1'b0, varith_g_wd} < {1'b0, k_vd} + k_nreg),
+              "INV39c vkeccak wrote a register outside its vd group")
+        //  INV39d/e: at completion the op has run exactly one permutation and
+        //  one group's worth of granule writes per active element group; an
+        //  empty range (vl=0 or vstart>=vl) therefore has none of either.
+        `KCHK(!(k_trk && varith_done) || (k_perms_n == k_exp),
+              "INV39d vkeccak permutation count != active element groups")
+        `KCHK(!(k_trk && varith_done) || (k_gw_n == k_exp * K_GW_GROUP),
+              "INV39e vkeccak VRF granule writes != one element group per active group")
+        //  INV39f: a completed vkeccak (including the empty-range no-op and a
+        //  restart at vstart=32) leaves vstart zero.
+        `KCHK(!k_done_q || (v_vstart == 64'd0),
+              "INV39f vstart not zero after a completed vkeccak")
+
+        //  ==============================================================
         //  Hang guards / liveness watchdogs
         //  ==============================================================
         if (lsu_cnt    > STALL_LIMIT) k_hang("LSU op exceeded STALL_LIMIT cycles");
@@ -802,6 +880,26 @@ module karu_assert #(
         //  monotonic cbo.zero beats. (State regs declared above; checks here so
         //  they sit inside the KCHK macro's scope.)
         //  ==============================================================
+        //  vkeccak tracker (state for INV39b..f).
+        if (rst) begin
+            k_trk <= 1'b0; k_done_q <= 1'b0; k_exp <= 7'd0; k_perms <= 7'd0;
+            k_gw <= 8'd0; k_vd <= 5'd0; k_nreg <= 6'd0;
+        end else begin
+            k_done_q <= k_trk && varith_done;
+            if (k_issue) begin
+                k_trk   <= 1'b1;
+                k_exp   <= (v_vstart < v_vl) ? (v_vl[11:5] - v_vstart[11:5]) : 7'd0;
+                k_perms <= 7'd0;
+                k_gw    <= 8'd0;
+                k_vd    <= ex_rd;
+                k_nreg  <= v_vtype[2] ? 6'd1 : (6'd1 << v_vtype[1:0]);
+            end else if (k_trk) begin
+                k_perms <= k_perms_n;
+                k_gw    <= k_gw_n;
+                if (varith_done) k_trk <= 1'b0;
+            end
+        end
+
         //  FP regfile shadow + in-flight FMA tracker (state for INV38d/h..l).
         if (rst) begin
             frf_shadow_ok <= 32'b0; fma_q <= 1'b0; fma_rs3_q <= 5'd0;
@@ -984,6 +1082,16 @@ module karu_assert #(
     a_inv38k_vf_seq:    assert property ((varith_req && ex_rs1_is_f && frf_shadow_ok[ex_rs1]) |-> (varith_frs1 == frf_shadow[ex_rs1]));
     a_inv38l_fst_seq:   assert property ((lsu_req && ex_sub == `LSU_FSTORE && frf_shadow_ok[ex_rs2]) |->
         (ex_fp_is_d ? (lsu_wdata == frf_shadow[ex_rs2]) : (lsu_wdata[31:0] == frf_shadow[ex_rs2][31:0])));
+    //  INV39: Zvknhk vkeccak.vi element-group rules (tracker regs are module state).
+    a_inv39a_kec_legal: assert property (k_issue |-> (!v_vtype[63] && v_vtype[5:3] == 3'd3 &&
+        k_lmul_bits >= 32'd2048 && (ex_rd & k_amask) == 5'd0 &&
+        v_vl[4:0] == 5'd0 && v_vstart[4:0] == 5'd0));
+    a_inv39b_kec_start: assert property (vkeccak_kreq |-> (k_trk && !vkeccak_kbusy));
+    a_inv39c_kec_group: assert property ((k_trk && k_gw_ev) |->
+        ({1'b0, varith_g_wd} >= {1'b0, k_vd} && {1'b0, varith_g_wd} < {1'b0, k_vd} + k_nreg));
+    a_inv39d_kec_perms: assert property ((k_trk && varith_done) |-> (k_perms_n == k_exp));
+    a_inv39e_kec_writes:assert property ((k_trk && varith_done) |-> (k_gw_n == k_exp * K_GW_GROUP));
+    a_inv39f_kec_vstart:assert property (k_done_q |-> (v_vstart == 64'd0));
     //  NOTE: the sequential CBO tracker checks (INV22b / INV23b/c/d -- translated-
     //  first, exactly-8-aligned-monotonic cbo.zero beats) are runtime-checker-only
     //  (they need a small state machine); they are not mirrored as SVA here.
@@ -1119,6 +1227,18 @@ bind karu64 karu_assert u_karu_assert (
     .ex_unit(ex_unit), .ex_sub(ex_sub), .ex_fp_is_d(ex_fp_is_d), .id_accept(id_accept),
     .fwb_rd(fwb_rd), .fwb_v(fwb_v),
     .fpu_op1(ex_rs1_v), .fpu_op2(ex_rs2_v), .fpu_op3(frs2_v),
-    .varith_frs1(ex_frs1_v), .lsu_wdata(lsu_wdata)
+    .varith_frs1(ex_frs1_v), .lsu_wdata(lsu_wdata),
+    //  Zvknhk vkeccak.vi element-group rules (INV39)
+    .v_vl(v_vl), .v_vstart(v_vstart), .v_vtype(v_vtype),
+`ifdef KARU_EN_V
+    .varith_g_wd(varith_g_wd), .vrf_op_stall(vrf_op_stall),
+`else
+    .varith_g_wd(5'b0), .vrf_op_stall(1'b0),
+`endif
+`ifdef KARU_EN_KECCAK
+    .vkeccak_kreq(varith_u.kreq), .vkeccak_kbusy(varith_u.kbusy)
+`else
+    .vkeccak_kreq(1'b0), .vkeccak_kbusy(1'b0)
+`endif
 );
 `endif

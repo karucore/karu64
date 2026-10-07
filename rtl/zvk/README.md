@@ -134,10 +134,14 @@ hand-derive funct6 from memory.**
 ### Zvknhk `vkeccak.vi` (riscv-pqc)
 
 `-DKARU_KECCAK` adds the draft **Zvknhk** Vector Keccak extension of the RISC-V
-PQC TG: [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc), `src/zvknhk.adoc` (implemented against
-commit `260e14b`, "Add the Zvknhk Vector Keccak extension"); reference models
-under `zvknhk/{spike,qemu}` and known-answer tests under `zvknhk/test` in that
-repository. One instruction, `vkeccak.vi vd, imm5`:
+PQC TG: [riscv/riscv-pqc](https://github.com/riscv/riscv-pqc), `src/zvknhk.adoc`, in its
+**element-group form**: riscv-pqc `main` at commit `3c40d18`, "Zvknhk: process
+multiple Keccak element groups per instruction", which carries the
+specification text together with the matching Sail, Spike and QEMU reference
+models. (The integration was developed and verified against the pre-merge
+`dev-mjos` commits `cbc14c2` and `15ea9cb`; `15ea9cb` and `3c40d18` have the
+same tree.) Reference models are under `zvknhk/{sail,spike,qemu}` and tests
+under `zvknhk/test` in that repository. One instruction, `vkeccak.vi vd, imm5`:
 
     .insn r 0x77, 0x2, 0x53, vd, x18, imm5     # MATCH 0xa6092077 / MASK 0xfe0ff07f
 
@@ -146,21 +150,59 @@ OP-VE, OPMVV, funct6 `101001` (the VAES.vs row), `vm=1`, **vs1 field = `10010`
 Keccak-p[1600,24] = Keccak-f[1600] (SHA-3/SHAKE); `imm5=1` runs
 Keccak-p[1600,12] with round constants RC[12..23] (TurboSHAKE/KangarooTwelve).
 
-Semantics: the operand is **one fixed element group** of EGW=2048 bits = 32 ×
-SEW=64 elements, NREG = ceil(2048/VLEN) registers from `vd` (8 at VLEN=256, so
-`vd ∈ {v0, v8, v16, v24}`), **independent of `vl` (even `vl=0`) and LMUL**.
-Elements 0..24 hold `A[x,y]` at element `x+5y`; elements 25..31 (the *state
-tail*) and every register outside the group are left untouched. Reserved
-encodings raise illegal-instruction (cause 2) at issue with no side effects:
-`SEW≠64`, `imm5>1`, `vm=0`, `vd` not NREG-aligned, and `vstart≠0`.
+Semantics: `vkeccak.vi` is an ordinary element-group instruction with EGS=32
+SEW=64 elements, EGW=2048 bits. It permutes element groups `vstart/32` through
+`vl/32 - 1` of the `vd` register group, each independently. Within a group,
+elements 0..24 hold `A[x,y]` at element `x+5y`; elements 25..31 (the *state
+tail*) are part of the body but stay bit-for-bit unchanged, regardless of
+`vta`. **At VLEN=256 an `LMUL=8` register group is exactly one element group**
+(`vd ∈ {v0, v8, v16, v24}`, `VLMAX=32`), so on this core:
+
+| Configuration | Result |
+|---|---|
+| `e64,m8`, `vl=32`, `vstart=0` | one permutation of the group at `vd` |
+| `vl=0`, or `vstart` a multiple of 32 and `>= vl` | no-op: nothing read or written, `vstart` zeroed |
+| `SEW≠64` | illegal instruction |
+| `LMUL*VLEN < 2048`, i.e. any LMUL but 8, **even at `vl=0`** | illegal instruction |
+| `vd` not aligned to LMUL | illegal instruction |
+| `vl` or `vstart` not a multiple of 32 (this includes the former `vl=25` idiom) | illegal instruction |
+| `vm=0`, `imm5>1`, `vill` | illegal instruction |
+
+Illegal cases raise cause 2 at issue with no side effects and leave `vstart`
+unchanged. Software therefore loads the 25 live words with `vl=25`, sets
+`vl=32` (`li t0,32; vsetvli x0,t0,e64,m8,tu,mu`) for the instruction, and
+restores `vl=25` to store; a resident-state sponge switches `vl` between the
+rate (21 or 17 words) and 32 around each permutation. That active sequence
+(`e64,m8`, `vl=32`, `vstart=0`) also runs on the earlier fixed-group
+implementation, which ignored `vl` and LMUL. The compatibility goes no
+further: the earlier implementation trapped on any nonzero `vstart`, so the
+newly legal empty-range restarts (`vstart=32,64,...`) trap there, it permuted
+at `vl=0` instead of doing nothing, and software written for it does not run
+here.
 
 Implementation: `karu_dec.v` matches the full template (after the standard Zvk
 table, which leaves selector `10010` reserved) and forwards `imm5` in `imm`;
-`karu64.v` adds `vkeccak_resv_illegal` (SEW/alignment) beside
-`vcrypto_sew_illegal`; `karu_varith.v` loads the KVGRP-register group into
-`ksbuf`, pulses `keccak` with `rounds = imm5 ? 12 : 24`, and writes the whole
-group back. `keccak.v` starts its iota LFSR from the state that yields
+`karu64.v` adds `vkeccak_resv_illegal` (SEW, LMUL, alignment, `vl`/`vstart`
+multiples of 32) beside `vcrypto_sew_illegal`, and `vkeccak_empty`
+(`vstart >= vl`) for the empty range; nonzero `vstart` is no longer a blanket
+trap for this unit. `karu_varith.v` either completes in `S_KNOP` (empty range,
+no VRF access) or loads the KVGRP-register group into `ksbuf`, pulses `keccak`
+with `rounds = imm5 ? 12 : 24`, and writes the whole group back. Which path
+runs depends on `vl`/`vstart` only, so execution latency stays data
+independent. The sequencer handles one element group per instruction, which
+is the complete `LMUL=8` group only at VLEN=256; `karu64.v` refuses to
+elaborate `KARU_KECCAK` at any other VLEN rather than silently permuting only
+the first group (a larger VLEN needs the per-group loop and a wider granule
+loader; VLEN=128 has its own fixed-group rules in the specification).
+`keccak.v` starts its iota LFSR from the state that yields
 `RC[24-nr]`, so `nr=12` uses RC[12..23] exactly as FIPS 202 defines Keccak-p.
+
+Invariants: `karu_assert` INV39a..f recompute the issue legality from the
+CSRs and track every `vkeccak.vi` (one Keccak-core start and one group of VRF
+granule writes per active element group, none for an empty range, no write
+outside the `vd` group, `vstart` zero afterwards); `karu_varith` KSQ1..7
+police the `S_KNOP`/`S_KLOAD`/`S_KREQ`/`S_KWAIT`/`S_KSTORE` sequencing; and
+`keccak.v` K1..3 the core handshake.
 
 The pre-Zvknhk keccak-xrv form (`.insn r 0x77,0x2,0x53,vd,x17,x24`, fixed 24
 rounds) is **no longer decoded** (it traps); software must use the `x18`/`imm5`
@@ -169,7 +211,10 @@ encoding above.
 Tests: `make keccak-kat` (datapath, the spec's `KECCAK-P`/`KECCAK-P12`
 vectors), `make keccak-test` (full core, `-DKARU_KECCAK`) and
 `make keccak-test-zvk` (full core, the shipping `-DKARU_ZVK -DKARU_KECCAK`
-configuration); decode coverage is in
+configuration); `make keccak-test-all` runs the same ELF on the riscv-pqc
+reference Spike (`KECCAK_SPIKE`, default
+`../riscv-pqc/zvknhk/riscv-isa-sim/build/spike`) and requires every line to
+match. Decode coverage is in
 `make zvk-decode-test ZVK_FLAGS="-DKARU_ZVK -DKARU_KECCAK"`.
 
 ## Tests (all PASS, verilator)
@@ -191,7 +236,7 @@ Self-checking KATs against the standard / Marian's validated vectors:
 | `make zvk-test-all` | identical instruction smoke on Spike, the focused `-DKARU_ZVK` Karu model and the exact shipping profile, including every AES/SM4 `.vs` scalar-element-group broadcast at `vl=8,m1` and `vl=16,m2` (`zvk-test-ship` selects the last model alone) |
 | `make zvbb-test-all` | full/subset/off decode gating plus full Zvbb on Karu and Spike: exhaustive e8 unary inputs, every SEW and LMUL extremes, mask/tail, masked data sources, all `vwsll` forms, and reserved encodings |
 | `tb_keccak_kat.sv` / `make keccak-kat` | `keccak.v` Keccak-p[1600,24] and [1600,12] against the riscv-pqc `KECCAK-P` / `KECCAK-P12` vectors |
-| `make keccak-test`, `make keccak-test-zvk` | full-core `vkeccak.vi`: spec KATs, fixed-group/tail/`vl`/LMUL rules, reserved-encoding traps |
+| `make keccak-test`, `make keccak-test-zvk`, `make keccak-test-all` | full-core `vkeccak.vi`: spec KATs, element-group rules (state tail, `vta`, empty range, restart at `vstart=32`), reserved-encoding traps; `-all` compares with the riscv-pqc Spike |
 | `make keccak-bench` | ideal-memory Verilator cycles for resident permutations, SHAKE128/256 absorb/squeeze and components; FPGA lane/writeback geometry |
 | `make keccak-sponge-test` | complete SHAKE128/256 outputs against independent hashlib answers, all byte alignments, page crossings and output canaries |
 | `make keccak-compare` | resident hardware paths plus six fully checked GCC/Clang RV64GC, Zbb and vector-enabled C rows; [harness](../../test/keccak-sw/README.md) and [numbers](../../doc/keccak-software-comparison.md) |

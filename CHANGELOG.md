@@ -6,6 +6,69 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Changed — `vkeccak.vi` follows the Zvknhk element-group rules (breaking)
+
+- The instruction now implements the element-group form of the draft Zvknhk
+  specification (riscv-pqc `main` at `3c40d18`, "Zvknhk: process multiple
+  Keccak element groups per instruction", with its Sail/Spike/QEMU reference
+  models; verified against the identical pre-merge tree `15ea9cb`):
+  it permutes element groups `vstart/32 .. vl/32-1` (EGS=32, EGW=2048,
+  SEW=64) of an ordinary LMUL register group at `vd`. At VLEN=256 an `LMUL=8`
+  group is exactly one element group, so `e64,m8,vl=32` runs one permutation
+  and an empty range (`vl=0`, or `vstart` a multiple of 32 and `>= vl`) is a
+  no-op that completes and zeroes `vstart`. The Keccak datapath, encoding,
+  round selection and state-tail behaviour are unchanged.
+- New illegal-instruction cases: `LMUL*VLEN < 2048` (any LMUL but 8, even at
+  `vl=0`), and `vl` or `vstart` not a multiple of 32. `vstart=32,64,...` no
+  longer traps. **Software that issued `vkeccak.vi` at `vl=25` or under
+  another LMUL now traps**; it must set `e64,m8,vl=32` for the instruction.
+  The normal active sequence (`e64,m8`, `vl=32`, `vstart=0`) also runs on the
+  previous fixed-group implementation; the newly legal empty-range cases do
+  not behave the same there (it trapped on any nonzero `vstart` and permuted
+  at `vl=0`).
+- `karu64.v` refuses to elaborate `KARU_KECCAK` unless VLEN=256: the
+  sequencer handles one element group per instruction, which is the whole
+  `LMUL=8` group only there.
+- Invariants: `karu_assert` INV39a..f (issue legality recomputed from the
+  CSRs; one Keccak-core start and one group of VRF granule writes per active
+  element group, none for an empty range; no write outside the `vd` group;
+  `vstart` zero afterwards), `karu_varith` KSQ1..7 on the Keccak sequencer
+  states, and `keccak.v` K1..3 on the core handshake.
+- `test/fw/keccak_subj.c` is rewritten for the new rules (39 checks: KATs,
+  state tail under `vta`, neighbours, six range cases, 24 reserved cases
+  with `vstart` preservation) and `make keccak-test-all` requires line-for-line
+  agreement with the riscv-pqc reference Spike. Benchmark, sponge,
+  guest-context and DIEL firmware now issue the instruction at `vl=32`.
+- Cost: the permutation is unchanged (79 / 67 cycles resident); the two `vl`
+  switches a resident sponge needs per block add about 7 cycles, giving
+  228.88 / 209.56 absorb and 163.75 / 151.56 squeeze cycles per 168 / 136 B
+  block. See [doc/keccak-throughput.md](doc/keccak-throughput.md).
+- VCU118 profile image built from this change (`99078e3`, Vivado 2026.1,
+  `vcu118-ddr-sgmii-rom-rva23s64`, on a host without the board):
+  `28085356…abbd7`, routed setup/hold +0.007/+0.011 ns whole-design and
+  +0.244/+0.011 ns on `cpu_clk`, 14/14 bus skew, 0 DRC errors, 351,167 LUTs;
+  no worst path touches the Keccak core or vector sequencer. The ROM bakes
+  the lab netboot command and karudeb `dev-keccak` (`b3b6abf`) DTB
+  `d617ba56…bcec9`. **Validated on the board 2026-10-07** with karudeb
+  `ccf5463` software in the NFS root: hands-off netboot to the 7.2.6-zvk
+  prompt, `board_accept.sh` PASS, OpenSSL 4.0.2 Zvknhk checks 17/17,
+  riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs 720/720, encoding conformance
+  20/20 (the v0.2 reserved shapes trap). Open item: the resident 24-round
+  permutation costs 93.98 cycles, +6.0 over the single-group image. See the
+  [release diagnostics](doc/release-diagnostics-2026-09-14.md#board-validation--2026-10-07).
+
+### Added — ROM manifest in the programming bundle
+
+- `flow/rom_manifest.py` reads the packed `_build/vcu118_fuboot.hex` back and
+  writes `_build/vcu118_rom_manifest.txt` (bitstream, ROM, OpenSBI, U-Boot and
+  DTB hashes, the verbatim baked boot command and the TFTP/NFS endpoints it
+  names) plus `_build/vcu118_rom_board.dtb`, the control DTB extracted from
+  the ROM. `make vcu118-program-bundle` includes both for ROM images and
+  refuses a ROM image newer than the bitstream. The board host serves the
+  extracted DTB (`DTB=... make -C ../karudeb karu64-rva23s64-tftp`) so the
+  served `board.dtb` matches the ROM by construction; see
+  [doc/fpga.md](doc/fpga.md#building-on-one-host-booting-from-another).
+
 ### Changed — FP register file is 1W2R (was 1W3R)
 
 - `karu_fregfile` now has two asynchronous read ports, the same shape as the

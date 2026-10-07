@@ -421,12 +421,15 @@ FP16↔FP32 conversions; every other e16/e8 vector-FP encoding traps cause-2.
   `0x57`) to `UNIT_VCRYPTO`; SEW legality is enforced per the vector-crypto SEW
   table.
 - **`vkeccak.vi`** — an opt-in (`KARU_KECCAK`) implementation of the draft
-  **Zvknhk** Vector Keccak extension (riscv-pqc `zvknhk.adoc`): one
-  Keccak-p[1600,24] or Keccak-p[1600,12] permutation (selected by `imm5`) on a
-  fixed 2048-bit element group at `vd`, independent of `vl`/LMUL, with the state
-  tail (elements 25..31) preserved. OP-VE `0x77`, VAES.vs selector `10010`,
-  exact-matched so Zvk encodings don't alias; reserved encodings (`SEW≠64`,
-  `imm5>1`, `vm=0`, unaligned `vd`, `vstart≠0`) trap. Folded into `karu_varith`
+  **Zvknhk** Vector Keccak extension (riscv-pqc `zvknhk.adoc`, element-group
+  form): a Keccak-p[1600,24] or Keccak-p[1600,12] permutation (selected by
+  `imm5`) of each 2048-bit element group `vstart/32 .. vl/32-1` of the `vd`
+  register group, with the state tail (elements 25..31) preserved. At
+  VLEN=256 an `LMUL=8` group is exactly one element group, so `e64,m8,vl=32`
+  permutes it once and an empty range (`vl=0` or `vstart>=vl`) is a no-op.
+  OP-VE `0x77`, VAES.vs selector `10010`, exact-matched so Zvk encodings don't
+  alias; `SEW≠64`, `LMUL≠8`, `vl` or `vstart` not a multiple of 32, `imm5>1`,
+  `vm=0`, unaligned `vd` and `vill` trap. Folded into `karu_varith`
   using one isolated `keccak`/`keccak_round` instance that is never
   lane-replicated. Encoding and semantics: rtl/zvk/README.md.
   Both VRF ports reload one 256-bit state register per fill. The ideal-memory

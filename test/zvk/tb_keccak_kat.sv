@@ -29,7 +29,9 @@ module tb_keccak_kat;
         reg [1599:0] e;
         begin
             for (k = 0; k < 25; k = k + 1) st_i[64*k +: 64] = k;
-            for (k = 0; k < 25; k = k + 1) e[64*k +: 64] = (nr == 5'd24) ? exp24[k] : exp12[k];
+            //  nr=0 is the documented pass-through: state_o == state_i.
+            for (k = 0; k < 25; k = k + 1)
+                e[64*k +: 64] = (nr == 5'd24) ? exp24[k] : (nr == 5'd12) ? exp12[k] : k;
             @(negedge clk); req = 1'b1; rounds = nr;
             @(negedge clk); req = 1'b0;
             cyc = 0;
@@ -83,6 +85,8 @@ module tb_keccak_kat;
         run(5'd24, "KECCAK-P");
         run(5'd12, "KECCAK-P12");
         run(5'd24, "KECCAK-P again");       //  back-to-back reuse after a 12-round run
+        run(5'd0,  "pass-through");         //  nr=0: no round applied, state returned as given
+        run(5'd12, "KECCAK-P12 again");     //  and the core is reusable after a pass-through
         if (fails != 0) begin $display("tb_keccak_kat: FAIL (%0d)", fails); $fatal(1); end
         $display("tb_keccak_kat: PASS");
         $finish;

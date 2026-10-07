@@ -941,7 +941,26 @@ module htif_tb (input wire clk);
         .fpu_op2        (cpu.ex_rs2_v),
         .fpu_op3        (cpu.frs2_v),   //  live port-B output = FPU op3
         .varith_frs1    (cpu.ex_frs1_v),
-        .lsu_wdata      (cpu.lsu_wdata)
+        .lsu_wdata      (cpu.lsu_wdata),
+        //  Zvknhk vkeccak.vi element-group rules (INV39): legality recompute,
+        //  one permutation + one group of VRF writes per active element group
+        .v_vl           (cpu.v_vl),
+        .v_vstart       (cpu.v_vstart),
+        .v_vtype        (cpu.v_vtype),
+`ifdef KARU_EN_V
+        .varith_g_wd    (cpu.varith_g_wd),
+        .vrf_op_stall   (cpu.vrf_op_stall),
+`else
+        .varith_g_wd    (5'b0),
+        .vrf_op_stall   (1'b0),
+`endif
+`ifdef KARU_EN_KECCAK
+        .vkeccak_kreq   (cpu.varith_u.kreq),
+        .vkeccak_kbusy  (cpu.varith_u.kbusy)
+`else
+        .vkeccak_kreq   (1'b0),
+        .vkeccak_kbusy  (1'b0)
+`endif
     );
 `endif
 

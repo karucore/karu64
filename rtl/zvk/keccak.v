@@ -94,4 +94,22 @@ module keccak (
             endcase
         end
     end
+
+// synthesis translate_off
+    //  Handshake contract (sim only), same inline style as the FP units:
+    //    K1  req is accepted only while idle -- a req during a run would be
+    //        dropped silently and the caller would wait on a stale result.
+    //    K2  rounds_i is a round count this core defines at req: 0..24, where 0
+    //        is the documented pass-through (state_o = state_i, no round
+    //        applied). vkeccak.vi only ever asks for 24 or 12.
+    //    K3  the round counter never exceeds the 24 rounds of Keccak-f[1600].
+    always @(posedge clk) if (!rst) begin
+        if (req && busy)
+            begin $display("[KECCAK-ASSERT] K1 req while busy @%0t", $time); $finish; end
+        if (req && (rounds_i > 5'd24))
+            begin $display("[KECCAK-ASSERT] K2 illegal round count %0d (> 24) @%0t", rounds_i, $time); $finish; end
+        if ((state == S_RUN) && (cnt > 6'd24))
+            begin $display("[KECCAK-ASSERT] K3 round counter %0d > 24 @%0t", cnt, $time); $finish; end
+    end
+// synthesis translate_on
 endmodule

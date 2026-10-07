@@ -848,7 +848,7 @@ module karu_dec (
                 if (fn3 == 3'b010 && fn7 == 7'b1010011 &&
                     rs1_w == 5'd18 && rs2_w[4:1] == 4'b0) begin
                     unit = `UNIT_VKECCAK;
-                    rd   = rd_w;                //  vd: base of the fixed 2048-bit group
+                    rd   = rd_w;                //  vd: LMUL register group holding the element group(s)
                     sub  = 5'd0;
                     imm  = {59'b0, rs2_w};      //  imm5 round-count selector
                 end

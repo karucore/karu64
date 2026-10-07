@@ -72,14 +72,20 @@ module karu_varith (
     //  active vector op (the lane FPUs are otherwise invisible to the checker).
     output wire         fp_lane_active,
 
-    //  ---- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600]) ----
+    //  ---- Zvknhk vkeccak.vi (Keccak-p[1600] per element group) ----
     //  is_keccak is the issue-cycle decode (dec_unit==UNIT_VKECCAK, only ever
-    //  asserted under KARU_EN_KECCAK). The op runs IN PLACE on the fixed
-    //  2048-bit element group at vd (NREG=ceil(2048/VLEN) regs, independent of
-    //  vl/LMUL) via this unit's normal VRF read (r_vold) and granule write
-    //  (g_*) port -- one ISOLATED 1600-bit Keccak permutation, never
-    //  lane-replicated. Folded in here so karu64 has ONE vector-execute FU.
+    //  asserted under KARU_EN_KECCAK). The op runs IN PLACE on the 2048-bit
+    //  element group held by the LMUL register group at vd (KVGRP =
+    //  2048/VLEN registers; karu64 only issues it when that is the whole
+    //  LMUL=8 group, i.e. VLEN=256) via this unit's normal VRF read (r_vold)
+    //  and granule write (g_*) port -- one ISOLATED 1600-bit Keccak
+    //  permutation, never lane-replicated. Folded in here so karu64 has ONE
+    //  vector-execute FU.
+    //  keccak_empty (valid with is_keccak): the active element-group range
+    //  vstart/32 .. vl/32-1 is empty (vl=0, or vstart>=vl). The op then
+    //  completes in S_KNOP with no VRF read, no permutation and no write.
     input  wire         is_keccak,
+    input  wire         keccak_empty,
 
     //  ---- standard vector crypto (Zvk*) ----
     //  is_vcrypto is the issue-cycle decode (dec_unit==UNIT_VCRYPTO, only ever
@@ -1629,8 +1635,9 @@ module karu_varith (
                S_FPAR=6'd28, S_FPWAIT=6'd29, S_FPWR=6'd30,
                //   vcompress serial pack
                S_CMP_SCAN=6'd31, S_CMP_WR=6'd32,
-               //   vkeccak (load group / pulse round FSM / wait / store group)
-               S_KLOAD=6'd34, S_KREQ=6'd35, S_KWAIT=6'd36, S_KSTORE=6'd37,
+               //   vkeccak (load group / pulse round FSM / wait / store group;
+               //   S_KNOP = empty element-group range, done without VRF access)
+               S_KLOAD=6'd34, S_KREQ=6'd35, S_KWAIT=6'd36, S_KSTORE=6'd37, S_KNOP=6'd38,
                //   standard Zvk: run one EGW128/256 group through karu_vcrypto
                S_CREQ=6'd39, S_CWAIT=6'd40, S_CWR=6'd41,
                //   Registered lane-output writeback for the is_grp
@@ -2529,17 +2536,22 @@ module karu_varith (
 
 `ifdef KARU_EN_KECCAK
     //  ---- vkeccak.vi datapath: ONE isolated Keccak-p[1600] permutation ----
-    //  Zvknhk (riscv-pqc zvknhk.adoc): the operand is ONE fixed element group
-    //  (EGW=2048 = EGS=32 x SEW=64) of KVGRP = NREG = ceil(2048/VLEN) registers
-    //  from vd (8 at VLEN=256), independent of vl and LMUL. It is loaded one
-    //  reg/cycle into ksbuf via this unit's normal r_vold/d_vold read path;
+    //  Zvknhk (riscv-pqc zvknhk.adoc): the instruction permutes element groups
+    //  vstart/32 .. vl/32-1 of the vd register group (EGW=2048 = EGS=32 x
+    //  SEW=64). One element group is KVGRP = 2048/VLEN registers; karu64 issues
+    //  the op only when that is the whole LMUL=8 group (VLEN=256, KVGRP=8,
+    //  elaboration-guarded there), so the active range is group 0 or empty
+    //  (keccak_empty -> S_KNOP). The group is loaded one reg/cycle into ksbuf
+    //  via this unit's normal r_vold/d_vold read path;
     //  ksbuf[1599:0] = the 1600-bit state (elements 0..24, A[x,y] = element
     //  x+5y). The round FSM runs in place; the whole group is then written
     //  back through the granule g_* port, so ksbuf bits >= 1600 (the state
-    //  tail, elements 25..31) return undisturbed. imm_q[0] is the imm5
-    //  round-count selector (0 -> 24 rounds, 1 -> 12; decode never forwards
-    //  the reserved values). vs1/vs2/vl are ignored. Requires VLEN >= 128
-    //  (Zvl128b); the granule walk below assumes the usual VGRAN=2 layout.
+    //  tail, elements 25..31) return undisturbed -- the state tail is part of
+    //  the body, so vta does not apply to it, and with vl=32=VLMAX there are no
+    //  architectural tail elements. imm_q[0] is the imm5 round-count selector
+    //  (0 -> 24 rounds, 1 -> 12; decode never forwards the reserved values).
+    //  vs1/vs2 are opcode/immediate fields. The granule walk below assumes
+    //  the VGRAN=2 layout.
     localparam integer KVGRP = (2048 + VLEN - 1) / VLEN;
     reg  [KVGRP*VLEN-1:0]   ksbuf;
     reg                     kreq;
@@ -2670,7 +2682,7 @@ module karu_varith (
                     ccop_q<=vcrypto_cop; chalf<=1'b0;
 `endif
                     state<= req_is_vcrypto         ? S_CREQ
-                          : req_is_keccak          ? S_KLOAD
+                          : req_is_keccak          ? (keccak_empty ? S_KNOP : S_KLOAD)
                           : req_is_fp              ? (req_fp_red ? S_FRSEED
                                                     : req_fp_seq ? S_FRUN : S_FPAR)
                           : req_is_perm            ? S_PLOAD
@@ -3376,9 +3388,14 @@ module karu_varith (
 `endif
 `ifdef KARU_EN_KECCAK
                 //  ====================================================
-                //  vkeccak.vi: load the fixed vd group -> run Keccak-p[1600,nr]
-                //  -> store (one isolated 1600-bit permutation; r = reg counter)
+                //  vkeccak.vi: load the vd element group -> run Keccak-p[1600,nr]
+                //  -> store (one isolated 1600-bit permutation; r = reg counter).
+                //  An empty group range (vl=0 or vstart>=vl) takes S_KNOP: no
+                //  source need is raised outside S_KLOAD, so nothing is read,
+                //  permuted or written, and the op just completes. Which path is
+                //  taken depends on vl/vstart only, never on register contents.
                 //  ====================================================
+                S_KNOP: begin done<=1'b1; state<=S_IDLE; end
                 S_KLOAD: begin
                     // The two BRAM ports supply both halves of one register
                     // per fill; the encoded vs1/vs2 fields are not operands.
@@ -3528,6 +3545,58 @@ module karu_varith (
                (({31'b0, g_wg} + 1) << (epr_lg-1)) >= vl_q)))
             begin $display("[VRF-BRAM-ASSERT] WGN2 g_wlast on non-final granule wg=%0d (last=%0d) @%0t", g_wg, VGRAN_C-1, $time); $finish; end
     end
+
+`ifdef KARU_EN_KECCAK
+    //  ------------------------------------------------------------------
+    //  vkeccak.vi sequencer invariants (sim only). The op is
+    //      S_IDLE -> S_KLOAD xKVGRP -> S_KREQ -> S_KWAIT -> (S_KSTORE -> S_CWB) xKVGRP
+    //  for one active element group, or S_IDLE -> S_KNOP for an empty range.
+    //  kempty_q remembers which of the two the issue cycle selected; it is a
+    //  checker-only flop. The architectural rules (legality, one permutation
+    //  and one group of writes per active group, vstart) are INV39 in
+    //  karu_assert; these police the state machine that implements them.
+    //  ------------------------------------------------------------------
+    reg  kempty_q;
+    wire k_st_load;                 //  loading / permuting: no VRF write may be in flight
+    assign k_st_load = (state == S_KLOAD) || (state == S_KREQ) || (state == S_KWAIT);
+    wire k_st_any;
+    assign k_st_any  = k_st_load || (state == S_KSTORE) || (state == S_KNOP);
+    always @(posedge clk) begin
+        if (rst) kempty_q <= 1'b0;
+        else if (state == S_IDLE && req && !op_stall) kempty_q <= is_keccak && keccak_empty;
+    end
+    always @(posedge clk) if (!rst) begin
+        //  KSQ1: Keccak states belong to a vkeccak op only.
+        if (k_st_any && !czk_q)
+            begin $display("[VRF-BRAM-ASSERT] KSQ1 keccak state %0d outside a vkeccak op @%0t", state, $time); $finish; end
+        //  KSQ2: the empty range takes S_KNOP and nothing else; an active group
+        //        never takes it. (No read, permutation or write when empty.)
+        if ((state == S_KNOP) && !kempty_q)
+            begin $display("[VRF-BRAM-ASSERT] KSQ2 S_KNOP without an empty element-group range @%0t", $time); $finish; end
+        if ((k_st_load || state == S_KSTORE) && kempty_q)
+            begin $display("[VRF-BRAM-ASSERT] KSQ2 keccak load/permute/store state %0d on an empty range @%0t", state, $time); $finish; end
+        //  KSQ3: the core is pulsed exactly on entry to S_KWAIT (kreq is the
+        //        registered S_KREQ pulse) and only while it is idle.
+        if (kreq && ((state != S_KWAIT) || kbusy))
+            begin $display("[VRF-BRAM-ASSERT] KSQ3 kreq outside S_KWAIT entry or while the core is busy (state=%0d) @%0t", state, $time); $finish; end
+        //  KSQ4: the core runs, and completes, only while the sequencer waits.
+        if ((kbusy || kdone) && (state != S_KWAIT))
+            begin $display("[VRF-BRAM-ASSERT] KSQ4 keccak core active outside S_KWAIT (state=%0d) @%0t", state, $time); $finish; end
+        //  KSQ5: the register counter stays inside the element group.
+        if (((state == S_KLOAD) || (state == S_KSTORE)) && ({28'b0, r} >= KVGRP))
+            begin $display("[VRF-BRAM-ASSERT] KSQ5 keccak register counter r=%0d >= KVGRP=%0d @%0t", r, KVGRP, $time); $finish; end
+        //  KSQ6: no VRF granule write while the group is being loaded or
+        //        permuted, nor for an empty range; writes come from S_CWB only.
+        if (g_we && (k_st_load || (state == S_KNOP)))
+            begin $display("[VRF-BRAM-ASSERT] KSQ6 VRF write during keccak load/permute/no-op (state=%0d) @%0t", state, $time); $finish; end
+        //  KSQ7: a vkeccak write is a whole-register, non-vl-governed write
+        //        inside the group (the state tail is rewritten with itself).
+        if (g_we && czk_q && ((state == S_CWB) || (state == S_KSTORE) || (state == S_IDLE)) &&
+            ((g_wd < vd_q) || ({1'b0, g_wd} >= {1'b0, vd_q} + KVGRP[5:0]) ||
+             (g_wbe != {`KARU_VBUS_B{1'b1}}) || g_wb_vlgov))
+            begin $display("[VRF-BRAM-ASSERT] KSQ7 vkeccak write outside the vd group or not a full granule (wd=%0d) @%0t", g_wd, $time); $finish; end
+    end
+`endif
 // synthesis translate_on
 
 endmodule

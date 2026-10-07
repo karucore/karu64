@@ -1257,8 +1257,15 @@ $(VERI_KEC_DIR)/Vhtif_tb.mk: $(HTIF_SRC) flow/sim_tb.cpp Makefile
 #	                 KECCAK-P / KECCAK-P12 vectors: 24 and 12 rounds).
 #	keccak-test:     full-core -DKARU_KECCAK build: the same known answers via
 #	                 decode -> issue -> VRF group -> keccak -> VRF writeback, the
-#	                 fixed-group / state-tail / vl / LMUL rules, and the reserved-
-#	                 encoding traps (SEW != 64, imm5 > 1, vm=0, unaligned vd, vstart).
+#	                 element-group rules (e64,m8,vl=32 permutes one group; state
+#	                 tail and neighbours untouched; vl=0 or vstart>=vl is a no-op
+#	                 that zeroes vstart) and the reserved-encoding traps (SEW != 64,
+#	                 LMUL != 8, vl/vstart not a multiple of 32, imm5 > 1, vm=0,
+#	                 unaligned vd, vill).
+#	keccak-test-spike: the same ELF on the riscv-pqc reference Spike, which
+#	                 carries zvknhk/spike/vkeccak_vi.h (build it there with
+#	                 `make -C ../riscv-pqc/zvknhk spike`; override KECCAK_SPIKE).
+#	keccak-test-all: both, and every PASS/FAIL line must be identical.
 #	keccak-test-zvk: the same firmware on the shipping FPGA configuration
 #	                 (-DKARU_ZVK -DKARU_KECCAK), where vkeccak.vi shares the OP-VE
 #	                 VAES.vs selector space with the standard Zvk decode.
@@ -1277,6 +1284,20 @@ keccak-kat:
 	$(BUILD)/Vkeccak_kat/Vtb_keccak_kat
 keccak-test:	$(VERI_KEC_BIN) $(BUILD)/keccak_subj.hex
 	$(VERI_KEC_BIN) +hex=$(BUILD)/keccak_subj.hex +tohost=8000 +max_cycles=4000000
+KECCAK_SPIKE	?=	../riscv-pqc/zvknhk/riscv-isa-sim/build/spike
+KECCAK_SPIKE_ISA =	rv64gcv_zvl256b_zvknhk_zicntr
+.PHONY: keccak-test-spike keccak-test-all
+keccak-test-spike:	$(BUILD)/keccak_subj.elf
+	$(KECCAK_SPIKE) --isa=$(KECCAK_SPIKE_ISA) $(BUILD)/keccak_subj.elf
+keccak-test-all:	$(VERI_KEC_BIN) $(BUILD)/keccak_subj.hex
+	$(VERI_KEC_BIN) +hex=$(BUILD)/keccak_subj.hex +tohost=8000 +max_cycles=4000000 > $(BUILD)/keccak_subj.log 2>&1
+	$(KECCAK_SPIKE) --isa=$(KECCAK_SPIKE_ISA) $(BUILD)/keccak_subj.elf > $(BUILD)/keccak_subj.spike.log 2>&1
+	@cat $(BUILD)/keccak_subj.log
+	@grep -q '\[HTIF\] exit 0 ' $(BUILD)/keccak_subj.log && grep -q '\[Zvknhk\] ALL PASS' $(BUILD)/keccak_subj.spike.log
+	@grep -E '^\[(PASS|FAIL|Zvknhk)' $(BUILD)/keccak_subj.spike.log > $(BUILD)/keccak_subj.spike.lines; \
+	 grep -E '^\[(PASS|FAIL|Zvknhk)' $(BUILD)/keccak_subj.log > $(BUILD)/keccak_subj.lines; \
+	 diff $(BUILD)/keccak_subj.spike.lines $(BUILD)/keccak_subj.lines \
+	 && echo "vkeccak.vi: $$(grep -c '^\[PASS\]' $(BUILD)/keccak_subj.lines) checks identical on karu64 and the riscv-pqc Spike"
 VERI_ZVKKEC_DIR	=	$(BUILD)/Vhtif_zvk_kec
 VERI_ZVKKEC_BIN	=	$(VERI_ZVKKEC_DIR)/Vhtif_tb
 $(VERI_ZVKKEC_BIN): $(VERI_ZVKKEC_DIR)/Vhtif_tb.mk
@@ -2367,11 +2388,30 @@ vcu118-ddr-eth-probe-100:
 #	Transfer bundle for programming an already-built image on another host.
 #	The member names retain their _build/... paths. The .ltx debug-probes file
 #	is optional, matching prog_vcu118_ddr.tcl; the .bit file is mandatory.
+#	For a U-Boot-in-ROM image (1 MiB = 131072 words in vcu118_fuboot.hex) the
+#	bundle also carries a manifest and the control DTB, both read back from the
+#	packed ROM by flow/rom_manifest.py, so the host that serves the board can
+#	check its TFTP/NFS setup against what the bitstream contains. A ROM image
+#	newer than the bitstream was repacked after the build and no longer
+#	describes it; that is an error rather than a wrong manifest.
 VCU118_PROGRAM_TGZ ?= $(BUILD)/vcu118_programming.tgz
+VCU118_ROM_MANIFEST ?= $(BUILD)/vcu118_rom_manifest.txt
+VCU118_ROM_DTB ?= $(BUILD)/vcu118_rom_board.dtb
 vcu118-program-bundle: | $(BUILD)
 	@test -s "$(BUILD)/vcu118_ddr.bit" || { echo "ERROR: $(BUILD)/vcu118_ddr.bit not found -- build the bitstream first"; exit 1; }
 	@set -e; files="$(BUILD)/vcu118_ddr.bit"; \
 		if test -s "$(BUILD)/vcu118_ddr.ltx"; then files="$$files $(BUILD)/vcu118_ddr.ltx"; fi; \
+		if test -s "$(VCU118_FUBOOT_HEX)" && test "$$(wc -l < "$(VCU118_FUBOOT_HEX)")" -eq 131072; then \
+			if test "$(VCU118_FUBOOT_HEX)" -nt "$(BUILD)/vcu118_ddr.bit"; then \
+				echo "ERROR: $(VCU118_FUBOOT_HEX) is newer than the bitstream -- the ROM was repacked after the build, so it cannot describe this bitstream; rebuild"; exit 1; \
+			fi; \
+			python3 flow/rom_manifest.py --rom-hex "$(VCU118_FUBOOT_HEX)" --blobs flow/boot/fuboot_blobs.h \
+				--bit "$(BUILD)/vcu118_ddr.bit" --manifest "$(VCU118_ROM_MANIFEST)" --dtb "$(VCU118_ROM_DTB)" \
+				--repo karu64=. --repo karudeb="$(KARUDEB)"; \
+			files="$$files $(VCU118_ROM_MANIFEST) $(VCU118_ROM_DTB)"; \
+		else \
+			echo "NOTE: $(VCU118_FUBOOT_HEX) is not a packed boot ROM -- no ROM manifest or DTB in the bundle"; \
+		fi; \
 		tar -czf "$(VCU118_PROGRAM_TGZ)" $$files; \
 		echo "Wrote $(VCU118_PROGRAM_TGZ): $$files"
 

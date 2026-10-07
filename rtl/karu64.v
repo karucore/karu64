@@ -689,14 +689,17 @@ module karu64 #(
     wire [`KARU_VBUS_W-1:0] vrf_vs1_g, vrf_vs2_g, vrf_vold_g;
     //  RVV 3.7: a vector *arithmetic* instruction with nonzero vstart may raise
     //  an illegal-instruction exception (spec-permitted; this implementation
-    //  takes it for all OP-V-issued execute units). Vector *memory* ops instead
-    //  honor vstart inside the VLSU (prestart elements untouched). Declared up
+    //  takes it for the OP-V arithmetic/FP and standard Zvk units). Vector
+    //  *memory* ops instead honor vstart inside the VLSU (prestart elements
+    //  untouched). Zvknhk vkeccak.vi is NOT in this list: it restarts at
+    //  element-group boundaries (vstart a multiple of EGS=32), so its vstart
+    //  rule lives in vkeccak_resv_illegal / vkeccak_empty. Declared up
     //  here (not with the issue_* wires) because issue_vkeccak/vcrypto_mode
     //  feed varith ports below and iverilog cannot elaborate that chain when
     //  this wire is declared after the instantiation.
     wire        v_vstart_ill;
     assign v_vstart_ill = (ex_unit == `UNIT_VARITH || ex_unit == `UNIT_VFPU ||
-                           ex_unit == `UNIT_VKECCAK || ex_unit == `UNIT_VCRYPTO) &&
+                           ex_unit == `UNIT_VCRYPTO) &&
                           (v_vstart != 64'd0);
     //  karu_varith drives the whole-register read addresses (group offset);
     //  declared here as they feed the VRF.
@@ -814,6 +817,14 @@ module karu64 #(
     //  not treat the forward port connection as an implicit net. Same reason as
     //  the vlsu_* hoist above; the drivers stay at unconditional module scope.
     wire        issue_vkeccak_mode, issue_vcrypto_mode;
+    //  Zvknhk vkeccak.vi permutes element groups vstart/EGS .. vl/EGS-1
+    //  (EGS=32 SEW=64 elements, EGW=2048 bits). At VLEN=256 an LMUL=8 register
+    //  group holds exactly ONE element group, so for a legal issue (vl and
+    //  vstart multiples of 32, see vkeccak_resv_illegal) the range is either
+    //  group 0 (vstart=0, vl=32) or empty (vl=0, or a restart at vstart>=vl).
+    //  The empty case retires through karu_varith without any VRF access.
+    wire        vkeccak_empty;
+    assign vkeccak_empty = (v_vstart >= v_vl);
 
 `ifdef KARU_EN_V
     //  BRAM-backed VRF via the sequencing adapter. The adapter freezes
@@ -1277,7 +1288,7 @@ module karu64 #(
         .writes_f(varith_writes_f), .f_res(varith_f_res),
         .fp_lane_active(varith_fp_lane_active),
         //  -- Zvknhk vkeccak.vi (single-instruction Keccak-p[1600], riscv-pqc) --
-        .is_keccak(issue_vkeccak_mode),
+        .is_keccak(issue_vkeccak_mode), .keccak_empty(vkeccak_empty),
         //  -- standard vector crypto (Zvk*) -- registered ex_sub, NOT dec_sub,
         //  so the cop selector is stable for the whole multi-cycle op --
         .is_vcrypto(issue_vcrypto_mode), .vcrypto_cop(ex_sub)
@@ -2144,18 +2155,38 @@ module karu64 #(
     assign vcrypto_sew_illegal = 1'b0;
 `endif
 `ifdef KARU_EN_KECCAK
-    //  Zvknhk vkeccak.vi reserved encodings (riscv-pqc zvknhk.adoc): SEW != 64,
-    //  or vd not aligned to the fixed group's NREG = ceil(2048/VLEN) registers
-    //  (an aligned group can never extend past v31). vm=0 and imm5 > 1 never
-    //  decode (SYS_TRAP); vstart != 0 is v_vstart_ill. Raised as a cause-2
-    //  illegal-instruction trap through issue_vcrypto_trap, and the op is NOT
-    //  issued (no VS dirtying, no VRF write).
-    localparam integer VKECCAK_NREG = (2048 + `KARU_VLEN - 1) / `KARU_VLEN;
-    wire [4:0] vkeccak_amask;
-    assign vkeccak_amask = VKECCAK_NREG - 1;
+    //  Zvknhk vkeccak.vi (riscv-pqc zvknhk.adoc, element-group form: EGS=32,
+    //  EGW=2048, SEW=64). An ordinary LMUL register group at vd holds the
+    //  element groups. Reserved / illegal, all raised as cause 2 at issue with
+    //  no side effects (no VS dirtying, no VRF access, vstart unchanged):
+    //    - SEW != 64
+    //    - LMUL*VLEN < EGW, even when vl=0   (VLEN=256: anything but LMUL=8)
+    //    - vd not aligned to LMUL
+    //    - vl or vstart not a multiple of EGS=32
+    //  vm=0 and imm5 > 1 never decode (SYS_TRAP); vill is v_resv_ill. A legal
+    //  issue with an empty group range (vkeccak_empty) is a no-op that still
+    //  completes and zeroes vstart.
+    //  At VLEN=256 (required below) LMUL*VLEN >= 2048 holds for LMUL=8 only,
+    //  so the LMUL rule is vlmul == m8 and "aligned to LMUL" is vd[2:0] == 0.
+    //  karu_assert INV39a rechecks every issue against the general
+    //  LMUL*VLEN / alignment formula of the specification.
     wire vkeccak_resv_illegal;
     assign vkeccak_resv_illegal = (ex_unit == `UNIT_VKECCAK) &&
-          ((v_vtype[5:3] != 3'd3) || ((ex_rd & vkeccak_amask) != 5'd0));
+          ((v_vtype[5:3] != 3'd3)               //  SEW != 64
+        || (v_vtype[2:0] != 3'b011)             //  LMUL != 8: LMUL*VLEN < EGW
+        || (ex_rd[2:0] != 3'd0)                 //  vd not aligned to LMUL=8
+        || (v_vl[4:0] != 5'd0)                  //  vl not a multiple of EGS
+        || (v_vstart[4:0] != 5'd0));            //  vstart not a multiple of EGS
+    //  The karu_varith sequencer loads/permutes/stores one element group per
+    //  instruction, which is the whole LMUL=8 register group only at VLEN=256.
+    //  A larger VLEN needs the per-group loop (and a wider granule loader), so
+    //  refuse to elaborate rather than silently permute only the first group.
+    //  The legality terms above are specialised to this geometry as well.
+    generate
+        if (`KARU_VLEN != 256) begin : g_vkeccak_geometry
+            KARU_KECCAK_requires_VLEN256_one_element_group_per_LMUL8_group _elab_error();
+        end
+    endgenerate
 `else
     wire vkeccak_resv_illegal;
     assign vkeccak_resv_illegal = 1'b0;

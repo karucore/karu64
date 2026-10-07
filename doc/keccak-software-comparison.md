@@ -32,6 +32,15 @@ State initialization, known-answer checks and result printing are outside timing
 Against the Clang vector-enabled C row, the instruction-assisted path is
 78.9x/82.9x faster for absorb and 104.9x/116.2x for squeeze (168/136 B).
 Against Clang RV64GC it is 114.5x/128.5x and 157.1x/172.7x respectively.
+
+**2026-10-06 update.** Under the Zvknhk element-group rules the instruction
+runs at `vl=32`, so the resident loops switch `vl` twice per block. The
+instruction-assisted row becomes **228.88 / 209.56 / 163.75 / 151.56**
+cycles per block (see
+[the throughput note](keccak-throughput.md#element-group-vl-switching--2026-10-06)).
+Against the unchanged software rows above that is 76.4x/78.2x and
+100.5x/110.9x versus Clang vector-enabled C, and 110.9x/121.3x and
+150.6x/164.8x versus Clang RV64GC. The software rows were not rerun.
 Zbb supplies most of the compiler-generated C improvement; enabling vector
 code does not give a consistent additional gain on this source and core.
 

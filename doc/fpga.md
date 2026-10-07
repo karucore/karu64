@@ -17,13 +17,34 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Current profile image — 2026-09-25
+## Last validated profile image — 2026-10-07
+
+The RVA23S64 DDR/SGMII ROM image `28085356…abbd7` contains the element-group
+`vkeccak.vi` (`99078e3`, branch `dev-keccak`). Vivado 2026.1 closed routed
+timing at 75 MHz: whole-design setup/hold +0.007/+0.011 ns, `cpu_clk`
++0.244/+0.011 ns, 14/14 bus-skew constraints met and zero bitstream DRC
+errors. It was built on a host without the board; the programming bundle
+(bitstream, `.ltx`, ROM manifest and the ROM's DTB) is
+`_build/vcu118_programming.tgz`, SHA-256 `1ab66159…c178`. The ROM bakes
+the lab netboot command and the karudeb `dev-keccak` (`b3b6abf`) control
+DTB `d617ba56…bcec9`. **Validated on the board 2026-10-07**: programmed over
+JTAG from this host (`make prog_vcu118_ddr`, 46 s), hands-off ROM netboot to
+the Linux 7.2.6-zvk NFS-root prompt in 5.5 min from the reset (kernel at +1:04,
+root mounted at +1:18, prompt at +5:28), `board_accept.sh` PASS, and the Zvknhk v0.2 checks
+in karudeb (OpenSSL 4.0.2 17/17, riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs
+720/720, 20/20 encoding-conformance cases) all pass; see the
+[release diagnostics](release-diagnostics-2026-09-14.md#board-validation--2026-10-07).
+The NFS root must carry karudeb `b3b6abf` or later software (older `vl=25`
+binaries take SIGILL on this image). See also
+[building on one host, booting from another](#building-on-one-host-booting-from-another).
+
+## Previous validated profile image — 2026-09-25
 
 The RVA23S64 DDR/SGMII ROM image `b11d5efb…3b809` contains the 1W2R FP
 register file (`7c2563e`). Vivado 2026.1 closed routed timing at 75 MHz:
 whole-design setup/hold 0.000/+0.012 ns, `cpu_clk` +0.077/+0.012 ns,
 14/14 bus-skew constraints met and zero bitstream DRC errors. The routed
-reports remain on the build host; this programming host received the `.bit`
+reports remain on the build host; the programming host received the `.bit`
 and `.ltx` bundle.
 
 The image was programmed on September 25. It boots Linux 7.2.6-zvk from NFS
@@ -199,9 +220,12 @@ instruction-memory latency.
 
   Build the companion firmware with `make -C ../karudeb karu-opensbi` when
   needed. The vector ROM uses `build/karu64/opensbi/fw_jump.bin` and
-  `build/karu64/karu64-zvk-ddr.dtb` from that checkout; do not substitute
+  `build/karu64/karu64-zvk-ddr.dtb` from that checkout, and the profile ROM
+  `build/karu64/karu64-rva23s64-ddr.dtb`; do not substitute
   firmware from a different image series. The embedded DTB and the separately
-  TFTP-served `board.dtb` must be identical.
+  TFTP-served `board.dtb` must be identical. OpenSBI moves the DTB from
+  `0x81B00000` to `0x81C00000` (its `FW_JUMP_FDT_OFFSET`) for U-Boot; Linux
+  receives the TFTP copy at `0x84000000` instead.
 
   After U-Boot relocates to DRAM, its baked netboot bootcmd (from the per-profile
   one-liner in `../karudeb/build/karu64/tftp/<variant>/uboot-netboot-one-line.txt`)
@@ -250,14 +274,94 @@ the existing `_build/vcu118_ddr.bit`; the command does not program the board.
 
 For board programming on another host, run `make vcu118-program-bundle` and
 transfer `_build/vcu118_programming.tgz`. Its members retain the `_build/...`
-paths and contain the mandatory bitstream plus `_build/vcu118_ddr.ltx` when
-available. The programming host can extract it at the repository root and run
-`flow/with_vivado.sh make prog_vcu118_ddr`. For boot, separately stage `Image`
-and `board.dtb` from the matching karudeb TFTP directory.
+paths:
+
+| Member | Contents |
+| --- | --- |
+| `_build/vcu118_ddr.bit` | the bitstream (mandatory) |
+| `_build/vcu118_ddr.ltx` | debug probes, when the build produced them |
+| `_build/vcu118_rom_manifest.txt` | bitstream and ROM hashes, the verbatim baked boot command, and the TFTP/NFS endpoints it names |
+| `_build/vcu118_rom_board.dtb` | the control DTB extracted from the ROM, to be served as `board.dtb` |
+
+`flow/rom_manifest.py` produces the last two by reading the packed ROM image
+back, so they describe what the bitstream contains even if karudeb has moved
+since. The target refuses to run when the ROM image is newer than the
+bitstream, because a ROM repacked after the build no longer describes it.
+The programming host can extract the bundle at the repository root and run
+`flow/with_vivado.sh make prog_vcu118_ddr`. For boot, stage `Image` from the
+matching karudeb build and serve the bundled DTB as `board.dtb`.
 The NFS rootfs is separate. Keep the ROM/TFTP DTBs identical and use the normal
 Svpbmt-enabled profile. The lab netboot command uses server 192.168.42.1,
 board 192.168.42.10 and NFS root `/srv/nfs/karudeb`; TFTP loads Image at
 0x80200000 and the DTB at 0x84000000.
+
+#### Building on one host, booting from another
+
+The build host needs the RAM for implementation; the board host owns JTAG,
+TFTP and NFS. Each side contributes different pieces, and nothing checks
+them against each other automatically:
+
+| Piece | Comes from | Fixed when |
+| --- | --- | --- |
+| OpenSBI `fw_jump.bin` (v1.8.1) | build host, `../karudeb/build/karu64/opensbi/` | bitstream build (in ROM) |
+| U-Boot v2025.01 and its boot command | build host; the command is the one-liner staged under `../karudeb/build/karu64/tftp/rva23s64-ddr/` | bitstream build (in ROM) |
+| Control DTB for OpenSBI and U-Boot | build host, `../karudeb/build/karu64/karu64-rva23s64-ddr.dtb` | bitstream build (in ROM) |
+| Kernel `Image` and `board.dtb` for Linux | board host, TFTP root | each boot |
+| Root filesystem | board host, NFS export | each boot |
+
+The boot command is therefore decided on the **build host**. karudeb's
+staging script defaults to `192.168.1.20` / `192.168.1.10`, so the build host
+must stage with the lab values shown above even though it serves nothing
+itself. Print the line that will be baked before starting the build:
+
+```sh
+cat ../karudeb/build/karu64/tftp/rva23s64-ddr/uboot-netboot-one-line.txt
+```
+
+It must name the board host's TFTP server and board address, fetch `Image`
+and `board.dtb` by exactly those names from the TFTP root, and carry the
+kernel arguments the board host's NFS export expects
+(`root=/dev/nfs ... nfsroot=192.168.42.1:/srv/nfs/karudeb,vers=3,tcp,nolock`,
+`console=ttyS0,115200 earlycon`). `make rva23-boot-inputs-check` does not
+inspect its contents. Changing any of it later means a new bitstream, or
+interrupting U-Boot by hand.
+
+On the board host, extract the bundle at the karu64 repository root, build
+the same karudeb commit, and stage into the live TFTP root with the bundled
+DTB:
+
+```sh
+cat _build/vcu118_rom_manifest.txt           # what this bitstream expects
+DTB=$PWD/_build/vcu118_rom_board.dtb \
+  TFTP_SERVER=192.168.42.1 GUEST_IP=192.168.42.10 \
+  NFS_SERVER=192.168.42.1 NFSROOT=/srv/nfs/karudeb TFTP_ROOT=/srv/tftp \
+  make -C ../karudeb karu64-rva23s64-tftp
+sha256sum /srv/tftp/board.dtb
+```
+
+The requirement is on the **served file**: `sha256sum /srv/tftp/board.dtb`
+must equal the `control DTB` line of the manifest. `DTB=` makes the staging
+script serve the given file instead of the one it compiles, which meets that
+requirement by construction. The same hash is recorded for the bitstream in
+the [release diagnostics](release-diagnostics-2026-09-14.md).
+
+`make -C ../karudeb karu64-rva23s64-check` is a separate source check. It
+recompiles the DTS with the board host's `dtc` and prints
+`profile DTB sha256=...` for that fresh compile. If it prints the manifest
+hash, the board host's checkout and `dtc` reproduce the ROM DTB. If it prints
+something else, the checkout or the `dtc` differs from the build host's:
+find out which before trusting a locally compiled DTB. Copying a DTB around
+cannot change what this check prints, and it does not need to, as long as
+the served file is the bundled one.
+
+Images built from the element-group `vkeccak.vi` change onward (see
+[rtl/zvk/README.md](../rtl/zvk/README.md#zvknhk-vkeccakvi-riscv-pqc)) also
+need matching software in the root filesystem: karudeb from its `dev-keccak`
+commit `b3b6abf`, with the Zvknhk OpenSSL built against riscv-pqc `main` at
+`3c40d18` or later. Software built before that issues the instruction at
+`vl=25` and takes SIGILL, which `board_accept.sh` reports as a failed crypto
+check. The new software also runs on earlier images, so update and restage
+the root filesystem first and program the bitstream second.
 
 Capture UART with `python3 flow/serial_cap.py /dev/ttyUSB1 115200 _build/boot.log`.
 From another terminal, with `hw_server` running and the intended board selected,

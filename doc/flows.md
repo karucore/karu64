@@ -170,7 +170,8 @@ where Spike permits reserved instruction forms.
     make zvk-kat                                 # standalone + aggregate leaf KATs
     make zvk-test-all                            # full-core AES/SHA2/SM4/SM3/GHASH on Karu + Spike
     make keccak-kat                              # Zvknhk vkeccak.vi datapath KAT (riscv-pqc KECCAK-P / KECCAK-P12)
-    make keccak-test keccak-test-zvk             # full-core vkeccak.vi: spec KATs, fixed-group rules, reserved-encoding traps
+    make keccak-test keccak-test-zvk             # full-core vkeccak.vi: spec KATs, element-group rules, reserved-encoding traps
+    make keccak-test-all                         # the same ELF on the riscv-pqc reference Spike; every line must match
     make zvkb-test                               # Zvkb leaf vs C model (+ zvkb-test-spike)
     make zvbb-test-all                           # full/subset/off decode gating + Karu/Spike behavior
     make keccak-bench keccak-sponge-test          # resident-state rate cycles and multi-block SHAKE KAT

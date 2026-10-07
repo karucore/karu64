@@ -73,15 +73,20 @@ static void run(unsigned rate, uint8_t *in, uint8_t *out)
     unsigned long lanes = rate / 8;
     asm volatile(
         "vsetvli t0,zero,e64,m8,tu,mu\n vmv.v.i v0,0\n"
-        "vsetvli t0,%[vl],e64,m8,tu,mu\n li t1,4\n"
+        //  Zvknhk element-group rules: the rate block moves at vl=rate/8, the
+        //  permutation needs vl=32 (one 2048-bit element group, e64,m8).
+        "li t2,32\n vsetvli t0,%[vl],e64,m8,tu,mu\n li t1,4\n"
         "1:\n vle64.v v8,(%[in])\n vxor.vv v0,v0,v8\n"
-        ".word 0xa6092077\n add %[in],%[in],%[rate]\n"
+        "vsetvli t0,t2,e64,m8,tu,mu\n .word 0xa6092077\n"
+        "vsetvli t0,%[vl],e64,m8,tu,mu\n add %[in],%[in],%[rate]\n"
         "addi t1,t1,-1\n bnez t1,1b\n li t1,3\n"
-        "2:\n vse64.v v0,(%[out])\n .word 0xa6092077\n"
+        "2:\n vse64.v v0,(%[out])\n"
+        "vsetvli t0,t2,e64,m8,tu,mu\n .word 0xa6092077\n"
+        "vsetvli t0,%[vl],e64,m8,tu,mu\n"
         "add %[out],%[out],%[rate]\n addi t1,t1,-1\n bnez t1,2b\n"
         : [in] "+&r"(in), [out] "+&r"(out)
         : [vl] "r"(lanes), [rate] "r"((unsigned long)rate)
-        : "t0", "t1", "memory", "vl", "vtype",
+        : "t0", "t1", "t2", "memory", "vl", "vtype",
           "v0","v1","v2","v3","v4","v5","v6","v7",
           "v8","v9","v10","v11","v12","v13","v14","v15");
 }

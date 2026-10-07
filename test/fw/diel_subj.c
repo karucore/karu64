@@ -323,7 +323,7 @@ int main(void)
 #endif
 #ifdef WITH_KECCAK
     sio_puts("-- Zvknhk draft --\n");
-    RV(vkeccak_24,25); RV(vkeccak_12,25);
+    RV(vkeccak_24,32); RV(vkeccak_12,32);     /* one element group: e64,m8,vl=32 */
 #endif
     sio_puts("[DIEL] tests="); put_u64(n_tests); sio_puts(" failures="); put_u64(n_fail); sio_putc('\n');
     sio_puts(n_fail ? "[DIEL] FAIL\n" : "[DIEL] ALL PASS\n");

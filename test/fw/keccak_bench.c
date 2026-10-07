@@ -1,11 +1,17 @@
 // Ideal-memory cycle decomposition of VLEN=256 Zvknhk and SHAKE rate blocks.
 // Run with make keccak-bench; N=16, state resident, warmed absorb input.
+// vkeccak.vi runs at e64,m8,vl=32 (Zvknhk element-group rules).
 // Includes core/cache/AXI protocol costs but no injected external wait states.
 #include <stdint.h>
 #include "sio_generic.h"
 
 #define N 16u
-#define VCLOBBERS "memory", "vl", "vtype", \
+//  vkeccak.vi follows the Zvknhk element-group rules: it needs e64, LMUL=8 and
+//  vl=32 (one 2048-bit element group at VLEN=256), while the 25 live state
+//  words or one rate block are moved with a smaller vl. t0 holds 32 for the
+//  register-form vsetvli (the immediate form only reaches 31).
+#define VL32 "li t0,32\n vsetvli x0,t0,e64,m8,tu,mu\n"
+#define VCLOBBERS "memory", "vl", "vtype", "t0", \
     "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", \
     "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"
 
@@ -39,6 +45,7 @@ static uint64_t insn24_only(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        VL32
         "rdcycle %[c0]\n"
         ".rept 16\n .word 0xa6092077\n .endr\n"
         "rdcycle %[c1]\n"
@@ -53,6 +60,7 @@ static uint64_t insn12_only(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        VL32
         "rdcycle %[c0]\n"
         ".rept 16\n .word 0xa6192077\n .endr\n"
         "rdcycle %[c1]\n"
@@ -109,7 +117,7 @@ static uint64_t wrapper_no_vset(void)
 {
     uint64_t c0, c1;
     __asm volatile(
-        "vsetivli x0,25,e64,m8,tu,mu\n"
+        VL32
         "vle64.v v0,(%[s])\n vse64.v v0,(%[s])\n"
         "rdcycle %[c0]\n"
         ".rept 16\n"
@@ -133,7 +141,9 @@ static uint64_t wrapper_exact(void)
         ".rept 16\n"
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        VL32
         ".word 0xa6092077\n"
+        "vsetivli x0,25,e64,m8,tu,mu\n"
         "vse64.v v0,(%[s])\n"
         ".endr\n"
         "rdcycle %[c1]\n"
@@ -154,7 +164,9 @@ static void measured_wrapper(uint64_t *s)
         __asm volatile(
             "vsetivli x0,25,e64,m8,tu,mu\n"
             "vle64.v v0,(%[s])\n"
+            VL32
             ".word 0xa6092077\n"
+            "vsetivli x0,25,e64,m8,tu,mu\n"
             "vse64.v v0,(%[s])\n"
             : : [s] "r" (s) : VCLOBBERS);
     }
@@ -189,12 +201,15 @@ static uint64_t absorb168(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        "li t0,32\n"
         "vsetivli x0,21,e64,m8,tu,mu\n"
         "rdcycle %[c0]\n"
         ".rept 16\n"
         "vle64.v v8,(%[p])\n"
         "vxor.vv v0,v0,v8\n"
+        "vsetvli x0,t0,e64,m8,tu,mu\n"
         ".word 0xa6092077\n"
+        "vsetivli x0,21,e64,m8,tu,mu\n"
         "addi %[p],%[p],168\n"
         ".endr\n"
         "rdcycle %[c1]\n"
@@ -214,12 +229,15 @@ static uint64_t absorb136(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        "li t0,32\n"
         "vsetivli x0,17,e64,m8,tu,mu\n"
         "rdcycle %[c0]\n"
         ".rept 16\n"
         "vle64.v v8,(%[p])\n"
         "vxor.vv v0,v0,v8\n"
+        "vsetvli x0,t0,e64,m8,tu,mu\n"
         ".word 0xa6092077\n"
+        "vsetivli x0,17,e64,m8,tu,mu\n"
         "addi %[p],%[p],136\n"
         ".endr\n"
         "rdcycle %[c1]\n"
@@ -241,11 +259,14 @@ static uint64_t squeeze168(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        "li t0,32\n"
         "vsetivli x0,21,e64,m8,tu,mu\n"
         "rdcycle %[c0]\n"
         ".rept 16\n"
         "vse64.v v0,(%[p])\n"
+        "vsetvli x0,t0,e64,m8,tu,mu\n"
         ".word 0xa6092077\n"
+        "vsetivli x0,21,e64,m8,tu,mu\n"
         "addi %[p],%[p],168\n"
         ".endr\n"
         "rdcycle %[c1]\n"
@@ -261,11 +282,14 @@ static uint64_t squeeze136(void)
     __asm volatile(
         "vsetivli x0,25,e64,m8,tu,mu\n"
         "vle64.v v0,(%[s])\n"
+        "li t0,32\n"
         "vsetivli x0,17,e64,m8,tu,mu\n"
         "rdcycle %[c0]\n"
         ".rept 16\n"
         "vse64.v v0,(%[p])\n"
+        "vsetvli x0,t0,e64,m8,tu,mu\n"
         ".word 0xa6092077\n"
+        "vsetivli x0,17,e64,m8,tu,mu\n"
         "addi %[p],%[p],136\n"
         ".endr\n"
         "rdcycle %[c1]\n"
@@ -312,6 +336,21 @@ static uint64_t xor##TAG(void)                                          \
     return c1 - c0;                                                      \
 }
 
+/* The element-group rule costs two vl switches per block (rate <-> 32). */
+static uint64_t vset_pair(void)
+{
+    uint64_t c0, c1;
+    __asm volatile(
+        "li t0,32\n rdcycle %[c0]\n"
+        ".rept 16\n"
+        "vsetvli x0,t0,e64,m8,tu,mu\n"
+        "vsetivli x0,21,e64,m8,tu,mu\n"
+        ".endr\n"
+        "rdcycle %[c1]\n"
+        : [c0] "=&r" (c0), [c1] "=&r" (c1) : : VCLOBBERS);
+    return c1 - c0;
+}
+
 DEFINE_RATE_PARTS(168, 21, 168, 21)
 DEFINE_RATE_PARTS(136, 17, 136, 17)
 
@@ -326,13 +365,14 @@ int main(void)
     result("vle64 only, cache hot", load_only());
     result("vse64 only, cache hot", store_only());
     result("vle64+vse64 only, cache hot", memory_pair());
-    result("vle64+vkeccak+vse64", wrapper_no_vset());
-    result("vset+vle64+vkeccak+vse64", wrapper_exact());
+    result("vle64+vkeccak+vse64, 32-word state at vl=32", wrapper_no_vset());
+    result("vset25+vle64+vset32+vkeccak+vset25+vse64", wrapper_exact());
     result("ML-KEM-style wrapper function", wrapper_function());
     result("SHAKE128 absorb, resident state, 168 B/block", absorb168());
     result("SHA3-256/SHAKE256 absorb, resident state, 136 B/block", absorb136());
     result("SHAKE128 squeeze, resident state, 168 B/block", squeeze168());
     result("SHAKE256 squeeze, resident state, 136 B/block", squeeze136());
+    result("  vl switch pair component (32 <-> rate)", vset_pair());
     result("  168 B load component", load168());
     result("  168 B xor component", xor168());
     result("  168 B store component", store168());
