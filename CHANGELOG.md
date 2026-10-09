@@ -6,6 +6,14 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Changed — trial ASIC memory-compiler inventory
+
+- The memory inventory now distinguishes RTL access timing from the trial
+  compiler's 1RW/2RW synchronous-read macros. Only the VRF is a direct
+  port/timing candidate; 1W1R and 1W2R leaves require a registered-read
+  redesign or flop logic. See [flow/asic/README.md](flow/asic/README.md)
+  and [memories.md](flow/asic/memories.md).
+
 ### Changed — `vkeccak.vi` follows the Zvknhk element-group rules (breaking)
 
 - The instruction now implements the element-group form of the draft Zvknhk

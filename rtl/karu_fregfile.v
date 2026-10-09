@@ -1,7 +1,8 @@
 //  karu_fregfile.v
 //  32 x 64-bit floating-point register file: two asynchronous read ports
 //  and one write port (1W2R), the same port shape as the integer register
-//  file, so a standard two-read compiled register file can implement it.
+//  file. A compiled replacement must preserve the asynchronous read timing;
+//  the trial 1RW/2RW synchronous-read macros are not direct replacements.
 //  f0 is NOT hard-wired to zero (unlike x0).
 //
 //  FMA needs three sources. The core reads rs1/rs2 in the decode cycle and

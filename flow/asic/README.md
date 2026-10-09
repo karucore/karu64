@@ -89,7 +89,7 @@ identify their arrays; scalar/FP and scratch paths already name arrays.
 These 15 data arrays total **97,024 logical bits**, excluding control
 registers and constant lookup logic. All ASIC data arrays are uninitialized.
 
-The September 14 release audit with Yosys 0.69+24 confirms the same geometry
+The October 9 audit with Yosys 0.69+24 confirms the same geometry
 and interfaces: nine macro candidates, two register files and four scratch
 arrays; 33 control arrays and 14 constant lookup arrays are separate. No
 initialized state is present. The checked-in CSV/Markdown inventory matches
@@ -97,23 +97,42 @@ that elaboration. Exact source hashes and reports are produced in the standard
 `_build/asic-audit/` location. This is an inventory/initialization audit, not a
 memory-macro area or timing estimate.
 
-| Path from top | Width × depth | Current logical interface | Write mask |
-| --- | ---: | --- | --- |
-| `karu64.vrf.u_bram.mem_u` | 128 × 64 | TDP, two independent RW ports, synchronous reads | 16 byte enables on **each** port |
-| `karu64.dmem_l1.line_data_u` | 512 × 64 | 1W1R, asynchronous read; parent ties addresses | None; full 512-bit write |
-| `karu64.dmem_l1.line_tag_u` | 20 × 64 | 1W1R, asynchronous read; parent ties addresses | None |
-| `karu64.icache.cdata_u` | 64 × 512 | 1W1R, asynchronous read, separate addresses | None |
-| `karu64.icache.ctag_u` | 20 × 64 | 1W1R, asynchronous read, separate addresses | None |
-| `karu64.immu.pwc_data_u` | 512 × 4 | 1W1R, asynchronous read | None |
-| `karu64.dmmu.pwc_data_u` | 512 × 4 | 1W1R, asynchronous read | None |
-| `karu64.varith_u.pram_u` | 64 × 32 | 1W2R, two asynchronous read addresses | None |
-| `karu64.varith_u.iram_u` | 64 × 32 | 1W2R, two asynchronous read addresses | None |
-| `karu64.rf.rx` | 64 × 32 | 1W2R register file, asynchronous reads | None; x0 writes suppressed/reads zero |
-| `karu64.frf.fx` | 64 × 32 | 1W2R register file, asynchronous reads; port B time-shared for FMA rs3 | None; f0 is writable |
-| `karu64.vlsu.buf_u.membuf` | 128 × 18 | Multi-read scratch, one full-word write | None |
-| `karu64.vlsu.buf_u.regbuf` | 128 × 16 | Multi-read scratch, one full-word write | None |
-| `karu64.vlsu.buf_u.pib` | 8 × 256 | Byte-addressed multi-access scratch | 16 consecutive bytes written together |
-| `karu64.vlsu.buf_u.peb` | 8 × 256 | Byte-addressed multi-access scratch | 16-byte granule or up-to-8-byte element writes |
+The current Arm compiler available for the trial produces **1RW or 2RW**
+macros: every port can read or write, and read data arrives after a clock
+edge. Its RAMs need at least 32 words; confirm the RF compiler's geometry
+separately. The port counts below describe the *RTL's logical accesses*.
+They are not requests for 1R1W or 1W2R compiler variants. A row labelled
+"2RW + retime" needs a controller/pipeline change for the synchronous read;
+it cannot be rebound by changing only the memory leaf.
+
+| Path from top | Width × depth | Current RTL access/timing | 1/2RW compiler fit | Write mask |
+| --- | ---: | --- | --- | --- |
+| `karu64.vrf.u_bram.mem_u` | 128 × 64 | 2 RW, synchronous reads | 2RW candidate; check masks and output hold | 16 byte enables on **each** port |
+| `karu64.dmem_l1.line_data_u` | 512 × 64 | 1W1R, asynchronous read; parent ties addresses | 2RW for concurrent read/write + retime | None; full 512-bit write |
+| `karu64.dmem_l1.line_tag_u` | 20 × 64 | 1W1R, asynchronous read; parent ties addresses | 2RW for concurrent read/write + retime | None |
+| `karu64.icache.cdata_u` | 64 × 512 | 1W1R, asynchronous read; separate addresses | 2RW for concurrent read/write + retime | None |
+| `karu64.icache.ctag_u` | 20 × 64 | 1W1R, asynchronous read; separate addresses | 2RW for concurrent read/write + retime | None |
+| `karu64.immu.pwc_data_u` | 512 × 4 | 1W1R, asynchronous read | 2RW + retime; pad 4 → 32 words or retain flop logic | None |
+| `karu64.dmmu.pwc_data_u` | 512 × 4 | 1W1R, asynchronous read | 2RW + retime; pad 4 → 32 words or retain flop logic | None |
+| `karu64.varith_u.pram_u` | 64 × 32 | 1W2R, asynchronous reads | No direct fit; flop logic or two replicated 2RW macros + retime | None |
+| `karu64.varith_u.iram_u` | 64 × 32 | 1W2R, asynchronous reads | No direct fit; flop logic or two replicated 2RW macros + retime | None |
+| `karu64.rf.rx` | 64 × 32 | 1W2R, asynchronous reads | No direct fit; flop logic or two replicated 2RW macros + retime | None; x0 writes suppressed/reads zero |
+| `karu64.frf.fx` | 64 × 32 | 1W2R, asynchronous reads; port B also reads FMA rs3 | No direct fit; flop logic or two replicated 2RW macros + retime | None; f0 is writable |
+| `karu64.vlsu.buf_u.membuf` | 128 × 18 | Multi-read combinational scratch; one write | No direct fit; flop logic or banked/replicated 1/2RW redesign; pad 18 → 32 | None |
+| `karu64.vlsu.buf_u.regbuf` | 128 × 16 | Multi-read combinational scratch; one write | No direct fit; flop logic or banked/replicated 1/2RW redesign; pad 16 → 32 | None |
+| `karu64.vlsu.buf_u.pib` | 8 × 256 | Byte-addressed multi-access scratch | No direct fit; flop logic or banked/replicated 1/2RW redesign | 16 consecutive bytes written together |
+| `karu64.vlsu.buf_u.peb` | 8 × 256 | Byte-addressed multi-access scratch | No direct fit; flop logic or banked/replicated 1/2RW redesign | 16-byte granule or up-to-8-byte element writes |
+
+The leaf RAM definitions are in [karu_ram_prim.v](../../rtl/karu_ram_prim.v).
+Instantiation sites are [karu_mem.v](../../rtl/karu_mem.v) (D-cache),
+[karu_icache.v](../../rtl/karu_icache.v),
+[karu_sv39.v](../../rtl/karu_sv39.v) (PWC),
+[karu_varith.v](../../rtl/karu_varith.v) (permutation buffers), and
+[karu_vrf_bram.v](../../rtl/karu_vrf_bram.v) (VRF). Scalar/FP register files
+are instantiated in [karu64.v](../../rtl/karu64.v) and defined in
+[karu_regfile.v](../../rtl/karu_regfile.v) and
+[karu_fregfile.v](../../rtl/karu_fregfile.v); VLSU scratch arrays are declared
+in [karu_vlsu_buf.v](../../rtl/karu_vlsu_buf.v).
 
 ### Port semantics and mapping limits
 
@@ -127,32 +146,41 @@ memory-macro area or timing estimate.
   not relied upon by the controller. Byte enables are active high in the
   wrapper; no sub-byte mask is needed. Bit-enable macro pins can be driven in
   groups of eight. Preserve output hold if the macro updates outputs on writes.
-- **Async wrappers:** full-word rising-edge writes, combinational reads with
-  no read enable or output register. A same-address read reflects new data
-  after the write edge. **Synchronous SP/SDP macros are not drop-in replacements.**
-  Use a suitable async-read/register-file option or change the controller
-  timing explicitly. D-cache stores already merge bytes into the old 512-bit
-  line in logic; the leaf needs no byte mask. Parent address sharing does not
-  remove this read-modify-write timing requirement.
-- **Permutation buffers:** two independent async reads; writes occur in the
-  load phase and reads in compute phases. Two replicated 1W1R memories with
-  broadcast writes are one option if 1W2R is unavailable, doubling storage.
-  A one-read-port SP macro alone cannot preserve this interface.
-- **Scalar/FP RF:** retain flops or use compiled RFs with the stated async
-  read ports; both files are 1W2R (the FP file reads FMA rs3 on port B during
-  the issue window, so no third port is needed). No combinational
-  write-through bypass is present. The rs3 steer adds one same-cycle path,
-  `ex_rs3` register -> 5-bit address mux -> asynchronous FP RF read -> FMA
-  stage-1 unpack, that STA must cover with the compiled macro's actual
-  address-to-data delay; the mapped-to-logic reference flows do not model it. Preserve x0 handling externally; only 31 integer words hold
-  useful state, though the declared address space is 32 words.
-- **VLSU scratch:** retain flops for initial integration unless deliberately
-  refactored. `membuf`/`regbuf` each have 16 raw word-read expressions that
+- **Asynchronous-read wrappers:** full-word rising-edge writes, combinational
+  reads with no read enable or output register. A same-address read reflects
+  new data after the write edge. The available 1RW/2RW macros cannot replace
+  these leaves directly. A simultaneous read and write needs two RW ports;
+  the controller must also issue the read address a cycle earlier or otherwise
+  absorb the registered-read latency, including stalls and read-after-write
+  behavior. D-cache stores already merge bytes into the old 512-bit line in
+  logic; the leaf needs no byte mask. Parent address sharing does not remove
+  this read-modify-write timing requirement.
+- **Permutation buffers:** two independent combinational reads; writes occur
+  in the load phase and reads in compute phases. Two replicated 2RW macros
+  with broadcast writes can supply the three logical accesses, at twice the
+  storage cost, but still require a registered-read timing redesign. Time
+  multiplexing is possible only if the access schedule permits it.
+- **Scalar/FP RF:** both files have one write and two combinational read
+  accesses (the FP file reads FMA rs3 on port B during the issue window, so
+  no third port is needed). The available synchronous macros do not implement
+  that timing. Retaining the files as flop-and-mux logic preserves it; using
+  two replicated 2RW macros with broadcast writes additionally requires an
+  operand-pipeline redesign. No combinational write-through bypass is
+  present. The current rs3 path is `ex_rs3` register -> 5-bit address mux ->
+  combinational FP RF read -> FMA stage-1 unpack. Preserve x0 handling
+  externally; only 31 integer words hold useful state, though the declared
+  address space is 32 words.
+- **VLSU scratch:** “retain flops” means synthesize the RTL arrays as standard
+  cell flip-flops plus combinational read muxes and write decode, retaining
+  current access timing rather than binding them to SRAM. This costs area and
+  power. `membuf`/`regbuf` each have 16 raw word-read expressions that
   assemble a 16-byte window spanning at most two adjacent 128-bit words.
   `pib` has eight byte-read and sixteen byte-write expressions; `peb` has
   32 read and 24 write expressions before optimization. These are access
-  sites, **not physical macro port counts**. Byte banking and address sharing
-  can reduce ports, but that redesign is not supplied here. Element writes
+  sites, **not physical macro port counts**. A TCDM-style banked scratchpad
+  built from 1RW/2RW macros is plausible, but needs explicit banking,
+  arbitration, byte-write handling and registered-read scheduling. That
+  redesign is not supplied here. Element writes
   take priority over granule writes to the same `peb` byte. Selective writes
   preserve other bytes. The 18-word `membuf` includes misalignment slack.
 
@@ -160,9 +188,11 @@ No leaf requests ECC, parity, sleep/retention pins, redundancy repair, MBIST,
 or independent clock domains. Physical/DFT requirements need integration
 outside these interfaces. No Arm-specific macro names or pin polarity are
 assumed. Width splitting/depth padding must preserve timing and semantics.
-The VRF **64-word × 128-bit, 2RW, byte-mask** request is concrete. Ask whether
-the compiler supports async reads before generating cache macros; four-word
-PWC arrays and small tags may be more practical as flops.
+The VRF **64-word × 128-bit, 2RW, byte-mask** request is the only direct
+port/timing candidate, subject to checking the compiler's byte enables and
+output-hold behavior. Other arrays need RTL timing/port changes or flop logic
+before their macro specifications can be finalized. Four-word PWC arrays need
+padding to 32 words if implemented in these RAM macros; flops may be simpler.
 
 ## Other arrays: retain as logic/registers
 

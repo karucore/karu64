@@ -1,6 +1,8 @@
 //  karu_regfile.v
 //  32x64-bit integer register file. x0 hard-wired to zero.
-//  2 read ports (rs1, rs2), 1 write port (rd).
+//  2 asynchronous read ports (rs1, rs2), 1 write port (rd).
+//  A compiled replacement must preserve the asynchronous read timing;
+//  the trial 1RW/2RW synchronous-read macros are not direct replacements.
 
 module karu_regfile (
     input  wire         clk,
