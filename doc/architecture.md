@@ -357,6 +357,22 @@ both FS and VS, and legal vector-FP operations conservatively dirty FS.
 Source EEW, register-group geometry and reserved-field checks run before any
 memory or register side effect. Ssstrict is not advertised: the selected
 reserved-encoding tests do not constitute an exhaustive audit.
+
+`vstart` keeps only the bits of the largest element index, `VLEN-1` (SEW=8,
+LMUL=8), and discards higher bits on a write: at VLEN=256, writing `0x2200`
+reads back 0. Vector arithmetic, vector-FP and Zvk instructions take the
+permitted illegal-instruction exception on any nonzero `vstart`. `vkeccak.vi`
+has its own element-group rule, described below. Loads and stores honor
+`vstart`. Out-of-range values are reserved encodings in the V specification:
+`vstart` ≥ VLMAX for ordinary loads and stores, and `vstart` ≥
+`evl` = NFIELDS·VLEN/EEW for whole-register loads and stores (for example
+`vl1re8.v` with `vstart` ≥ 32, or `vl1re64.v` with `vstart` ≥ 4, at
+VLEN=256). karu64 does not trap on these. They complete like `vstart` ≥ `vl`:
+no element is written and `vstart` is cleared. The specification permits
+this; trapping is recommended but not required. The behavior matches Spike
+and the Sail configuration used for ACT4
+(`"vstart_out_of_bounds": "Vstart_Ignore"`). Software must not rely on it.
+
 The datapath is built as a
 replicated lane array so synthesis maps one lane and copies it:
 

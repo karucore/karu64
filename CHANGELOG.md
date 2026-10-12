@@ -6,6 +6,16 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Documented — out-of-range `vstart` policy (issue #5)
+
+- [doc/architecture.md](doc/architecture.md#vector-unit-rvv-10-v) now states
+  the existing behavior. `vstart` keeps only `log2(VLEN)` bits. Vector loads
+  and stores with a reserved out-of-range `vstart` (≥ `evl` for
+  whole-register forms, ≥ VLMAX for the others) complete without trapping,
+  write no elements and clear `vstart`, as in Spike and the ACT4 Sail
+  configuration (`Vstart_Ignore`). Vector arithmetic still traps on any
+  nonzero `vstart`. No RTL change.
+
 ### Changed — trial ASIC memory-compiler inventory
 
 - The memory inventory now distinguishes RTL access timing from the trial
