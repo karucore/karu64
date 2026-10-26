@@ -19,6 +19,47 @@ defines the platform mapping and passes `axi-prot-test` before debug integration
 is accepted. Both milestones belong to the initial update. S1 remains open
 until its implementation, documented platform contract and tests are complete.
 
+## Progress checklist
+
+Current stage: implementation plan documented; RTL implementation and
+validation have not started. Check an item only when its implementation and
+required tests are complete. Add source and result links beside completed
+items; a documented design choice alone does not close an implementation item.
+
+- [x] Record initial scope, specification review, adoption origins and design
+  choices, including the mainline OpenOCD source baseline.
+- [x] OpenOCD installation prerequisite: verify the pinned mainline build,
+  runtime libraries, installed scripts and simulation adapters (2026-10-26;
+  commands and version recorded in the [initial contract](#initial-contract)).
+- [ ] [Shared interface foundation](#1-shared-interface-foundation): build
+  switch, core/DM interface, source manifests, provenance and license notices.
+- [ ] [Milestone A](#2-milestone-a-axi-protection-metadata): implement AXI
+  protection propagation and the platform contract; pass `axi-prot-test` with
+  debug disabled before accepting milestone B integration.
+- [ ] DM register bank and abstract-command engine: implement the
+  [initial contract](#initial-contract); pass `dbg-unit-test`.
+- [ ] [Core Sdext and run control](#3-milestone-b-core-sdext-support-and-precise-run-control):
+  implement halt/resume/step, debug CSRs and instruction rules; pass
+  `dbg-core-test`, including rejected Program Buffer DRET.
+- [ ] [ROM and memory integration](#4-debug-rom-program-buffer-and-memory-integration):
+  generate the ROM, enforce both aperture gates, support MMIO and pass
+  `dbg-rom-test` and `dbg-memory-test`.
+- [ ] [Reset, CDC and JTAG](#5-reset-clock-crossing-and-jtag): implement and
+  verify reset domains, transport and FPGA BSCAN integration; pass
+  `dbg-jtag-test` through pinned mainline OpenOCD/GDB.
+- [ ] [Context and translation coverage](#testing-plan): pass
+  `dbg-context-test` and complete `dbg-translation-test`, documenting supported
+  mappings, tool limitations and debugger-policy differences.
+- [ ] Functional acceptance: pass `dbg-test`, negative controls, four-state
+  startup, lint and selected ordinary ISA regressions; rerun `axi-prot-test`
+  with debug enabled. Publish the requirements-to-tests evidence.
+- [ ] [Synthesis acceptance](#synthesis-and-hardware-acceptance): update ASIC
+  inventories and Yosys area, run OpenSTA at the 200 MHz target and record
+  Vivado routed timing at the 75 MHz core target.
+- [ ] [Board acceptance](#synthesis-and-hardware-acceptance): demonstrate
+  debug operations and MMIO, then normal karudeb boot and board acceptance
+  after detach; record the tested configuration and compliance scope.
+
 ## Specification and implementation origins
 
 The normative reference is the ratified
@@ -101,13 +142,32 @@ from the specification's recommendation to use `mprven=1`. Hardware-translated
 debugger accesses are deferred; configure the debugger to translate virtual
 addresses in software or use explicit physical addresses.
 
-Do not assume a blanket OpenOCD limitation on guest translation:
-[riscv-openocd `10b7a647da03`](https://github.com/riscv-collab/riscv-openocd/blob/10b7a647da03cb64fd25db76261712c388ad6468/src/target/riscv/riscv.c#L3190)
-implements software VS/G-stage translation. Pin the actual tool revision and
-verify host Sv39 and guest Sv39/Sv39x4 accesses on Karu, including translated
-VS-PTE reads. Do not advertise an untested virtual-access path. Software
-translation is not automatically equivalent to hardware MPRV permission,
+Use mainline OpenOCD: the archived `riscv-openocd` fork directs ongoing RISC-V
+development upstream. The initial source-review baseline is
+[mainline `cb0c224e936091156ecf3025ba05657408ed64c8`](https://github.com/openocd-org/openocd/blob/cb0c224e936091156ecf3025ba05657408ed64c8/src/target/riscv/riscv.c#L3200)
+(2026-10-24), which implements software VS/G-stage translation, including
+G-stage translation of VS page-table reads. This is a source inspection,
+not an interoperability result. Use this revision for the first test build;
+record any replacement revision explicitly. Verify host Sv39 and guest
+Sv39/Sv39x4 accesses on Karu, including translated VS-PTE reads. Do not
+advertise an untested virtual-access path. Software translation is not
+automatically equivalent to hardware MPRV permission,
 A/D, PBMT or pointer-masking behavior; document the supported debugger contract.
+
+The OpenOCD installation prerequisite was verified on 2026-10-26. The binary
+at `$RISCV/bin/openocd` reports
+`Open On-Chip Debugger 0.12.0+dev-02773-gcb0c224e9`; the source revision matches
+the full pin above. Scripts are installed under
+`$RISCV/share/openocd/scripts`, runtime libraries resolve, and `remote_bitbang`,
+`jtag_vpi` and `jtag_dpi` are available. Recheck the version and adapters with:
+
+```sh
+openocd --version
+openocd -c 'echo [adapter list]; shutdown'
+```
+
+This completes tool installation only. No simulated-target connection or
+`dbg-jtag-test` has run; transport and target interoperability remain unchecked.
 
 Implement `stopcount=1` to freeze all hart-local counters, including HPM
 counters, while in Debug Mode. Time continues running. Define and test the WARL
@@ -221,6 +281,8 @@ still needs its explicit local debug-origin authorization.
   misses and bypasses, atomics, CBOs, and both page walkers. A top-level mux
   alone cannot recover metadata that an inner module has discarded.
 - Include MPRV/MPP/MPV and HLV/HLVX/HSV in the effective privilege calculation.
+  HLVX is a data load, so `AxPROT[2]=0` despite its execute-permission check;
+  HLV and HSV are also data accesses.
   PTE reads are privileged data transactions within the hart's fixed security
   domain; document host, VS and G-stage walk behavior. Ordinary guest/user
   data requests must retain their own effective privilege. Milestone B adds
@@ -273,9 +335,9 @@ The main integration points are `rtl/karu64.v`, `rtl/karu_csr.v`,
 - Route EBREAK/C.EBREAK to Debug Mode according to `dcsr`; otherwise retain
   the architectural breakpoint exception. Use the specified priority between
   simultaneous debug-entry causes and exceptions.
-- On DRET, restore `dpc`, privilege and virtualization state and clear MPRV
-  when returning below M-mode. Do not use or overwrite application trap CSRs
-  as storage for debug entry.
+- On an authorized ROM-resume DRET, restore `dpc`, privilege and virtualization
+  state and clear MPRV when returning below M-mode. Do not use or overwrite
+  application trap CSRs as storage for debug entry.
 - Freeze hart-local counters according to `stopcount`; do not freeze CLINT
   time. Freeze `cycle`, `instret` and all HPM increments and automatic overflow
   generation in Debug Mode, preserving pre-existing pending/OF state and
@@ -300,6 +362,7 @@ choices. Test the choices independently of ordinary M-mode execution:
 | --- | --- |
 | WFI, WRS.NTO, WRS.STO | Retiring NOP; no wait state |
 | ECALL, MRET, SRET | Terminate the command through the debug exception path with `cmderr=exception`; leave application trap and return state unchanged |
+| DRET | Honor only at the immutable ROM's designated resume instruction, during an authorized resume sequence; otherwise take the debug exception path, report `cmderr=exception` for an active command, and remain in Debug Mode |
 | Branches, JAL and JALR | Support destinations inside and outside the Program Buffer, subject to ordinary fetch access checks; remain in Debug Mode |
 | AUIPC and other implemented PC-dependent instructions | Support their defined operation using the debug execution PC; the adopted ROM itself relies on AUIPC |
 | EBREAK/C.EBREAK | End the command and return to the parking loop without overwriting the saved DPC/cause |
@@ -307,9 +370,19 @@ choices. Test the choices independently of ordinary M-mode execution:
 
 This selects support for both classes of control transfer and for PC-dependent
 instructions; do not introduce ad-hoc optional-illegal cases that violate the
-specification's all-or-none rules. ECALL/xRET behavior in Debug Mode is
+specification's all-or-none rules. ECALL/MRET/SRET behavior in Debug Mode is
 UNSPECIFIED by the specification; the command-exception choice above is a
 defined Karu contract, not an architectural trap into the application.
+
+The specification's informative Appendix A.2 describes DRET outside Program
+Buffer execution. Karu's ROM-only DRET rule is an implementation choice, not
+a requirement that every Debug 1.0 hart use this ROM protocol. Qualify DRET
+using the executing instruction's PC and the resume phase, not the live fetch
+address. An accepted DM resume request and the ROM's RESUMING handshake must
+authorize the exit; a command jumping to the ROM's DRET must not bypass this
+sequence. Confirm the core's actual exit before acknowledging resume and
+reporting it running. A rejected DRET must preserve saved DPC, privilege/V
+state and the DM's halted status.
 
 ### 4. Debug ROM, Program Buffer and memory integration
 
@@ -324,10 +397,15 @@ defined Karu contract, not an architectural trap into the application.
   request/data interface is not directly AXI. Handle independent AW/W arrival,
   byte enables, response holding and simultaneous instruction/data requests
   without duplicating a side effect or dropping a response.
-- Restrict the aperture to debug-origin accesses. Add explicit PMA/decode
-  handling rather than opening the page to ordinary U/S/VS/VU execution.
-  Check permissions when a request is accepted and retain its context until
-  completion, including across mode transitions.
+- Enforce two independent debug-aperture gates. The core's PMA/access check
+  permits the page only in Debug Mode, rejecting normal M/S/U/VS/VU accesses.
+  The platform decoder routes the page only from the core's instruction and
+  data ports; every other bus master receives a decode error with no DM
+  request or side effect. PULP's DM slave interface carries no requester
+  identity, so it cannot enforce that second gate internally. Check trusted
+  source identity before arbitration discards it; `AxPROT` does not identify
+  debug traffic. Check authorization when accepting a request and retain it
+  until completion, including across mode transitions.
 - Adopt the two-scratch ROM sequence and check preservation of its working
   registers. Build the ROM from assembly and compare generated contents in
   tests; do not maintain unrelated assembly and encoded copies by hand.
@@ -380,9 +458,9 @@ currently implemented.
 | --- | --- |
 | `axi-prot-test` | Milestone A with debug disabled: effective privilege, fixed Secure/non-secure domain, request producers, cache contract, queues, stalls and peripheral firewall denial; extend and rerun with debug in milestone B |
 | `dbg-unit-test` | DM CSR reset/WARL/read-only behavior; native/narrow reads and rejected writes; hart selection; current availability; activation; absent/autoexec registers; DMI backpressure; abstract-command errors and recovery |
-| `dbg-rom-test` | Reproducible ROM image; scratch preservation; halt/going/exception/resume handshake; each supported abstract transfer; malformed commands |
-| `dbg-core-test` | Precise halt/resume/step, correct DPC/cause, debug CSR permissions, EBREAK controls and debug exception containment |
-| `dbg-memory-test` | Debug-page and MMIO permissions/cache bypass; access widths and byte lanes; device side effects; AXI stalls/errors; independent AW/W; repeated requests; dynamic Program Buffer updates; code-write/FENCE.I readback |
+| `dbg-rom-test` | Reproducible ROM image; scratch preservation; halt/going/exception/resume handshake and authorized DRET; each supported abstract transfer; malformed commands |
+| `dbg-core-test` | Precise halt/resume/step, correct DPC/cause, debug CSR permissions, EBREAK controls, rejected Program Buffer DRET and debug exception containment |
+| `dbg-memory-test` | Core Debug Mode and platform requester gates for the debug page; MMIO permissions/cache bypass; access widths and byte lanes; device side effects; AXI stalls/errors; independent AW/W; repeated requests; dynamic Program Buffer updates; code-write/FENCE.I readback |
 | `dbg-context-test` | M/S/U/VS/VU entry and return; H metadata; scalar FP, vector, Zvk and Keccak state round trips; representative arithmetic and memory instructions in Debug Mode |
 | `dbg-translation-test` | Pinned OpenOCD software walks for host/guest pages, high GPAs, Svnapot, error containment and documented differences from hardware translation |
 | `dbg-jtag-test` | TAP/DTM protocol, CDC, sticky busy/errors, TMS/TRST reset, frequency/phase variation, and OpenOCD/GDB through remote bitbang |
@@ -407,9 +485,14 @@ Directed core tests must include:
   narrow writes, oversized/reserved sizes and invalid register numbers for
   correct `cmderr` and no target-register side effect.
 - Exercise every Program Buffer instruction choice above: wait instructions,
-  ECALL/xRET command exceptions, AUIPC, forward/backward control transfers
+  ECALL/MRET/SRET command exceptions, AUIPC, forward/backward control transfers
   inside the buffer, and transfers to mapped code outside it. Check DPC/cause,
   application trap/return state and return to the parking loop.
+- Execute DRET directly in the Program Buffer and after a command jumps to
+  the ROM's resume DRET without an authorized resume sequence. Both must
+  report a command exception, remain halted and preserve saved context.
+  Then verify a normal resume: RESUMING precedes DRET, exactly one core exit
+  occurs, and the DM's running/resume-ack state agrees with the core.
 - Check deterministic LR/SC reservation loss across entry/resume, then a
   successful fresh LR/SC sequence. Assert each implemented interrupt source
   during Debug Mode and stepping, and verify masked delivery with preserved
@@ -435,6 +518,15 @@ Directed core tests must include:
   Test both static domain settings; every request must match the trusted
   setting. User/guest requests must not acquire a higher effective privilege;
   ordinary execution must not access the debug-only aperture.
+- Check HLVX through an execute-only guest mapping: permission checks use
+  execute semantics, while every resulting HLVX data request has
+  `AxPROT[2]=0`. Record PTE reads separately; those are data transactions too.
+- Attempt debug-page fetches, reads and writes in every normal privilege
+  mode, including M, and from a second modeled bus master while the core is
+  both halted and running. The core gate must reject normal-mode accesses;
+  the platform gate must return decode errors to other masters without a DM
+  handshake or side effect. Stall accepted debug requests across a mode
+  transition to verify that authorization remains attached to each request.
 - Deny unprivileged peripheral accesses in the firewall model and verify
   access faults. Attempt aliases and instruction fetches at those physical
   addresses; neither cache may serve or allocate them. Separately prime and
@@ -455,8 +547,9 @@ results. Adapt applicable PULP and `riscv-tests/debug` cases with attribution;
 audit their 0.13 assumptions. Use a reference implementation for supported
 architectural outcomes where useful, without assuming its Debug ROM or
 optional features match ours. ACT4 ordinary ISA passes are regression evidence,
-not Debug 1.0 certification. Pin a suitable OpenOCD/GDB combination; do not use
-the historical OpenOCD fork in PULP's CI as the sole interoperability gate.
+not Debug 1.0 certification. Pin a suitable mainline OpenOCD/GDB combination;
+the archived RISC-V fork and the historical fork in PULP's CI are not the
+interoperability baseline.
 
 Add negative controls proving that the checks detect an extra stepped
 instruction, a wrong DPC, corrupted scratch state, an architectural trap from
@@ -466,7 +559,8 @@ must identify the configuration and failing phase.
 
 ### OpenOCD software translation coverage
 
-`dbg-translation-test` must use a pinned OpenOCD build and record its revision,
+`dbg-translation-test` must use the pinned mainline OpenOCD source baseline
+above (or an explicitly recorded replacement) and record its build revision,
 translation/access settings, Karu configuration and page-table fixture. Compare
 read results with independently placed sentinels and normal-execution hardware
 walks where meaningful; do not reuse OpenOCD's algorithm as the expected-value
