@@ -3,9 +3,18 @@
 // Svpbmt NC/IO cache bypass, exact IO footprints, and alias invalidation.
 `include "karu_axi_defs.vh"
 `timescale 1ns/1ps
-module tb_mem_stream;
+module tb_mem_stream #(parameter NONSECURE=1);
     reg clk = 0;
     reg rst = 0;
+`ifdef KARU_DBG
+    wire debug_mode_i=0;
+`endif
+    reg [2:0] v_prot=3;
+    // Use an address bit retained by all line/granule/IO transformations.
+    // Expected values are independent of the DUT request/queue registers.
+    function automatic [2:0] protection(input [31:0] a);
+        protection = {1'b0, (NONSECURE != 0), a[8]};
+    endfunction
     reg [31:0]  uncache_page = 0;
     reg flush = 0;
     reg [1:0] s_ar_pbmt = 0, s_aw_pbmt = 0;
@@ -100,6 +109,10 @@ module tb_mem_stream;
     // No address is a safe sentinel: 0xffffffff is a legal byte store.
     reg read_error_enable=0, write_error_enable=0;
     reg strict_io=0;
+    reg queue_context=0;
+    integer queue_first_aw=0;
+    reg firewall_enable=0, firewall_write_deny=0;
+    integer peripheral_reads=0, peripheral_writes=0;
     integer faults=0;
     reg [63:0] last_fault_va;
     always @(posedge clk) if (!rst && v_fault) begin
@@ -116,6 +129,10 @@ module tb_mem_stream;
     always @(posedge clk) if (!rst) begin
         cycle<=cycle+1;
         if (m_awvalid && m_awready) begin
+            if (m_awprot !== (queue_context
+                ? {1'b0, (NONSECURE != 0), (aws != queue_first_aw)}
+                : protection(m_awaddr)))
+                $fatal(1,"D-cache AW lost issue/queue context");
             if (m_awlen>1 || m_awsize>3 || m_awburst!=1 || (m_awlen!=0 && m_awsize!=3))
                 $fatal(1,"bad AW geometry");
             if (strict_io && (m_awlen!=0 || (m_awaddr & ((1<<m_awsize)-1))!=0))
@@ -125,6 +142,8 @@ module tb_mem_stream;
                 ((m_awlen+1)<<m_awsize)>4096)
                 $fatal(1,"burst crosses 4 KiB");
             aw_log[aws]<=m_awaddr; aw_size_log[aws]<=m_awsize;
+            firewall_write_deny<=firewall_enable && !m_awprot[0];
+            if(firewall_enable) m_bresp<=!m_awprot[0] ? 2 : 0;
             if(write_error_enable && m_awaddr==write_error_addr) m_bresp<=2;
             wa<=1; wp<={m_awaddr[31:3],3'b0}; wn<=m_awlen+1; m_bid<=m_awid; aws<=aws+1;
         end
@@ -133,7 +152,8 @@ module tb_mem_stream;
             if (m_wstrb==0) $fatal(1,"zero-strobe half issued");
             w_strb_log[beats]<=m_wstrb;
             for(integer i=0;i<8;i=i+1)
-                if(m_wstrb[i]) ram[(wp+i)&8191]<=m_wdata[i*8+:8];
+                if(m_wstrb[i] && !firewall_write_deny) ram[(wp+i)&8191]<=m_wdata[i*8+:8];
+            if(firewall_enable && !firewall_write_deny) peripheral_writes<=peripheral_writes+1;
             wp<=wp+8; wn<=wn-1; beats<=beats+1;
             if(wn==1) begin wa<=0; bdelay<=9; end
         end
@@ -143,6 +163,7 @@ module tb_mem_stream;
         end
         if(m_bvalid && m_bready) begin m_bvalid<=0; bs<=bs+1; end
         if(m_arvalid && m_arready) begin
+            if (m_arprot !== protection(m_araddr)) $fatal(1,"D-cache AR lost issue/queue context");
             if(aws!=bs || wa || bdelay!=0) $fatal(1,"read passed pending store");
             if(m_arsize>3 || (m_arlen!=0 && m_arsize!=3)) $fatal(1,"bad AR geometry");
             if(strict_io && (m_arlen!=0 || (m_araddr & ((1<<m_arsize)-1))!=0))
@@ -150,6 +171,10 @@ module tb_mem_stream;
             ar_log[ars]<=m_araddr; ar_size_log[ars]<=m_arsize;
             ar_len_log[ars]<=m_arlen; ars<=ars+1;
             m_rresp<=read_error_enable && m_araddr==read_error_addr ? 2 : 0;
+            if(firewall_enable) begin
+                m_rresp<=!m_arprot[0] ? 2 : 0;
+                if(m_arprot[0]) peripheral_reads<=peripheral_reads+1;
+            end
             rr<=1; rp<={m_araddr[31:3],3'b0}; rn<=m_arlen+1; m_rid<=m_arid;
         end
         if(rr && !m_rvalid) begin
@@ -164,11 +189,45 @@ module tb_mem_stream;
     task automatic wr(input [31:0] a, input [127:0] d, input [15:0] be);
         @(negedge clk);
         while(v_busy) @(negedge clk);
-        v_addr=a; v_wdata=d; v_wstrb=be; v_is_store=1; v_req=1;
-        @(negedge clk); v_req=0;
+        v_addr=a; v_wdata=d; v_wstrb=be; v_is_store=1; v_req=1; v_prot=protection(v_addr);
+        @(negedge clk); v_req=0; v_prot=~v_prot;
         while(!v_done) @(negedge clk);
         if((a<32'h80000000 || v_pbmt!=0 || a[31:12]==uncache_page[31:12]) && aws!=bs)
             $fatal(1,"uncached store acknowledged before B");
+    endtask
+    task automatic firewall_scalar(input bit store, input [31:0] a,
+                                    input bit denied);
+        integer first_ar, first_aw, first_reads, first_writes;
+        reg [7:0] old_byte;
+        begin
+            @(negedge clk);
+            first_ar=ars; first_aw=aws;
+            first_reads=peripheral_reads; first_writes=peripheral_writes;
+            old_byte=ram[a&8191];
+            if(store) begin
+                s_awaddr=a; s_aw_pbmt=0; s_awsize=0;
+                s_awprot=protection(a); s_awvalid=1;
+                s_wdata=64'hc5; s_wstrb=1; s_wvalid=1; s_wlast=1; s_bready=1;
+                while(!s_awready || !s_wready) @(negedge clk);
+                s_awvalid=0; s_wvalid=0; s_awprot=~s_awprot;
+                while(!s_bvalid) @(negedge clk);
+                if(s_bresp !== (denied ? 2'd2 : 2'd0)) $fatal(1,"firewall store response lost");
+                if(aws-first_aw!=1 || peripheral_writes-first_writes!=int'(!denied) ||
+                   ram[a&8191] !== (denied ? old_byte : 8'hc5))
+                    $fatal(1,"firewall store denied incorrectly or caused a side effect");
+                @(negedge clk); s_bready=0;
+            end else begin
+                s_araddr=a; s_ar_pbmt=0; s_arsize=0;
+                s_arprot=protection(a); s_arvalid=1; s_rready=1;
+                while(!s_arready) @(negedge clk);
+                s_arvalid=0; s_arprot=~s_arprot;
+                while(!s_rvalid) @(negedge clk);
+                if(s_rresp !== (denied ? 2'd2 : 2'd0)) $fatal(1,"firewall read response lost");
+                if(ars-first_ar!=1 || peripheral_reads-first_reads!=int'(!denied))
+                    $fatal(1,"firewall read denied incorrectly or caused a side effect");
+                @(negedge clk); s_rready=0;
+            end
+        end
     endtask
     task automatic invalidate;
         @(negedge clk); flush=1;
@@ -177,9 +236,9 @@ module tb_mem_stream;
     task automatic scalar_rd(input [31:0] a, input [1:0] pbmt,
                              input [2:0] sz, input [63:0] expected);
         @(negedge clk);
-        s_araddr=a; s_ar_pbmt=pbmt; s_arsize=sz; s_arvalid=1; s_rready=1;
+        s_araddr=a; s_ar_pbmt=pbmt; s_arsize=sz; s_arvalid=1; s_arprot=protection(s_araddr); s_rready=1;
         while(!s_arready) @(negedge clk);
-        s_arvalid=0; s_ar_pbmt=0; s_arsize=3;
+        s_arvalid=0; s_arprot=~s_arprot; s_ar_pbmt=0; s_arsize=3;
         while(!s_rvalid) @(negedge clk);
         if(s_rresp!=0 || s_rdata!==expected) $fatal(1,"scalar read %h mismatch %h",a,s_rdata);
         @(negedge clk); s_rready=0;
@@ -188,9 +247,9 @@ module tb_mem_stream;
                              input [2:0] sz, input [63:0] d, input [7:0] be);
         @(negedge clk);
         s_awaddr=a; s_aw_pbmt=pbmt; s_awsize=sz;
-        s_wdata=d; s_wstrb=be; s_awvalid=1; s_wvalid=1; s_wlast=1; s_bready=1;
+        s_wdata=d; s_wstrb=be; s_awvalid=1; s_awprot=protection(s_awaddr); s_wvalid=1; s_wlast=1; s_bready=1;
         while(!s_awready || !s_wready) @(negedge clk);
-        s_awvalid=0; s_wvalid=0; s_aw_pbmt=0; s_awsize=3;
+        s_awvalid=0; s_awprot=~s_awprot; s_wvalid=0; s_aw_pbmt=0; s_awsize=3;
         while(!s_bvalid) @(negedge clk);
         if(s_bresp!=0) $fatal(1,"scalar write error");
         @(negedge clk); s_bready=0;
@@ -215,8 +274,8 @@ module tb_mem_stream;
                 else if(mask[j]) expected[j*8+:8]=ram[(a+j)&8191];
             end
             v_addr=a; v_is_store=store; v_size=sz; v_pbmt=attribute;
-            v_rstrb=mask; v_wstrb=mask; v_wdata=data; v_req=1;
-            @(negedge clk); v_req=0; v_pbmt=0; v_size=3; v_rstrb=0; v_wstrb=0; v_wdata=0;
+            v_rstrb=mask; v_wstrb=mask; v_wdata=data; v_req=1; v_prot=protection(v_addr);
+            @(negedge clk); v_req=0; v_prot=~v_prot; v_pbmt=0; v_size=3; v_rstrb=0; v_wstrb=0; v_wdata=0;
             while(!v_done) @(negedge clk);
             if(v_fault!==expect_fault) $fatal(1,"IO fault flag mismatch");
             if(!store && !expect_fault && v_rdata!==expected)
@@ -260,8 +319,8 @@ module tb_mem_stream;
     task automatic rd(input [31:0] a, input [127:0] expected);
         @(negedge clk);
         while(v_busy) @(negedge clk);
-        v_addr=a; v_is_store=0; v_req=1;
-        @(negedge clk); v_req=0;
+        v_addr=a; v_is_store=0; v_req=1; v_prot=protection(v_addr);
+        @(negedge clk); v_req=0; v_prot=~v_prot;
         while(!v_done) @(negedge clk);
         if(v_rdata!==expected) $fatal(1,"read mismatch %h got %h expected %h",a,v_rdata,expected);
     endtask
@@ -390,9 +449,9 @@ module tb_mem_stream;
         rst=1; repeat(4) @(negedge clk); rst=0;
         if ($value$plusargs("collision_negative=%d", collision_negative)) begin
             @(negedge clk);
-            v_req=1; v_addr=32'h80000000;
-            if (collision_negative == 1) s_arvalid=1;
-            else if (collision_negative == 2) begin s_awvalid=1; s_wvalid=1; end
+            v_req=1; v_prot=protection(v_addr); v_addr=32'h80000000;
+            if (collision_negative == 1) begin s_arvalid=1; s_arprot=protection(s_araddr); end
+            else if (collision_negative == 2) begin s_awvalid=1; s_awprot=protection(s_awaddr); s_wvalid=1; end
             else $fatal(1,"unknown collision negative control");
             repeat(2) @(negedge clk);
             $fatal(1,"scalar/vector collision escaped checker");
@@ -505,8 +564,8 @@ module tb_mem_stream;
 
         // A flush during refill must not revalidate data fetched before it.
         invalidate();
-        @(negedge clk); v_addr=32'h80000180; v_is_store=0; v_pbmt=0; v_req=1;
-        @(negedge clk); v_req=0;
+        @(negedge clk); v_addr=32'h80000180; v_is_store=0; v_pbmt=0; v_req=1; v_prot=protection(v_addr);
+        @(negedge clk); v_req=0; v_prot=~v_prot;
         while(!m_arvalid) @(negedge clk);
         invalidate();
         while(!v_done) @(negedge clk);
@@ -539,6 +598,32 @@ module tb_mem_stream;
         uncache_page=0;
         store_alias_check(32'h80000230);
         store_alias_check(32'hfffffff0);
+
+        // Identical addresses from different issue contexts distinguish the
+        // active slot from the waiting slot. Neither may use live v_prot.
+        queue_context=1; queue_first_aw=aws;
+        for(integer privilege=0;privilege<2;privilege=privilege+1) begin
+            @(negedge clk); while(v_busy) @(negedge clk);
+            v_addr=32'h80000b00; v_is_store=1; v_wstrb=16'hffff;
+            v_wdata=128'(privilege+1);
+            v_prot={1'b0,(NONSECURE != 0),(privilege != 0)}; v_req=1;
+            @(negedge clk); v_req=0; v_prot=3'b101;
+            while(!v_done) @(negedge clk);
+            if(!store_pending) $fatal(1,"queue context test did not post");
+        end
+        @(negedge clk); while(store_pending) @(negedge clk);
+        if(aws-queue_first_aw!=2) $fatal(1,"queue context test dropped a request");
+        queue_context=0;
+        rd(32'h80000b00,128'd2);
+        // A downstream peripheral policy may reject unprivileged requests.
+        // Fault responses must survive the cache wrapper, with no denied
+        // device action or automatic retry; privileged requests still work.
+        firewall_enable=1;
+        firewall_scalar(0,32'h10000000,1);
+        firewall_scalar(1,32'h10000000,1);
+        firewall_scalar(0,32'h10000100,0);
+        firewall_scalar(1,32'h10000100,0);
+        firewall_enable=0;
         $display("[MEM-STREAM] ALL PASS: %0d AR, %0d AW, %0d W, %0d B; PBMT, masks, faults, aliases",ars,aws,beats,bs);
         $finish;
     end

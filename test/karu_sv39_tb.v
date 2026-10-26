@@ -6,7 +6,8 @@
 
 module karu_sv39_tb #(
     parameter GUEST_TLB_ENABLE = 1,
-    parameter STOP_ON_FINISH = 1
+    parameter STOP_ON_FINISH = 1,
+    parameter NONSECURE = 1
 ) (
     output reg finished = 0,
     output reg [63:0] result_signature = 0,
@@ -31,14 +32,21 @@ module karu_sv39_tb #(
     wire [31:0] araddr;
     wire [7:0] arlen;
     wire [2:0] arsize;
+    wire [2:0] arprot;
+`ifdef KARU_DBG
+    wire debug_mode_i=0;
+`endif
     wire arvalid, arready, rready;
     wire awvalid, wvalid, bready;
     wire [63:0] rdata;
     wire [1:0] rresp;
     wire rvalid, rlast;
 
-    karu_sv39 #(.GUEST_TLB_ENABLE(GUEST_TLB_ENABLE)) dut (
+    karu_sv39 #(.GUEST_TLB_ENABLE(GUEST_TLB_ENABLE), .NONSECURE(NONSECURE)) dut (
         .clk(clk), .rst(rst), .req(req), .va(va), .access(access),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode_i),
+`endif
         .priv(priv), .satp(satp), .status_sum(status_sum),
         .status_mxr(status_mxr), .pbmte(pbmte), .pbmt(pbmt), .flush(flush),
         .cancel(cancel), .done(done),
@@ -50,7 +58,7 @@ module karu_sv39_tb #(
         .fault_tinst(fault_tinst), .fault_gpa_is_pte(fault_gpa_is_pte),
         .fault(fault), .fault_va(fault_va), .fault_cause(fault_cause),
         .pa(pa), .busy(busy), .arid(), .araddr(araddr), .arlen(arlen),
-        .arsize(arsize), .arburst(), .arprot(), .arvalid(arvalid),
+        .arsize(arsize), .arburst(), .arprot(arprot), .arvalid(arvalid),
         .arready(arready), .rid(4'b0), .rdata(rdata), .rresp(rresp),
         .rlast(rlast), .rvalid(rvalid), .rready(rready),
         .awid(), .awaddr(), .awlen(), .awsize(), .awburst(), .awprot(),
@@ -95,6 +103,8 @@ module karu_sv39_tb #(
         if (rst) begin
             read_active <= 0;
         end else begin
+            if (arvalid && arprot !== {1'b0, (NONSECURE != 0), 1'b1})
+                $fatal(1,"PTE read is not privileged data in the static domain");
             if (awvalid || wvalid || bready)
                 $fatal(1, "Svade emitted a page-table write at cycle %0d", cycles);
             if (done && fault && pbmt !== 0)

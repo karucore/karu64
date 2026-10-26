@@ -1,0 +1,39 @@
+# Core and conventional JTAG timing for the combined karudbg top.
+# The CDC protocol is tested independently. Bound asynchronous bundled data
+# to less than one destination cycle; only the first control synchronizer
+# stages are excluded from setup analysis. Do not blanket-cut the bundles.
+create_clock -name clk -period @CLK_NS@ [get_ports clk]
+create_clock -name tck -period @TCK_NS@ [get_ports tck]
+# OpenSTA's native equivalent is -ignore_clock_latency; its endpoint setup
+# check remains included, making the bound conservative for bundled data.
+set_max_delay -ignore_clock_latency [expr {0.8 * @CLK_NS@}] -from [get_clocks tck] -to [get_clocks clk]
+set_max_delay -ignore_clock_latency [expr {0.8 * @TCK_NS@}] -from [get_clocks clk] -to [get_clocks tck]
+set_false_path -hold -from [get_clocks tck] -to [get_clocks clk]
+set_false_path -hold -from [get_clocks clk] -to [get_clocks tck]
+# Yosys preserves register net names but renames mapped flop instances. Find
+# each first-stage flop through its Q net, then exempt its D pin only.
+foreach signal {req_sync1 clear_sync1 resp_sync1 ack_sync1} {
+    set count 0
+    foreach net [get_nets -hierarchical *$signal] {
+        foreach pin [get_pins -of_objects $net] {
+            if {[get_property $pin direction] eq "output"} {
+                foreach cell [get_cells -of_objects $pin] {
+                    foreach data_pin [get_pins -of_objects $cell] {
+                        if {[regexp {/D$} [get_property $data_pin full_name]]} {
+                            set_false_path -to $data_pin
+                            incr count
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if {$count != 1} { error "CDC constraint did not find exactly one $signal first-stage flop: $count" }
+}
+set_false_path -from [get_ports {rst trst_n}]
+set_input_delay -clock clk @IN_NS@ [get_ports * -filter {direction == input && full_name != clk && full_name != tck && full_name != tms && full_name != tdi && full_name != trst_n}]
+set_output_delay -clock clk @OUT_NS@ [get_ports * -filter {direction == output && full_name != tdo && full_name != tdo_oe}]
+set_input_delay -clock tck 10.0 [get_ports {tms tdi}]
+set_output_delay -clock tck 10.0 [get_ports {tdo tdo_oe}]
+set_driving_cell -lib_cell BUF_X2 [all_inputs]
+set_load 10.0 [all_outputs]

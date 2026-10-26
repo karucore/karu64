@@ -1,9 +1,10 @@
 # karudbg
 
-karudbg is the planned RISC-V Debug 1.0 implementation for Karu. It lives in
+karudbg is the opt-in implementation targeting RISC-V Debug 1.0 for Karu. It lives in
 `karu64/dbg/` and is maintained as part of the karu64 repository. This document
-is the initial implementation and testing plan; no debug RTL, build targets,
-or compliance results are supplied yet.
+tracks the implementation, testing plan and acceptance evidence. The opt-in
+RTL and simulation targets have passed the functional gates below; board acceptance and a
+Debug 1.0 compliance claim remain pending.
 
 The first implementation targets one RV64 hart, using execution-based debug
 with a Debug ROM and Program Buffer. System Bus Access (SBA) and hardware
@@ -16,13 +17,20 @@ it must work with `KARU_DBG` disabled. Deliver two ordered milestones in this
 update: **A, AXI protection RTL and tests**, followed by **B, karudbg and its
 integration tests**. Milestone A implements the bits and their propagation,
 defines the platform mapping and passes `axi-prot-test` before debug integration
-is accepted. Both milestones belong to the initial update. S1 remains open
-until its implementation, documented platform contract and tests are complete.
+is accepted. Both milestones belong to the initial update. The implementation,
+documented platform contract and tests for milestone A are complete. Platform
+enforcement and board acceptance remain separate obligations.
 
 ## Progress checklist
 
-Current stage: implementation plan documented; RTL implementation and
-validation have not started. Check an item only when its implementation and
+Current stage: RTL implementation is complete for pre-board review. Directed
+core tests include xRET stepping, Program Buffer control transfers and all
+implemented interrupt sources. The final aggregate passes for the
+reset-conditioned conventional top and FPGA tunnel. Area and OpenSTA measurements
+are complete. The FPGA build stopped during routing after successful synthesis
+and placement; it used the earlier constraints and produced no new bitstream.
+Physical validation of the corrected constraints and board acceptance are open.
+Check an item only when its implementation and
 required tests are complete. Add source and result links beside completed
 items; a documented design choice alone does not close an implementation item.
 
@@ -31,34 +39,131 @@ items; a documented design choice alone does not close an implementation item.
 - [x] OpenOCD installation prerequisite: verify the pinned mainline build,
   runtime libraries, installed scripts and simulation adapters (2026-10-26;
   commands and version recorded in the [initial contract](#initial-contract)).
-- [ ] [Shared interface foundation](#1-shared-interface-foundation): build
+- [x] [Shared interface foundation](#1-shared-interface-foundation): build
   switch, core/DM interface, source manifests, provenance and license notices.
-- [ ] [Milestone A](#2-milestone-a-axi-protection-metadata): implement AXI
+  See [combined source manifest](karudbg.f), [core integration](karudbg_core.v),
+  [Solderpad license](LICENSE.Solderpad) and [ROM license](LICENSE.SiFive).
+- [x] [Milestone A](#2-milestone-a-axi-protection-metadata): implement AXI
   protection propagation and the platform contract; pass `axi-prot-test` with
   debug disabled before accepting milestone B integration.
-- [ ] DM register bank and abstract-command engine: implement the
+  Evidence: `make axi-prot-test`, 15/15 cases including five negative controls;
+  reproducible logs and source hashes in `_build/dbg/axi-prot/results.json`.
+- [x] DM register bank and abstract-command engine: implement the
   [initial contract](#initial-contract); pass `dbg-unit-test`.
-- [ ] [Core Sdext and run control](#3-milestone-b-core-sdext-support-and-precise-run-control):
+  Evidence: 902 unit checks, including accepted-command channel reset and
+  `ndmreset` abort/recovery; `_build/dbg/dm-unit.log`.
+- [x] [Core Sdext and run control](#3-milestone-b-core-sdext-support-and-precise-run-control):
   implement halt/resume/step, debug CSRs and instruction rules; pass
   `dbg-core-test`, including rejected Program Buffer DRET.
-- [ ] [ROM and memory integration](#4-debug-rom-program-buffer-and-memory-integration):
+- [x] [ROM and memory integration](#4-debug-rom-program-buffer-and-memory-integration):
   generate the ROM, enforce both aperture gates, support MMIO and pass
   `dbg-rom-test` and `dbg-memory-test`.
-- [ ] [Reset, CDC and JTAG](#5-reset-clock-crossing-and-jtag): implement and
-  verify reset domains, transport and FPGA BSCAN integration; pass
+- [x] [Reset and conventional JTAG simulation](#5-reset-clock-crossing-and-jtag):
+  verify reset domains and transport; pass
   `dbg-jtag-test` through pinned mainline OpenOCD/GDB.
-- [ ] [Context and translation coverage](#testing-plan): pass
+  Evidence: 94 transport checks, four transport negative controls and the
+  actual-core OpenOCD/GDB tests below. Physical CDC and FPGA integration have
+  separate acceptance gates.
+- [x] [Context and translation coverage](#testing-plan): pass
   `dbg-context-test` and complete `dbg-translation-test`, documenting supported
   mappings, tool limitations and debugger-policy differences.
-- [ ] Functional acceptance: pass `dbg-test`, negative controls, four-state
+  Evidence: shipping-profile context test and 28 OpenOCD translation checks;
+  Svnapot software walks fail explicitly rather than returning a wrong HPA.
+- [x] Functional acceptance: pass `dbg-test`, negative controls, four-state
   startup, lint and selected ordinary ISA regressions; rerun `axi-prot-test`
   with debug enabled. Publish the requirements-to-tests evidence.
-- [ ] [Synthesis acceptance](#synthesis-and-hardware-acceptance): update ASIC
-  inventories and Yosys area, run OpenSTA at the 200 MHz target and record
+  Evidence: the final aggregate passed in 147.45 seconds with unchanged source
+  hashes; ordinary ISA and ASIC startup checks are separate recorded runs.
+- [x] FPGA platform integration: connect a board-compatible debug transport,
+  retain the private debug aperture and reset contract, and verify the
+  integration in simulation before board acceptance.
+  USER4 nested-TAP, MMIO, GDB, translation and reset simulation pass on freshly
+  compiled models. Standard-flow implementation has its separate gate below.
+- [x] [ASIC inventory and mapped area](MEASUREMENTS.md): zero initialized
+  state, unchanged data-memory geometry and the paired Yosys area estimate.
+  Final conventional debug adds 20.334 kGE (+0.4636%) over the shipping core.
+- [ ] [Timing and FPGA synthesis acceptance](#synthesis-and-hardware-acceptance):
+  run OpenSTA at the 200 MHz target and record
   Vivado routed timing at the 75 MHz core target.
+  OpenSTA is complete and misses the 200 MHz target. The corrected BSCANE2
+  clocks and narrow reset-synchronizer exceptions await physical validation;
+  the existing FPGA implementation loaded the earlier constraint set.
 - [ ] [Board acceptance](#synthesis-and-hardware-acceptance): demonstrate
   debug operations and MMIO, then normal karudeb boot and board acceptance
   after detach; record the tested configuration and compliance scope.
+
+## Run the non-board gates
+
+Run from the repository root. Tests need Verilator, Icarus, a RISC-V ELF
+toolchain, RISC-V GDB, Python 3 and the pinned mainline OpenOCD source/tools
+described below. The isolated OpenOCD build also needs its normal Autotools
+and Jim Tcl development dependencies. These prerequisites are installed for
+the recorded validation; no board connection is used.
+
+```sh
+make dbg-test
+```
+
+This runs the bounded functional gates with three parallel make jobs and
+records the command, tool identities, input hashes before/after, elapsed time
+and overall result in `_build/dbg/validation.json`; detailed output is in
+`_build/dbg/validation.log`. A source change during the run invalidates the
+record. Set `DBG_GATE_JOBS` to adjust gate parallelism and `DBG_JOBS` for
+the OpenOCD/model builds. Individual targets are listed below. Ordinary
+`make test` remains the scalar ISA regression, separate from these debug gates.
+
+### Functional validation record, 2026-10-26
+
+The final conventional-JTAG and USER4 BSCAN implementation passed `make dbg-test`
+in 147.45 seconds, using the previously compiled models. The record completed
+at 20:18 UTC. `_build/dbg/validation.json` records exit status 0,
+unchanged source hashes before/after, tool identities and the isolated OpenOCD
+patch/build identity. Detailed output is in `_build/dbg/validation.log`.
+The reset-conditioned integration models were freshly compiled and checked
+before this aggregate; `_build/dbg/rebuild-bscan.json` also records the BSCAN
+model rebuild and unchanged inputs. Subsequent source changes require a new
+record when they affect a functional gate or its compiled models.
+The later BSCANE2 return-clock and reset-synchronizer exception corrections
+change only FPGA timing constraints,
+which the functional gates do not execute. The separate
+`_build/dbg/validation-constraints-audit.json` records its old/new hash and
+confirms that all functional RTL, test and build inputs remain unchanged.
+
+| Check | Result and evidence under `_build/dbg/` |
+| --- | --- |
+| AXI protection, debug disabled and enabled | 15/15 cases each, including five source-mutation controls; `axi-prot/results.json`, `axi-prot-debug/results.json` |
+| DM and abstract commands | 902 checks; `dm-unit.log` |
+| TAP/CDC and debug-memory AXI | 94 transport checks and 813 AXI checks; four transport mutation controls |
+| Scalar/FP actual-core debug | 178,124 checks, 272,840 cycles; `core/run.log` |
+| Shipping-profile context debug | 564,921 checks, 856,473 cycles; `core-profile/run.log` |
+| ASIC scalar four-state startup/debug | 154,659 checks, 237,845 cycles; `core-four-state/run.log` |
+| AWREADY dependent on WVALID | 154,659 checks, 237,845 cycles; `core-aw-wait/run.log` |
+| Core negative controls | Six source mutations detected: DPC, application trap leakage, wait instructions, unauthorized DRET, scratch corruption and extra stepping |
+| OpenOCD actual-core memory/MMIO | Native-width transfers, counted side effects, block reads, faults and recovery pass; pristine-tool autoexec failure retained as a negative control |
+| OpenOCD software translation | 28 checks; `openocd-translation/openocd-jtag.log`; unsupported Svnapot walks report errors |
+| GDB 17.2 | GPR/CSR/RAM, 64-bit FP and 256-bit vector transfers, code update, exact stepping and detach/reconnect pass; `gdb/gdb-registers.log`, `gdb/gdb-context.log` |
+| USER4 BSCAN | 103 protocol checks, two negative controls, 48 reset-release checks and 18 FPGA reset-ordering checks; actual-core OpenOCD, GDB and 28 translation checks pass |
+| Parsing and lint | Declaration-order, Verilator and strict Verilog-2001 checks pass |
+| Separate ordinary ISA regression | `make test`: 110/110; `riscv-tests.log` |
+| Separate ASIC checks | Four-state memory checks and `vresv`, `vperm`, `vstart` at seeds 1 and 42 pass; see [measurements](MEASUREMENTS.md) for inventory evidence |
+
+The full-profile FP/vector tests use Verilator's two-state model with explicit
+state initialization and round trips. Four-state core coverage is the scalar
+ASIC/no-F configuration. Twenty isolated interrupt cases cover M/S/VS software,
+timer and external sources, Sstc comparators and LCOFI routed to M/HS/VS. Each
+checks masking in Debug Mode and single-step, preserved pending state and later
+delivery. Long-operation crossings use MTIP; this is not an exhaustive
+cross-product of every interrupt priority, delegation and long operation. Application
+trap canaries cover machine trap state and H metadata, rather than every banked
+VS CSR. No full ACT4 rerun, physical JTAG, FPGA board boot or silicon CDC signoff
+is implied by these results. FPGA integration and synthesis have their own
+checklist gates and measurement records.
+
+The combined ASIC handoff is [karudbg.f](karudbg.f), or source
+[sources.tcl](sources.tcl) for tool-neutral `karu_sources`,
+`karu_include_dirs`, `karu_defines` and `karu_top`. The processor-only manifest
+remains unchanged. Generated ROM output is checked against
+[its assembly source](rom/karudbg_rom.S); do not edit the encoded ROM by hand.
 
 ## Specification and implementation origins
 
@@ -77,7 +182,7 @@ That implementation advertises Debug 0.13.2. It provides a useful execution-base
 design and verification material, but its version declaration and existing
 tests do not establish Debug 1.0 compliance for karudbg.
 
-karudbg will adopt selected PULP modules into Karu's coding conventions and
+karudbg adopts selected PULP modules into Karu's coding conventions and
 interfaces. It is not maintained as a fork or submodule, and does not promise
 upstream source or interface compatibility. For every adopted file:
 
@@ -99,7 +204,7 @@ upstream source or interface compatibility. For every adopted file:
 | Abstract-command engine and debug memory | `src/dm_mem.sv` | RV64 transfers, Karu interfaces and exception protocol |
 | Parking/command/resume ROM | `debug_rom/debug_rom.S`, `debug_rom/debug_rom.sv` | Two scratch CSRs; relocatable nonzero debug page; reproducible ROM generation |
 | JTAG DTM and CDC | `src/dmi_jtag.sv`, `src/dmi_jtag_tap.sv`, `src/dmi_cdc.sv` | Local RTL conventions, explicit clock/reset contract and transport tests |
-| FPGA transport option | `src/dmi_bscane_tap.sv` | Review USER-chain allocation and the board's JTAG tooling |
+| FPGA transport reference, not adopted | `src/dmi_bscane_tap.sv` | Direct USER-chain protocol differs from mainline OpenOCD; Karu's original USER4 nested-TAP bridge implements the required framing |
 
 ## Initial contract
 
@@ -146,11 +251,10 @@ Use mainline OpenOCD: the archived `riscv-openocd` fork directs ongoing RISC-V
 development upstream. The initial source-review baseline is
 [mainline `cb0c224e936091156ecf3025ba05657408ed64c8`](https://github.com/openocd-org/openocd/blob/cb0c224e936091156ecf3025ba05657408ed64c8/src/target/riscv/riscv.c#L3200)
 (2026-10-24), which implements software VS/G-stage translation, including
-G-stage translation of VS page-table reads. This is a source inspection,
-not an interoperability result. Use this revision for the first test build;
-record any replacement revision explicitly. Verify host Sv39 and guest
-Sv39/Sv39x4 accesses on Karu, including translated VS-PTE reads. Do not
-advertise an untested virtual-access path. Software translation is not
+G-stage translation of VS page-table reads. The interoperability tests use
+this base plus the repository's [OpenOCD compatibility patch](openocd-no-autoexec.patch).
+Record both the base revision and patch hash; the pristine binary alone is
+not the tested block-access configuration. Software translation is not
 automatically equivalent to hardware MPRV permission,
 A/D, PBMT or pointer-masking behavior; document the supported debugger contract.
 
@@ -166,8 +270,22 @@ openocd --version
 openocd -c 'echo [adapter list]; shutdown'
 ```
 
-This completes tool installation only. No simulated-target connection or
-`dbg-jtag-test` has run; transport and target interoperability remain unchecked.
+The pristine tool passes the transport/DM connection test. Its block Program
+Buffer memory path assumes optional autoexec support and fails the deliberate
+`dbg-openocd-negative-test` against this DM's advertised absence. The isolated
+compatibility build probes autoexec and uses explicit single-element commands
+when unavailable, avoiding speculative or trailing MMIO accesses. It also
+rejects misaligned superpage PTEs and unsupported Svnapot software walks instead
+of returning data from an incorrect HPA. These are debugger changes; Karu's
+hardware Svnapot support is unchanged.
+
+`make dbg-openocd-build` exports the pinned mainline source from
+`OPENOCD_SRC` (default `$HOME/rv/src/openocd`) and builds under
+`_build/dbg/openocd/`. Installed tools and the source checkout are not modified.
+The manifest records the base revision, patch hash and binary hash. The patch
+modifies GPL-2.0-or-later OpenOCD sources and retains their upstream notices;
+it is not relicensed under the repository's BSD license. GDB acceptance uses
+the installed RISC-V GDB (17.2 in the recorded run).
 
 Implement `stopcount=1` to freeze all hart-local counters, including HPM
 counters, while in Debug Mode. Time continues running. Define and test the WARL
@@ -184,6 +302,13 @@ full-width writes: reject narrower writes, oversized accesses and reserved
 Full-width writes to read-only registers retain their architectural access
 rules. With `transfer=0`, ignore transfer-only fields as specified and execute
 `postexec` exactly once when requested.
+
+The implemented abstract views are 64-bit GPRs and RV64 CSR views, with 32-bit
+reads supported for each. ROM-owned `dscratch0`/`dscratch1` are excluded from
+abstract transfers (`cmderr=not supported`); FP and vector abstract register
+numbers are also unsupported. Those registers remain accessible through the
+Program Buffer. Do not assume scratch CSR contents persist across the ROM's
+own save/restore sequences.
 
 ## Memory-mapped peripheral access
 
@@ -226,7 +351,7 @@ target bus/peripheral reset domain.
   declarations before use, separate net declarations and assignments, no
   power-up initializers, and no inferred latches or variable-input division
   or remainder operators.
-- Define a proposed opt-in `KARU_DBG` build switch in the normal extension
+- Define the opt-in `KARU_DBG` build switch in the normal extension
   configuration. It must not be implied by `KARU_RVA23S64`.
 - Keep DM/DTM logic outside the processor's architectural CSR block. Define
   the halt-request and Debug Mode interface before changing core issue logic.
@@ -244,16 +369,18 @@ debug disabled. Follow the
 | Attribute | Encoding and implementation requirement |
 | --- | --- |
 | `AxPROT[0]` | 0 = unprivileged, 1 = privileged. Use the effective access context; ordinary U/VU accesses are unprivileged and S/HS/VS/M accesses are privileged |
-| `AxPROT[1]` | 0 = Secure, 1 = Non-secure. Use a trusted static per-hart integration input, tied Non-secure in default wrappers; RISC-V privilege does not select this domain |
+| `AxPROT[1]` | 0 = Secure, 1 = Non-secure. Use the trusted per-hart `NONSECURE` parameter, default 1; RISC-V privilege does not select this domain |
 | `AxPROT[2]` | 0 = data, 1 = instruction. Mark actual fetches as instruction accesses; PTE reads are data accesses even when emitted on the instruction AXI port |
 
 The initial platform contract is deliberately limited and must accompany the
 ASIC handoff and FPGA integration:
 
-- The Secure/non-secure input is trusted platform configuration, stable during
-  operation and shared by all accesses from the hart. It can change only across
-  a platform reset that quiesces or cancels old bus requests and invalidates
-  caches/TLB/PWC state before new traffic. Debug entry does not change it.
+- `NONSECURE` is trusted elaboration-time platform configuration, shared by
+  all accesses from the hart and fixed for that build. Debug entry does not
+  change it. The tests use separate elaborations for values 0 and 1. No mutable
+  domain input or runtime switching is implemented. A future reset-sampled
+  strap would require quiescing/cancelling old requests and invalidating
+  caches/TLB/PWC state before traffic under a changed domain.
 - Privilege-based peripheral firewall rules apply only to regions forced
   non-cacheable for both fetch and data by the trusted physical map. Existing
   non-RAM/MMIO bypass paths are the initial targets. PBMT NC/IO also bypasses
@@ -321,6 +448,10 @@ The main integration points are `rtl/karu64.v`, `rtl/karu_csr.v`,
   Stop accepting new normal instructions and reach a precise boundary after
   older work drains. Include scalar/vector memory operations, posted stores,
   page walks and cache maintenance in the boundary analysis.
+  Once observed, a request remains latched until entry; clearing DM `haltreq`
+  does not cancel it. The platform must bound active-instruction and memory
+  completion latency to meet the specification's one-second halt-response
+  requirement. This initial implementation does not abort a hung AXI slave.
 - Initially finish an active vector/crypto instruction before halting; do not
   introduce mid-instruction preemption. Preserve existing restart state.
 - Capture the next architectural instruction address in `dpc`, accounting for
@@ -432,6 +563,10 @@ state and the DM's halted status.
 - Define power-on, DM activation, transport reset and non-debug reset
   separately. Report `havereset` for every hart reset cause, not just requests
   initiated through the DM, and report hart unavailability during reset.
+- `karudbg_core` resets its AXI ownership state with the hart. Its external
+  responders/interconnect must share that cancellation reset, or be quiesced
+  before reset, so no pre-reset response can be consumed as a new transaction.
+  Hart-only reset with uncancelled external traffic is not supported.
 - Honor a pending halt request before the first architectural instruction
   after reset. The optional reset-halt control bits may remain unimplemented.
 - Adopt and verify the transport CDC handshake and reset flushing. TCK-domain
@@ -445,16 +580,46 @@ state and the DM's halted status.
   assigning them. State whether that integration is the standard JTAG DTM or
   a custom transport, as required by the specification.
 
+The conventional TAP is tested through remote bitbang. Its parameterized
+default IDCODE `0x00000db3` is the inherited PULP
+integration/test placeholder, not an assigned Karu manufacturer identity.
+ASIC integration must supply the appropriate assigned platform IDCODE.
+Mainline OpenOCD's `riscv use_bscan_tunnel` implements a SiFive-style nested
+TAP/data-register tunnel; it is not the PULP direct USER3-DTMCS/USER4-DMI
+transport. The PULP BSCANE2 wrapper is therefore not imported as a drop-in
+board solution. The original Karu [BSCAN tunnel](karudbg_bscan_tunnel.v)
+instead implements the mainline nested-TAP framing on USER4, with a
+[BSCANE2 wrapper](karudbg_bscan.v). Simulation covers the outer FPGA TAP,
+pause/deselection, reset recovery and actual-core OpenOCD memory/MMIO access.
+The two-edge reset-release conditioner works with stopped clocks; FPGA reset
+ordering keeps the DM alive and holds the hart until the UI-side AXI responders
+leave reset. Physical board transport acceptance remains pending.
+
+The optional standard-flow target is:
+
+```sh
+make vcu118-ddr-sgmii-rom-rva23s64-dbg
+```
+
+It uses the existing karudeb profile ROM inputs and `_build/vcu118_ddr.*`
+locations. USER4 is reserved for karudbg; the conflicting JTAG-AXI host-debug
+configuration is rejected. [vcu118.cfg](vcu118.cfg) configures mainline OpenOCD
+after an appropriate adapter configuration. Use the isolated patched build
+for block accesses, as described above. The FPGA TAP has IR length 6 and
+USER4 opcode `0x23`; the tunneled RISC-V TAP has IR length 5. This optional
+target is separate from the conventional-TAP OOC measurement and requires its
+own implementation and board acceptance evidence.
+
 ## Testing plan
 
 Keep test sources and harnesses in the repository, primarily under
 `test/dbg/`, with shared firmware under `test/fw/` where appropriate. Put
 generated models, ROM outputs, traces and reports under `_build/dbg/`.
 Document exact commands, tool revisions, configuration flags and expected
-results as targets become available. Target names below are planned, not
-currently implemented.
+results. The functional targets below are implemented; synthesis and board
+acceptance are separate gates.
 
-| Planned gate | Required coverage |
+| Gate | Required coverage |
 | --- | --- |
 | `axi-prot-test` | Milestone A with debug disabled: effective privilege, fixed Secure/non-secure domain, request producers, cache contract, queues, stalls and peripheral firewall denial; extend and rerun with debug in milestone B |
 | `dbg-unit-test` | DM CSR reset/WARL/read-only behavior; native/narrow reads and rejected writes; hart selection; current availability; activation; absent/autoexec registers; DMI backpressure; abstract-command errors and recovery |
@@ -464,7 +629,7 @@ currently implemented.
 | `dbg-context-test` | M/S/U/VS/VU entry and return; H metadata; scalar FP, vector, Zvk and Keccak state round trips; representative arithmetic and memory instructions in Debug Mode |
 | `dbg-translation-test` | Pinned OpenOCD software walks for host/guest pages, high GPAs, Svnapot, error containment and documented differences from hardware translation |
 | `dbg-jtag-test` | TAP/DTM protocol, CDC, sticky busy/errors, TMS/TRST reset, frequency/phase variation, and OpenOCD/GDB through remote bitbang |
-| `dbg-test` | Aggregate functional gate plus the selected ordinary ISA regressions for debug-enabled and debug-disabled models |
+| `dbg-test` | Aggregate debug functional gate, including debug-enabled and debug-disabled protection tests; ordinary `make test` is a separate ISA regression |
 
 Directed core tests must include:
 
@@ -531,9 +696,9 @@ Directed core tests must include:
   access faults. Attempt aliases and instruction fetches at those physical
   addresses; neither cache may serve or allocate them. Separately prime and
   reuse cacheable RAM across privilege modes under the documented advisory
-  fill policy and normal MMU permissions. Check static-domain changes only
-  across the prescribed reset/quiescence sequence, with invalidated caches
-  and TLB/PWC state. Stall AR/AW and queue stores across privilege changes;
+  fill policy and normal MMU permissions. Use separate domain-0/domain-1
+  elaborations; dynamic switching is deferred. Stall AR/AW and queue stores
+  across privilege changes;
   the original request's attributes must remain unchanged.
 - Reset during each DMI/abstract-command phase; DM deactivation and
   reactivation; sticky `havereset` and command-error clearing.

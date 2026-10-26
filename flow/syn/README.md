@@ -50,6 +50,14 @@ enough physical memory for multiple retained Yosys processes and ABC children.
 Use a cgroup memory limit for unattended work; `ulimit -v` limits address space,
 not resident memory.
 
+The opt-in debug comparison has paired shipping targets:
+`make dbg-syn-area-off`, `make dbg-syn-area-on`,
+`make dbg-syn-timing-off` and `make dbg-syn-timing-on`. They retain identical
+processor defines and geometry; the enabled row adds the conventional-JTAG
+`karudbg_top`. See [the measured scope and reproduction commands](../../dbg/MEASUREMENTS.md).
+These targets use default/FPGA initialization semantics and map memories to
+cells; the separate `KARU_ASIC` inventory audit is not a macro-area estimate.
+
 ## Main controls
 
 | Variable | Default | Meaning |
@@ -57,9 +65,13 @@ not resident memory.
 | `KARU_LIB` | searched NanGate45 path | Liberty file |
 | `KARU_CLK_PS` | `4000` | clock period in ps |
 | `KARU_ABC_UPRATE_PS` | `2000` | extra ABC timing pressure (`period - uprate`) |
-| `KARU_IN_PCT` / `KARU_OUT_PCT` | `30` / `70` | generic input/output timing budgets |
+| `KARU_IN_PCT` / `KARU_OUT_PCT` | `30` / `70` | input arrival / output deadline as percentages of the period; the output delay reserves `100 - KARU_OUT_PCT` percent |
 | `KARU_OUT_DIR` | timestamped `_build/syn_out` path | output directory |
 | `KARU_DEFINES` | balanced arithmetic defaults | space-separated RTL defines; an explicit empty value selects header defaults |
+| `KARU_TOP` | `karu64` | synthesis/STA top module, including output netlist/SDC names |
+| `KARU_RTL_MANIFEST` | unset | optional plain source-file manifest; paths in it are relative to the repository root; combined debug builds use `dbg/karudbg.f` |
+| `KARU_SDC_TEMPLATE` | `sdc/karu64.sdc.in` in the flow | optional alternate SDC template; debug builds constrain core and JTAG clocks separately |
+| `KARU_TCK_PS` | `100000` | JTAG clock period substituted into alternate templates (10 MHz default) |
 | `KARU_NOSHARE` | unset | pass `-noshare` to Yosys; recommended for large vector comparisons |
 | `KARU_FLATTEN` | unset | flatten before mapping |
 | `KARU_LTP` | unset | emit pre-map per-module logic-depth report |
@@ -131,7 +143,11 @@ Each run writes beneath `_build/syn_out`:
   runs; and
 - mapped/pre-map netlists, which may be compressed for retention.
 
-A row fails if input fingerprints change while it is running. With `JOBS>1`,
+A row fails if input fingerprints change while it is running. The source
+fingerprint follows the selected manifest (or the default frontend source
+list), its recursive include closure, the flow inputs and Yosys mapping
+resources. New, unconsumed RTL for another top does not invalidate the row.
+With `JOBS>1`,
 `summary.csv` is completion ordered; join by the `config` column.
 
 ## Constraints
@@ -142,6 +158,9 @@ buffer drives inputs and outputs see the configured load. OpenSTA reports
 register-to-register, input-to-register, register-to-output and
 input-to-output groups separately. Always inspect `check_setup`, unconstrained
 endpoint coverage and slew/capacitance/fanout reports as well as WNS/TNS.
+At 5 ns with the default 30/70 settings, the generated SDC uses 1.5 ns for
+both `set_input_delay` and `set_output_delay`: the output must reach its port
+by 3.5 ns, leaving 1.5 ns for the receiver.
 
 ## Files
 

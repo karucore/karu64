@@ -78,6 +78,7 @@ module karu_icache #(
     //  ---- request decode (latched on AR accept) ----
     reg [`AXI_ADDR_W-1:0]   addr_q;
     reg [`AXI_ID_W-1:0]     id_q;
+    reg [`AXI_PROT_W-1:0]   prot_q;
     //  geometry of the in-flight (latched) request, used by the refill path.
     wire [IDXW-1:0] a_idx;
     assign a_idx = addr_q[OFFW+IDXW-1:OFFW];
@@ -136,6 +137,7 @@ module karu_icache #(
                     s_arready <= 1'b1;
                     if (s_arvalid && s_arready) begin
                         addr_q <= s_araddr; id_q <= s_arid;
+                        prot_q <= s_arprot;
                         serve_resp <= `AXI_RESP_OKAY;
                         s_arready <= 1'b0;
                         //  (a_* below see the NEW addr next cycle; decode here off
@@ -167,7 +169,7 @@ module karu_icache #(
                 S_MISS_AR: begin
                     m_arid <= 4'd0; m_araddr <= {a_tag, a_idx, {OFFW{1'b0}}};
                     m_arlen <= 8'd7; m_arsize <= `AXI_SIZE_8B;
-                    m_arburst <= `AXI_BURST_INCR; m_arprot <= 0;
+                    m_arburst <= `AXI_BURST_INCR; m_arprot <= prot_q;
                     m_arvalid <= 1'b1;
                     if (m_arvalid && m_arready) begin
                         m_arvalid <= 1'b0; m_rready <= 1'b1; beat <= 3'd0;
@@ -191,7 +193,7 @@ module karu_icache #(
                 S_UC_AR: begin
                     m_arid <= id_q; m_araddr <= addr_q;
                     m_arlen <= 8'd0; m_arsize <= `AXI_SIZE_8B;
-                    m_arburst <= `AXI_BURST_INCR; m_arprot <= 0;
+                    m_arburst <= `AXI_BURST_INCR; m_arprot <= prot_q;
                     m_arvalid <= 1'b1;
                     if (m_arvalid && m_arready) begin
                         m_arvalid <= 1'b0; m_rready <= 1'b1;
@@ -238,5 +240,5 @@ module karu_icache #(
 
     //  silence unused AR attributes from the IFU (single-beat 8B INCR always).
     wire _unused;
-    assign _unused = &{1'b0, s_arlen, s_arsize, s_arburst, s_arprot, m_rid};
+    assign _unused = &{1'b0, s_arlen, s_arsize, s_arburst, m_rid};
 endmodule

@@ -17,6 +17,17 @@
 module karu_csr (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    // Sdext entry/exit are precise core events, separate from application traps.
+    input  wire         debug_mode_i,
+    input  wire         debug_enter_i,
+    input  wire         debug_exit_i,
+    input  wire [63:0]  debug_pc_i,
+    input  wire [2:0]   debug_cause_i,
+    output wire [63:0]  debug_dpc_o,
+    output wire         debug_step_o,
+    output wire         debug_ebreak_o,
+`endif
 
     //  -- CSR access (csrrw/s/c[i]) --
     input  wire         op_req,
@@ -220,7 +231,11 @@ module karu_csr (
         end
     end
     assign virt_o = virt;
-    assign data_virt_o = csr_mstatus[17]
+    assign data_virt_o =
+`ifdef KARU_DBG
+        debug_mode_i ? 1'b0 :
+`endif
+        csr_mstatus[17]
         ? (csr_mstatus[12:11] != 2'd3 && csr_mstatus[39]) : virt;
     assign vsatp_o = csr_vsatp;
     assign hgatp_o = csr_hgatp;
@@ -347,12 +362,42 @@ module karu_csr (
 `endif
 `endif
     reg [1:0]  priv;
+    wire debug_counter_stop;
+`ifdef KARU_DBG
+    reg [31:0] csr_dcsr;
+    reg [63:0] csr_dpc, csr_dscratch0, csr_dscratch1;
+    localparam [31:0] DCSR_WMASK = 32'h0000_8007
+`ifdef KARU_EN_S
+        | 32'h0000_2000
+`endif
+        | 32'h0000_1000
+`ifdef KARU_EN_H
+        | 32'h0003_0020
+`endif
+        ;
+    wire [1:0] debug_new_prv;
+    assign debug_dpc_o = csr_dpc;
+    assign debug_step_o = csr_dcsr[2];
+    assign debug_counter_stop = debug_mode_i;
+    assign debug_ebreak_o =
+`ifdef KARU_EN_H
+        virt ? ((priv == 2'd1) ? csr_dcsr[17] : csr_dcsr[16]) :
+`endif
+        (priv == 2'd3) ? csr_dcsr[15] :
+        (priv == 2'd1) ? csr_dcsr[13] : csr_dcsr[12];
+`else
+    assign debug_counter_stop = 1'b0;
+`endif
     localparam [1:0] EXC_NONE = 2'd0, EXC_ILLEGAL = 2'd1, EXC_VIRTUAL = 2'd2;
     localparam [1:0] PRIV_U = 2'd0;
     localparam [1:0] PRIV_S = 2'd1;
     localparam [1:0] PRIV_M = 2'd3;
     assign priv_o = priv;
-    assign data_priv_o = csr_mstatus[17] ? csr_mstatus[12:11] : priv;
+    assign data_priv_o =
+`ifdef KARU_DBG
+        debug_mode_i ? 2'd3 :
+`endif
+        csr_mstatus[17] ? csr_mstatus[12:11] : priv;
     assign menvcfg_pmm_o = menvcfg_pmm;
     assign senvcfg_pmm_o = senvcfg_pmm;
 `ifdef KARU_EN_S
@@ -896,6 +941,12 @@ module karu_csr (
     //  -- read value (combinational) --
     wire [63:0] rd_v_w;
     assign rd_v_w =
+`ifdef KARU_DBG
+        op_addr == 12'h7b0 ? {32'b0, csr_dcsr} :
+        op_addr == 12'h7b1 ? csr_dpc :
+        op_addr == 12'h7b2 ? csr_dscratch0 :
+        op_addr == 12'h7b3 ? csr_dscratch1 :
+`endif
 `ifdef KARU_EN_H
         h_read_sel ? h_rd_v :
 `endif
@@ -988,6 +1039,9 @@ module karu_csr (
         input [11:0] a;
         begin
             case (a)
+`ifdef KARU_DBG
+                12'h7b0,12'h7b1,12'h7b2,12'h7b3,
+`endif
 `ifdef KARU_EN_H
                 12'h200,12'h204,12'h205,12'h240,12'h241,12'h242,
                 12'h243,12'h244,12'h24d,12'h280,
@@ -1045,6 +1099,14 @@ module karu_csr (
         op_sub == `CSR_RS || op_sub == `CSR_RSI ? rmw_v |  op_src      :
         op_sub == `CSR_RC || op_sub == `CSR_RCI ? rmw_v & ~op_src      :
                                                   rmw_v;
+`ifdef KARU_DBG
+    assign debug_new_prv =
+`ifdef KARU_EN_S
+        (new_v_w[1:0] == 2'd2) ? 2'd0 : new_v_w[1:0];
+`else
+        (new_v_w[1:0] == 2'd3) ? 2'd3 : 2'd0;
+`endif
+`endif
     // MPP is WARL: encoding 2 is never a privilege mode; S is absent in an
     // M/U build. Normalize unsupported writes to U before any MRET/MPRV use.
     wire [1:0] new_mpp;
@@ -1162,6 +1224,9 @@ module karu_csr (
                       || (v_csr_access && ((status_vs_o == 0) || (virt && vsstatus_vs_o == 0)));
     wire csr_hard_illegal;
     assign csr_hard_illegal = !csr_present(op_addr)
+`ifdef KARU_DBG
+          || ((op_addr[11:4] == 8'h7b) && !debug_mode_i)
+`endif
           || (csr_priv_denied && (!virt || op_addr[9:8] == PRIV_M))
           || ctr_blocked || satp_tvm_block || stimecmp_block || stateen_block
           || context_off || ((op_addr[11:10] == 2'b11) && wen_w);
@@ -1170,6 +1235,9 @@ module karu_csr (
 `else
     assign csr_illegal =
         !csr_present(op_addr) ||
+`ifdef KARU_DBG
+        ((op_addr[11:4] == 8'h7b) && !debug_mode_i) ||
+`endif
         (priv < op_addr[9:8]) ||
         ctr_blocked ||
         satp_tvm_block ||
@@ -1219,6 +1287,12 @@ module karu_csr (
 `endif
     always @(posedge clk) begin
         if (rst) begin
+`ifdef KARU_DBG
+            csr_dcsr <= 32'h4000_0403; // debugver=4, stopcount=1, prv=M
+            csr_dpc <= 0;
+            csr_dscratch0 <= 0;
+            csr_dscratch1 <= 0;
+`endif
             csr_mcycle   <= 0;
             csr_instret  <= 0;
             csr_mcountinhibit <= 0;
@@ -1284,9 +1358,9 @@ module karu_csr (
             csr_vxsat    <= 0;
             csr_vxrm     <= 0;
         end else begin
-            if (!csr_mcountinhibit[0] && !cyc_pinh)
+            if (!debug_counter_stop && !csr_mcountinhibit[0] && !cyc_pinh)
                 csr_mcycle <= csr_mcycle + 64'b1;
-            if (retire && !csr_mcountinhibit[2] && !ir_pinh)
+            if (!debug_counter_stop && retire && !csr_mcountinhibit[2] && !ir_pinh)
                 csr_instret <= csr_instret + 64'b1;
 `ifdef KARU_EN_HPM
 `ifdef KARU_EN_SSCOFPMF
@@ -1296,7 +1370,7 @@ module karu_csr (
 `ifdef KARU_EN_SSCOFPMF
                 hpm_ovf[hpm_i] = 1'b0;
 `endif
-                if (!csr_mcountinhibit[hpm_i + 3] &&
+                if (!debug_counter_stop && !csr_mcountinhibit[hpm_i + 3] &&
                     hpm_event_hit(csr_mhpmevent[hpm_i])
 `ifdef KARU_EN_SSCOFPMF
                     && !hpm_pinh(csr_mhpmevent[hpm_i])
@@ -1325,6 +1399,19 @@ module karu_csr (
 `endif
             if (csr_w_fire) begin
                 case (bank_addr)
+`ifdef KARU_DBG
+                    12'h7b0: begin
+                        csr_dcsr <= (csr_dcsr & ~DCSR_WMASK) |
+                                    (new_v_w[31:0] & DCSR_WMASK);
+                        csr_dcsr[1:0] <= debug_new_prv;
+`ifdef KARU_EN_H
+                        csr_dcsr[5] <= new_v_w[5] && debug_new_prv != PRIV_M;
+`endif
+                    end
+                    12'h7b1: csr_dpc <= new_v_w & EPC_WMASK;
+                    12'h7b2: csr_dscratch0 <= new_v_w;
+                    12'h7b3: csr_dscratch1 <= new_v_w;
+`endif
 `ifdef KARU_EN_H
                     12'h200: csr_vsstatus <= new_v_w & SSTATUS_WMASK;
                     12'h204: csr_mie <= (csr_mie & ~((csr_hideleg & VS_IRQ_MASK) | vs_lcofi_alias))
@@ -1614,6 +1701,25 @@ module karu_csr (
 `ifdef KARU_EN_H
                 end
 `endif
+            end
+`endif
+`ifdef KARU_DBG
+            if (debug_enter_i) begin
+                csr_dpc <= debug_pc_i & EPC_WMASK;
+                csr_dcsr[1:0] <= priv;
+                csr_dcsr[8:6] <= debug_cause_i;
+`ifdef KARU_EN_H
+                csr_dcsr[5] <= virt;
+                virt <= 1'b0;
+`endif
+                priv <= PRIV_M;
+            end
+            if (debug_exit_i) begin
+                priv <= csr_dcsr[1:0];
+`ifdef KARU_EN_H
+                virt <= csr_dcsr[5] && csr_dcsr[1:0] != PRIV_M;
+`endif
+                if (csr_dcsr[1:0] != PRIV_M) csr_mstatus[17] <= 1'b0;
             end
 `endif
 `ifdef KARU_IRQ_TRACE

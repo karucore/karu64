@@ -77,6 +77,15 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 	puts "KARU_DDR_HOST_DBG: VIO hold + JTAG-AXI host loader included"
 }
 
+set hart_dbg 0
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_DBG] >= 0} {
+	set hart_dbg 1
+	if {$host_dbg} {
+		error "KARU_DBG reserves USER4; KARU_DDR_HOST_DBG JTAG-AXI coexistence is not configured"
+	}
+	puts "KARU_DBG: single-hart DM and USER4 nested-TAP transport enabled"
+}
+
 set ip_list [list \
 	$ipdir/ddr4_0/ddr4_0.xci \
 	$ipdir/axi_clock_converter_0/axi_clock_converter_0.xci \
@@ -107,6 +116,11 @@ foreach fn [glob -type f [file join $::karu_repo_dir rtl *.v]] {
 }
 foreach fn [glob -nocomplain -type f [file join $::karu_repo_dir rtl zvk *.v]] {
 	read_verilog $fn
+}
+if {$hart_dbg} {
+	foreach fn [glob -type f [file join $::karu_repo_dir dbg *.v]] {
+		read_verilog $fn
+	}
 }
 
 #	FPGA RTL (flow/fpga/) minus simulation-only testbenches.
@@ -164,12 +178,17 @@ if {[info exists ::env(KARU_SYNTH_DIRECTIVE)] && $::env(KARU_SYNTH_DIRECTIVE) ne
 if {[llength $vdefs] > 0} {
 	puts "KARU_DEFINES: $vdefs"
 	synth_design -part $part -top $top \
-		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga]] \
+		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga] [karu_repo_path dbg]] \
 		-verilog_define $vdefs {*}$dargs
 } else {
 	synth_design -part $part -top $top \
-		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga]] \
+		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga] [karu_repo_path dbg]] \
 		{*}$dargs
+}
+
+if {$hart_dbg} {
+	source [karu_repo_path dbg fpga_constraints.tcl]
+	karudbg_constrain_bscan
 }
 
 if {$eth_sgmii} {

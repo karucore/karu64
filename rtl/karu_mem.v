@@ -39,6 +39,9 @@ module karu_mem #(
 ) (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    input  wire         debug_mode_i,
+`endif
     input  wire [31:0]  uncache_page,
     input  wire         flush,          // invalidate write-through D-cache
 
@@ -79,6 +82,7 @@ module karu_mem #(
 
     //  ==================== vector port (128-bit) ====================
     input  wire                     v_req,          //  pulse to start
+    input  wire [`AXI_PROT_W-1:0]   v_prot,         // issue context, not live CSRs
     output wire                     v_busy,         //  can't accept v_req
     input  wire                     v_is_store,
     input  wire                     v_allow_post,   // contiguous RAM stream
@@ -149,6 +153,7 @@ module karu_mem #(
     reg [15:0]      req_wstrb;
     reg [15:0]      req_rstrb;
     reg [1:0]       req_pbmt;
+    reg [`AXI_PROT_W-1:0] req_prot, vq_prot;
     reg [2:0]       req_size;
     reg             req_posted;
     reg [63:0]      req_va, vq_va;
@@ -298,6 +303,7 @@ module karu_mem #(
             if (v_req && state != S_IDLE && state != S_VERR && !vq_valid) begin
                 vq_valid<=1; vq_store<=v_is_store; vq_addr<=v_addr;
                 vq_allow_post<=v_allow_post;
+                vq_prot<=v_prot;
                 vq_va<=v_va;
                 vq_data<=v_wdata; vq_strb<=v_wstrb;
                 vq_pbmt<=v_pbmt; vq_size<=v_size; vq_rstrb<=v_rstrb;
@@ -310,6 +316,7 @@ module karu_mem #(
                         vq_valid<=0;
                         req_pa<=vq_addr; req_id<=0;
                         req_va<=vq_va;
+                        req_prot<=vq_prot;
                         req_src<=1; req_w128<=1; req_is_store<=vq_store;
                         req_wdata<=vq_data; req_wstrb<=vq_strb;
                         req_pbmt<=vq_pbmt; req_size<={1'b0,vq_size}; req_rstrb<=vq_rstrb;
@@ -319,12 +326,14 @@ module karu_mem #(
                         state<=vq_io ? S_IO_NEXT : (vq_store ? S_WR : S_RD);
                     end else if (s_arvalid) begin
                         req_pa<=xlate(s_araddr); req_id<=s_arid;
+                        req_prot<=s_arprot;
                         req_src<=1'b0; req_w128<=1'b0; req_is_store<=1'b0;
                         req_posted<=0;
                         req_pbmt<=s_ar_pbmt; req_size<=s_arsize;
                         s_arready<=1'b1; state<=S_RD;
                     end else if (s_awvalid && s_wvalid) begin
                         req_pa<=xlate(s_awaddr); req_id<=s_awid;
+                        req_prot<=s_awprot;
                         req_src<=1'b0; req_w128<=1'b0; req_is_store<=1'b1;
                         req_posted<=0;
                         req_pbmt<=s_aw_pbmt; req_size<=s_awsize;
@@ -333,6 +342,7 @@ module karu_mem #(
                     end else if (v_req) begin
                         req_pa<=xlate(v_addr); req_id<=0;
                         req_va<=v_va;
+                        req_prot<=v_prot;
                         req_src<=1'b1; req_w128<=1'b1; req_is_store<=v_is_store;
                         req_posted<=v_post; v_done<=v_post;
                         req_wdata<=v_wdata; req_wstrb<=v_wstrb;
@@ -351,7 +361,7 @@ module karu_mem #(
                     if (req_uncacheable) begin
                         m_arid<=req_id; m_araddr<=req_w128 ? {req_pa[31:3],3'b000} : req_pa;
                         m_arlen<=0; m_arsize<=req_w128 ? `AXI_SIZE_8B : req_size; m_arburst<=`AXI_BURST_INCR;
-                        m_arprot<=0; m_arvalid<=1; m_rready<=1; beat<=1'b0; state<=S_UC_AR;
+                        m_arprot<=req_prot; m_arvalid<=1; m_rready<=1; beat<=1'b0; state<=S_UC_AR;
                     end else if (req_hit) begin
                         v_rdata <= hit_dw;
                         s_rid<=req_id; s_rdata<=hit_word; s_rresp<=`AXI_RESP_OKAY;
@@ -360,7 +370,7 @@ module karu_mem #(
                     end else begin
                         m_arid<=req_id; m_araddr<={req_pa[31:6],6'b0};
                         m_arlen<=8'd7; m_arsize<=`AXI_SIZE_8B; m_arburst<=`AXI_BURST_INCR;
-                        m_arprot<=0; m_arvalid<=1; m_rready<=1; fill_cnt<=0; state<=S_FILL_R;
+                        m_arprot<=req_prot; m_arvalid<=1; m_rready<=1; fill_cnt<=0; state<=S_FILL_R;
                         fill_resp<=`AXI_RESP_OKAY;
                         fill_poison<=flush;
                     end
@@ -418,13 +428,13 @@ module karu_mem #(
                         io_step<=io_bytes; io_strb<=io_lane_mask;
                         if (req_is_store) begin
                             m_awid<=req_id; m_awaddr<={req_pa[31:4],io_off[3:0]};
-                            m_awlen<=0; m_awsize<=io_size; m_awburst<=`AXI_BURST_INCR; m_awprot<=0;
+                            m_awlen<=0; m_awsize<=io_size; m_awburst<=`AXI_BURST_INCR; m_awprot<=req_prot;
                             m_awvalid<=1; m_wvalid<=1; m_wlast<=1; m_bready<=1;
                             m_wdata<=io_off[3] ? req_wdata[127:64] : req_wdata[63:0];
                             m_wstrb<=io_lane_mask; state<=S_IO_W;
                         end else begin
                             m_arid<=req_id; m_araddr<={req_pa[31:4],io_off[3:0]};
-                            m_arlen<=0; m_arsize<=io_size; m_arburst<=`AXI_BURST_INCR; m_arprot<=0;
+                            m_arlen<=0; m_arsize<=io_size; m_arburst<=`AXI_BURST_INCR; m_arprot<=req_prot;
                             m_arvalid<=1; m_rready<=1; state<=S_IO_R;
                         end
                     end
@@ -472,7 +482,7 @@ module karu_mem #(
                                                   : (!req_w128 && req_uncacheable ? req_pa : {req_pa[31:3],3'b000});
                     m_awlen<=req_burst ? 1 : 0;
                     m_awsize<=!req_w128 && req_uncacheable ? req_size : `AXI_SIZE_8B;
-                    m_awburst<=`AXI_BURST_INCR; m_awprot<=0;
+                    m_awburst<=`AXI_BURST_INCR; m_awprot<=req_prot;
                     m_awvalid<=1;
                     m_wdata<= beat ? req_wdata[127:64] : req_wdata[63:0];
                     m_wstrb<= beat ? req_wstrb[15:8]   : req_wstrb[7:0];
@@ -547,6 +557,6 @@ module karu_mem #(
     // synthesis translate_on
 
     wire _unused;
-    assign _unused = &{s_arlen,s_arburst,s_arprot,s_awlen,
-                       s_awburst,s_awprot,s_wlast,m_rid,m_bid,1'b0};
+    assign _unused = &{s_arlen,s_arburst,s_awlen,
+                       s_awburst,s_wlast,m_rid,m_bid,1'b0};
 endmodule

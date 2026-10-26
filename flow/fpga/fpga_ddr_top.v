@@ -53,6 +53,7 @@ module fpga_ddr_top #(
 	wire [`AXI_ID_W-1:0]	m_arid;   wire [`AXI_ADDR_W-1:0] m_araddr;
 	wire [`AXI_LEN_W-1:0]	m_arlen;  wire [`AXI_SIZE_W-1:0] m_arsize;
 	wire [`AXI_BURST_W-1:0]	m_arburst; wire m_arvalid, m_arready;
+	wire [`AXI_PROT_W-1:0]	m_arprot, m_awprot;
 	wire [`AXI_ID_W-1:0]	m_rid;    wire [`AXI_DATA_W-1:0] m_rdata;
 	wire [`AXI_RESP_W-1:0]	m_rresp;  wire m_rlast, m_rvalid, m_rready;
 	wire [`AXI_ID_W-1:0]	m_awid;   wire [`AXI_ADDR_W-1:0] m_awaddr;
@@ -121,12 +122,12 @@ module fpga_ddr_top #(
 		.dmem_bid(dmem_bid), .dmem_bresp(dmem_bresp),
 		.dmem_bvalid(dmem_bvalid), .dmem_bready(dmem_bready),
 		.m_arid(m_arid), .m_araddr(m_araddr), .m_arlen(m_arlen),
-		.m_arsize(m_arsize), .m_arburst(m_arburst),
+		.m_arsize(m_arsize), .m_arburst(m_arburst), .m_arprot(m_arprot),
 		.m_arvalid(m_arvalid), .m_arready(m_arready),
 		.m_rid(m_rid), .m_rdata(m_rdata), .m_rresp(m_rresp),
 		.m_rlast(m_rlast), .m_rvalid(m_rvalid), .m_rready(m_rready),
 		.m_awid(m_awid), .m_awaddr(m_awaddr), .m_awlen(m_awlen),
-		.m_awsize(m_awsize), .m_awburst(m_awburst),
+		.m_awsize(m_awsize), .m_awburst(m_awburst), .m_awprot(m_awprot),
 		.m_awvalid(m_awvalid), .m_awready(m_awready),
 		.m_wdata(m_wdata), .m_wstrb(m_wstrb), .m_wlast(m_wlast),
 		.m_wvalid(m_wvalid), .m_wready(m_wready),
@@ -156,4 +157,5 @@ module fpga_ddr_top #(
 		.s_bid(m_bid), .s_bresp(m_bresp), .s_bvalid(m_bvalid), .s_bready(m_bready)
 	);
 
+	wire _unused_prot = &{m_arprot, m_awprot, 1'b0};
 endmodule

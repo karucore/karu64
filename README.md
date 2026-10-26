@@ -352,12 +352,16 @@ reference generation and replay.
 
 ## TODO — ASIC integration
 
-- Supply requester-correct AXI protection metadata when integrating an
-  interconnect or firewall that enforces it.
+- Validate the platform's use of the implemented requester-correct AXI
+  protection metadata against the static-domain and cacheability contract in
+  [dbg/README.md](dbg/README.md#2-milestone-a-axi-protection-metadata).
 - Provide the required platform protections: physical isolation (PMP), an
   immutable boot path, register-state scrubbing and memory fault protection.
 
 The [security review](doc/security-review-2026-09-14.md) records these open
-integration items and their scope. The current VCU118 design does not use
-AXI `ARPROT`/`AWPROT` for access control, so the metadata issue does not affect
-its FPGA operation. The core's MMU and physical access checks remain active.
+integration items and their scope. AXI attributes now describe effective
+privilege, instruction/data traffic and a static trusted security domain,
+including across stalls and queued accesses. The current VCU118 design does
+not enforce access control with these attributes. The core's MMU and physical
+access checks remain active. Opt-in execution-based debug is documented in
+[the karudbg implementation and testing plan](dbg/README.md).

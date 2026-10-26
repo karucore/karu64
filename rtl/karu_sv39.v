@@ -14,10 +14,14 @@
 module karu_sv39 #(
     parameter TLB_ENTRIES = 4,
     parameter PWC_LINES = 4,
-    parameter GUEST_TLB_ENABLE = 1 // elaboration-time uncached reference
+    parameter GUEST_TLB_ENABLE = 1, // elaboration-time uncached reference
+    parameter NONSECURE = 1 // trusted static AXI security domain
 ) (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    input  wire         debug_mode_i,
+`endif
 
     input  wire         req,
     input  wire [63:0]  va,
@@ -590,7 +594,9 @@ module karu_sv39 #(
     assign awlen = 0;
     assign awsize = `AXI_SIZE_8B;
     assign awburst = `AXI_BURST_INCR;
-    assign awprot = 0;
+    // Implicit page-table reads are privileged data, including instruction
+    // walks, VS tables and G-stage translations. Svade never emits writes.
+    assign awprot = {1'b0, (NONSECURE != 0), 1'b1};
     assign awvalid = 1'b0;
     assign wdata = 0;
     assign wstrb = 0;
@@ -807,7 +813,7 @@ module karu_sv39 #(
                         arlen <= exact_pte_read ? 8'd0 : 8'd7;
                         arsize <= `AXI_SIZE_8B;
                         arburst <= `AXI_BURST_INCR;
-                        arprot <= 0;
+                        arprot <= {1'b0, (NONSECURE != 0), 1'b1};
                         arvalid <= 1'b1;
                         rready <= 1'b1;
                         fill_beat_q <= 3'd0;

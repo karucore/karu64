@@ -87,6 +87,7 @@ module karu_ddr_xbar #(
 	output wire [`AXI_LEN_W-1:0]	m_arlen,
 	output wire [`AXI_SIZE_W-1:0]	m_arsize,
 	output wire [`AXI_BURST_W-1:0]	m_arburst,
+	output wire [`AXI_PROT_W-1:0]	m_arprot,
 	output wire						m_arvalid,
 	input  wire						m_arready,
 	input  wire [`AXI_ID_W-1:0]		m_rid,
@@ -100,6 +101,7 @@ module karu_ddr_xbar #(
 	output wire [`AXI_LEN_W-1:0]	m_awlen,
 	output wire [`AXI_SIZE_W-1:0]	m_awsize,
 	output wire [`AXI_BURST_W-1:0]	m_awburst,
+	output wire [`AXI_PROT_W-1:0]	m_awprot,
 	output wire						m_awvalid,
 	input  wire						m_awready,
 	output wire [`AXI_DATA_W-1:0]	m_wdata,
@@ -300,6 +302,7 @@ module karu_ddr_xbar #(
 	reg [`AXI_ADDR_W-1:0]	dr_araddr;
 	reg [`AXI_LEN_W-1:0]	dr_arlen;
 	reg [`AXI_SIZE_W-1:0]	dr_arsize;
+	reg [`AXI_PROT_W-1:0]	dr_arprot;
 	wire					dmem_rd_arready;	//	DRAM-engine AR grant for dmem
 
 	wire imem_rd_req = imem_arvalid && !imem_boot_req;
@@ -319,11 +322,13 @@ module karu_ddr_xbar #(
 					dr_own <= OWN_DMEM;
 					dr_arid <= dmem_arid; dr_araddr <= dmem_araddr;
 					dr_arlen <= dmem_arlen; dr_arsize <= dmem_arsize;
+					dr_arprot <= dmem_arprot;
 					dr_st <= DR_AR;
 				end else if (grant_imem) begin
 					dr_own <= OWN_IMEM;
 					dr_arid <= imem_arid; dr_araddr <= imem_araddr;
 					dr_arlen <= imem_arlen; dr_arsize <= imem_arsize;
+					dr_arprot <= imem_arprot;
 					dr_st <= DR_AR;
 				end
 			end
@@ -348,6 +353,7 @@ module karu_ddr_xbar #(
 	assign m_arlen   = dr_arlen;
 	assign m_arsize  = dr_arsize;
 	assign m_arburst = `AXI_BURST_INCR;
+	assign m_arprot  = dr_arprot;
 	assign m_arvalid = (dr_st == DR_AR);
 
 	//	master R routed to the owner; rready from the owner
@@ -523,6 +529,7 @@ module karu_ddr_xbar #(
 	assign m_awlen   = dmem_awlen;
 	assign m_awsize  = dmem_awsize;
 	assign m_awburst = `AXI_BURST_INCR;
+	assign m_awprot  = dmem_awprot;
 	assign m_awvalid = (w_st == W_IDLE) && dmem_awvalid && dmem_aw_dram;
 	assign m_wdata   = dmem_wdata;
 	assign m_wstrb   = dmem_wstrb;
@@ -586,8 +593,8 @@ module karu_ddr_xbar #(
 `endif
 
 	//	Unused AXI attributes.
-	wire _unused = &{ imem_arsize, imem_arburst, imem_arprot,
-					  dmem_arsize, dmem_arburst, dmem_arprot,
-					  dmem_awlen, dmem_awsize, dmem_awburst, dmem_awprot,
+	wire _unused = &{ imem_arsize, imem_arburst,
+					  dmem_arsize, dmem_arburst,
+					  dmem_awlen, dmem_awsize, dmem_awburst,
 					  dmem_wlast, m_bresp, 1'b0 };
 endmodule

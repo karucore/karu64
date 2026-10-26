@@ -13,6 +13,7 @@ module tb_icache;
     reg [2:0] s_arsize=3;
     reg [1:0] s_arburst=1, s_ar_pbmt=0;
     reg [2:0] s_arprot=0;
+    reg [2:0] expected_prot;
     reg s_arvalid=0, s_rready=0;
     wire s_arready, s_rlast, s_rvalid;
     wire [`AXI_ID_W-1:0] s_rid;
@@ -40,8 +41,8 @@ module tb_icache;
     reg [31:0] ar_log[0:255];
     reg [7:0] len_log[0:255];
     reg ar_stalled=0;
-    reg [48:0] ar_saved;
-    wire [48:0] ar_payload={m_arid,m_araddr,m_arlen,m_arsize,m_arburst};
+    reg [51:0] ar_saved;
+    wire [51:0] ar_payload={m_arid,m_araddr,m_arlen,m_arsize,m_arburst,m_arprot};
     assign m_arready=!hold_ar && !read_active && !m_rvalid && cycle%5==2;
     always @(posedge clk) begin
         if(!rst) begin
@@ -51,6 +52,7 @@ module tb_icache;
             ar_stalled<=m_arvalid && !m_arready;
             ar_saved<=ar_payload;
             if(m_arvalid && m_arready) begin
+                if(m_arprot !== expected_prot) $fatal(1,"I-cache lost protection context");
                 if(m_arsize!=3 || m_arburst!=1 || (m_arlen!=0 && m_arlen!=7))
                     $fatal(1,"unexpected instruction-fetch geometry");
                 ar_log[ars]<=m_araddr; len_log[ars]<=m_arlen; ars<=ars+1;
@@ -80,10 +82,13 @@ module tb_icache;
                               input bit flush_with_accept);
         @(negedge clk); while(!s_arready) @(negedge clk);
         expected_id=`AXI_ID_W'(checks+3);
+        expected_prot={1'b1, checks[1:0]};
+        s_arprot=expected_prot;
         s_araddr=addr; s_arid=expected_id; s_ar_pbmt=pbmt;
         s_arvalid=1; flush=flush_with_accept;
         @(negedge clk);
         s_arvalid=0; s_araddr=32'hdeadbee8; s_arid=~expected_id;
+        s_arprot=~expected_prot;
         s_ar_pbmt=pbmt==0 ? 2 : 0; flush=0;
     endtask
     task automatic finish_read(input [63:0] expected, input [1:0] resp);

@@ -472,6 +472,39 @@ merges imem+dmem onto one AXI master toward the MIG. The PC is **64-bit**
 internally; platforms place RAM in the low 4 GiB (the DDR4 build widens the DRAM
 window to the full 2 GiB).
 
+`ARPROT`/`AWPROT` carry the effective privilege at request acceptance, a static
+trusted `NONSECURE` parameter (default 1), and instruction/data classification.
+Only actual fetches set bit 2; PTE reads and HLVX loads are data transactions.
+The attributes remain attached to split, queued and stalled requests. External
+privilege-based read denial is supported only for physically non-cacheable
+peripheral regions; cacheable RAM fill privilege is advisory because later
+cache hits do not reach the interconnect. See the
+[AXI protection contract](../dbg/README.md#2-milestone-a-axi-protection-metadata).
+
+### Optional external debug
+
+`KARU_DBG` adds execution-based Sdext debug state and ports; the RVA23S64 switch
+does not enable it. [karudbg](../dbg/README.md) supplies the single-hart DM,
+Program Buffer, ROM and conventional JTAG transport. The combined top is
+`karudbg_top`; its separate [manifest](../dbg/karudbg.f) includes the ordinary
+processor sources and needs `-Irtl -Idbg -DKARU_DBG`. The processor-only ASIC
+manifest retains its existing scope.
+
+The debug page is `0x00120000..0x00120fff`, outside boot ROM and scratch RAM.
+The core permits it only in Debug Mode; the combined integration routes it
+privately from the core's instruction/data ports. Debug commands use physical
+M-mode accesses (`mprven=0`), mask interrupts and freeze hart-local counters.
+Application trap CSRs are preserved on command exceptions. Resume requires
+the ROM's RESUMING handshake and DRET at the designated immutable ROM site.
+The conventional transport top synchronizes reset release over two TCK edges,
+including when TCK has been stopped; core/DM reset remains synchronous. The
+optional VCU118 integration uses a USER4 nested-TAP tunnel and keeps the DM
+alive across `ndmreset`, holding the hart until both sides of the DDR AXI path
+have completed reset cancellation. See the [debug guide](../dbg/README.md)
+for the reset contract, tool configuration and current acceptance gates.
+SBA, hardware triggers, authentication and board acceptance are outside the
+initial implemented/tested scope; consult the plan for current gate results.
+
 ## Build-time configuration
 
 ISA extensions are individually pluggable (`rtl/karu_ext.vh`). The base core is

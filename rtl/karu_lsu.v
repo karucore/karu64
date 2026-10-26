@@ -10,6 +10,11 @@
 module karu_lsu (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    input  wire         debug_mode_i,
+    input  wire         debug_clear_reservation_i,
+`endif
+    input  wire [1:0]   access_priv, // effective MPRV/HLV privilege at req
 
     //  --- request port ---
     input  wire         req,            //  pulse to start
@@ -67,6 +72,7 @@ module karu_lsu (
     input  wire                     bvalid,
     output reg                      bready
 );
+    parameter NONSECURE = 1; // trusted static AXI security domain
     localparam S_IDLE   = 4'd0;
     localparam S_AR     = 4'd1;
     localparam S_R      = 4'd2;
@@ -95,6 +101,7 @@ module karu_lsu (
     reg         cross_q;
     reg [63:0]  rd_lo_q;
     reg [4:0]   sub_q;          //  the originating LSU sub-op (for AMO routing)
+    reg [2:0]   prot_q;
     reg [63:0]  amo_loaded;     //  stashed memory value for the AMO ALU op
 
     //  ---- LR/SC reservation tracking ----
@@ -281,6 +288,7 @@ module karu_lsu (
                         sign_q  <= sign_l;
                         cross_q <= cross_i;
                         sub_q   <= sub_in;
+                        prot_q  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                         if (atomic_bad || !pma_first || !pma_second || io_bad_first || io_bad_second) begin
                             fault <= 1;
                             fault_second <= !atomic_bad && pma_first && !io_bad_first;
@@ -302,7 +310,7 @@ module karu_lsu (
                             awlen   <= 0;
                             awsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             awburst <= `AXI_BURST_INCR;
-                            awprot  <= 0;
+                            awprot  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                             awvalid <= 1;
                             case (size)
                                 `LS_B:  wstrb <= 8'h01 << addr[2:0];
@@ -331,7 +339,9 @@ module karu_lsu (
                             cbo_cnt <= 4'd0;
                             awaddr  <= { addr[`AXI_ADDR_W-1:6], 6'b0 }; //  64B-aligned
                             awid    <= 0; awlen <= 0; awsize <= `AXI_SIZE_8B;
-                            awburst <= `AXI_BURST_INCR; awprot <= 0; awvalid <= 1;
+                            awburst <= `AXI_BURST_INCR;
+                            awprot <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
+                            awvalid <= 1;
                             wdata_o <= 64'b0; wstrb <= 8'hFF; wlast <= 1; wvalid <= 1;
                             bready  <= 1;
                             reserve_valid <= 1'b0;  //  a store to the block clears LR/SC
@@ -342,7 +352,7 @@ module karu_lsu (
                             arlen   <= 0;
                             arsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             arburst <= `AXI_BURST_INCR;
-                            arprot  <= 0;
+                            arprot  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                             arvalid <= 1;
                             rready  <= 1;
                             state   <= S_AR;
@@ -461,7 +471,7 @@ module karu_lsu (
                     awlen   <= 0;
                     awsize  <= io_q ? {1'b0, size_q} : `AXI_SIZE_8B;
                     awburst <= `AXI_BURST_INCR;
-                    awprot  <= 0;
+                    awprot  <= prot_q;
                     awvalid <= 1;
                     wdata_o <= amo_write_beat;
                     wstrb   <= amo_wstrb;
@@ -517,6 +527,9 @@ module karu_lsu (
                 arvalid <= 0; rready <= 0; awvalid <= 0; wvalid <= 0; bready <= 0;
                 reserve_valid <= 0;
             end
+`ifdef KARU_DBG
+            if (debug_clear_reservation_i) reserve_valid <= 0;
+`endif
         end
     end
 

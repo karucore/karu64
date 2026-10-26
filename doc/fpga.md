@@ -272,6 +272,52 @@ The 0/0x10000/0x60000/0xFC000 ROM layout and blob-overrun checks are unchanged.
 Reports default to tag `ddr_rva23s64_sgmii_75_rom`. The bitstream output is
 the existing `_build/vcu118_ddr.bit`; the command does not program the board.
 
+#### Optional karudbg integration
+
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg` adds `KARU_DBG` to the same
+75 MHz profile/SGMII/ROM flow, using the same karudeb inputs and standard
+`_build/vcu118_ddr.*` outputs. It substitutes the processor-plus-DM integration
+for the bare core and reserves FPGA **USER4** (`IR=0x23`) for a nested RISC-V
+TAP. The transport uses the existing board JTAG connector; it adds no user
+pin assignments. `KARU_DDR_HOST_DBG` is rejected in this configuration until
+the separate JTAG-AXI loader's USER-chain coexistence is configured.
+
+```sh
+make rva23-boot-inputs-check
+flow/with_vivado.sh make vcu118-ddr-sgmii-rom-rva23s64-dbg
+```
+
+The [target configuration](../dbg/vcu118.cfg) uses pinned mainline OpenOCD's
+`riscv use_bscan_tunnel 5 0` and `riscv set_bscan_tunnel_ir 0x23`.
+Load the appropriate cable/adapter configuration before this target file.
+Use the [tested isolated OpenOCD build](../dbg/README.md#initial-contract)
+for Program Buffer block memory access; the installed pristine baseline
+requires the documented optional-autoexec fallback patch. The FPGA TAP's
+IDCODE is distinct from the conventional simulation TAP's placeholder ID.
+Do not run OpenOCD and Vivado Hardware Manager against the same cable at once.
+
+The DM/DTM retain the conditioned board reset. `ndmreset` separately cancels
+the hart, crossbar, both clock-converter sides, width converter and MIG AXI
+interface, preserving the calibrated DDR PHY and DM. UI-side reset asserts
+even if its clock stops; hart/crossbar reset releases only after the UI-side
+responders and two CPU-clock edges. Raw TCK and gated USER4 DRCK have separate
+reset-release synchronizers and explicit related-clock constraints. The clock
+root is BSCANE2's `INTERNAL_TCK`; exported TCK and DRCK are derived from it,
+so the primitive's falling-edge TDO sampling checks are timed as well. Bundled
+DMI payload paths retain maximum-delay/skew checks; they are not hidden by a
+blanket asynchronous-clock exception.
+
+The non-board gates are `make dbg-bscan-test dbg-bscan-core-test
+dbg-bscan-gdb-test dbg-bscan-translation-test`. They exercise a behavioral
+Xilinx outer TAP, the production tunnel and real DM/DTM/core with actual
+OpenOCD/GDB, plus pause/abort/reset and negative controls. This verifies the
+tunnel protocol and software integration, rather than a physical FPGA cable
+or primitive timing. The synthesis/placement evidence and outstanding timing
+gates are recorded in [karudbg measurements](../dbg/MEASUREMENTS.md). The build
+stopped during routing and produced no new debug bitstream. Board debug,
+detach and normal karudeb boot still require hardware acceptance. The
+previously validated images above do not contain karudbg.
+
 For board programming on another host, run `make vcu118-program-bundle` and
 transfer `_build/vcu118_programming.tgz`. Its members retain the `_build/...`
 paths:

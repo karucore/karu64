@@ -77,6 +77,20 @@ source modules elaborate away. The external system RAM/ROM, timer and
 interrupt-controller implementation belong to ASIC SoC integration, outside
 this processor inventory.
 
+Optional external debug has a separate combined top, `karudbg_top`, and
+source manifest [dbg/karudbg.f](../../dbg/karudbg.f), enabled explicitly with
+`KARU_DBG` and include paths `rtl/` and `dbg/`. It does not change this
+processor-only manifest's scope. The DM/ROM/DTM origins, licenses, clocks,
+reset domains, protection contract and acceptance gates are in
+[dbg/README.md](../../dbg/README.md). `NONSECURE` defaults to 1; integrations
+must preserve AXI attributes and use the documented cacheability restrictions
+before treating an external firewall as a security boundary.
+The combined top keeps core/DM reset synchronous and conditions asynchronous
+JTAG reset release over two TCK edges. Its `IDCODE` parameter must be set to
+the assigned platform identity; the default is a simulation placeholder.
+The October 26 combined audit reports zero initialized state and the same
+97,024 data-array bits, with one additional Program Buffer control array.
+
 `sources.tcl` supplies variables for the site's Genus script. It does not
 load technology libraries or run Cadence. The manifest was elaborated with
 Yosys; Cadence execution and compiler-macro binding have not been performed.
@@ -276,6 +290,20 @@ Outputs in `_build/asic-audit/` include RTLIL, memory JSON, CSV/Markdown,
 summary, tool version and source SHA-256 manifest. The command fails on
 initialized state. Use a fresh `--out` directory when preserving a prior audit.
 The checked-in inventory is a snapshot; regenerate after RTL/define changes.
+
+The default audit remains core-only. Audit the opt-in combined debug top
+separately, retaining the standard ASIC profile defines and adding `KARU_DBG`:
+
+```sh
+python3 flow/asic/audit.py --manifest dbg/karudbg.f --top karudbg_top \
+  --define KARU_DBG --out _build/dbg/asic-audit-combined
+```
+
+`--define` is repeatable. Source paths in either manifest are relative to the
+repository root; a source manifest may use `#` or `//` comments. Each audit
+writes its inventory and provenance only under `--out`; the combined report
+does not replace the checked-in core-only CSV/Markdown files. A subsequent
+`--report-only --out ...` uses the top recorded in that output's manifest.
 
 The four-state memory test checks unspecified startup, x0, explicit writes,
 VRF byte enables, output hold and soft-reset retention:

@@ -79,6 +79,8 @@ module tb_axi_mem_burst;
     wire [31:0] m_araddr, m_awaddr;
     wire [7:0] m_arlen, m_awlen, m_wstrb;
     wire [2:0] m_arsize, m_awsize;
+    wire [2:0] m_arprot, m_awprot;
+    reg [2:0] expected_arprot=0, expected_awprot=0;
     wire [1:0] m_arburst, m_awburst, m_rresp, m_bresp;
     wire [63:0] m_rdata, m_wdata, clint_mtime;
     wire m_arvalid, m_arready, m_rvalid, m_rready, m_rlast;
@@ -86,6 +88,12 @@ module tb_axi_mem_burst;
     // This transport bench does not read the boot ROM. An empty image is
     // sufficient; the same RAM/MMIO cases run against the real crossbar.
     karu_ddr_xbar #(.ROM_HEX("/dev/null")) dut (.*);
+    always @(posedge clk) if (!rst) begin
+        if (m_arvalid && m_arprot !== expected_arprot)
+            $fatal(1,"DDR crossbar lost AR protection context");
+        if (m_awvalid && m_awprot !== expected_awprot)
+            $fatal(1,"DDR crossbar lost AW protection context");
+    end
     karu_axi4_ram #(.RAM_XADR(13), .HEXFILE("")) dram (
         .clk(clk), .rst(rst),
         .s_arid(m_arid), .s_araddr(m_araddr), .s_arlen(m_arlen),
@@ -111,6 +119,9 @@ module tb_axi_mem_burst;
                               input [1:0] resp=0, input [2:0] size=3, input [7:0] strb=8'hff);
         @(negedge clk);
         dmem_awaddr=a; dmem_awlen=len; dmem_awid=3;
+`ifdef TEST_DDR_XBAR
+        expected_awprot={1'b0,a[5:4]}; dmem_awprot=expected_awprot;
+`endif
         dmem_awsize=size; dmem_awburst=1; dmem_awvalid=1; dmem_bready=0;
 `ifdef TEST_DDR_XBAR
         // Local DDR-crossbar MMIO accepts AW and W together. DRAM keeps
@@ -124,6 +135,9 @@ module tb_axi_mem_burst;
 `endif
         do @(posedge clk); while(!dmem_awready);
         @(negedge clk); dmem_awvalid=0; dmem_awaddr=32'h10000000;
+`ifdef TEST_DDR_XBAR
+        dmem_awprot=~expected_awprot;
+`endif
         repeat(3) @(negedge clk);
         dmem_wdata=lo; dmem_wstrb=strb; dmem_wlast=len==0; dmem_wvalid=1;
         do @(posedge clk); while(!dmem_wready);
@@ -248,9 +262,15 @@ module tb_axi_mem_burst;
                              input [2:0] size=3, input [63:0] compare_mask=64'hffffffffffffffff);
         @(negedge clk);
         dmem_araddr=a; dmem_arlen=0; dmem_arsize=size; dmem_arburst=1;
+`ifdef TEST_DDR_XBAR
+        expected_arprot={1'b0,a[5:4]}; dmem_arprot=expected_arprot;
+`endif
         dmem_arvalid=1; dmem_rready=0;
         do @(posedge clk); while(!dmem_arready);
         @(negedge clk); dmem_arvalid=0; dmem_araddr=32'hdeadbeef;
+`ifdef TEST_DDR_XBAR
+        dmem_arprot=~expected_arprot;
+`endif
         while(!dmem_rvalid) @(negedge clk);
         repeat(3) begin
             @(negedge clk);

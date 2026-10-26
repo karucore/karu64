@@ -7,6 +7,22 @@
 set -eu
 set -o pipefail
 
+# A supplied manifest uses paths relative to the repository root. Resolve the
+# manifest itself before changing to the flow directory.
+if [ -n "${KARU_RTL_MANIFEST:-}" ]; then
+	case "$KARU_RTL_MANIFEST" in
+		/*) ;;
+		*) export KARU_RTL_MANIFEST="$PWD/$KARU_RTL_MANIFEST" ;;
+	esac
+fi
+if [ -n "${KARU_SDC_TEMPLATE:-}" ]; then
+	case "$KARU_SDC_TEMPLATE" in
+		/*) ;;
+		*) export KARU_SDC_TEMPLATE="$PWD/$KARU_SDC_TEMPLATE" ;;
+	esac
+fi
+export KARU_TOP="${KARU_TOP:-karu64}"
+
 cd "$(dirname "$0")"
 
 if [ ! -f syn_setup.sh ]; then
@@ -28,9 +44,69 @@ fi
 mkdir -p "$KARU_OUT_DIR/generated" "$KARU_OUT_DIR/log" "$KARU_OUT_DIR/reports/timing"
 
 input_manifest() {
-	sha256sum "$KARU_LIB" syn_setup.sh syn_yosys.sh tcl/* sdc/*
-	find ../../rtl -type f \( -name '*.v' -o -name '*.vh' -o -name '*.sv' \) -print0 \
-		| sort -z | xargs -0 sha256sum
+	# Fingerprint the declared input set and include closure, not unrelated
+	# RTL added concurrently for another top. Include tool mapping resources.
+	python3 - "$(pwd)/../.." <<'PY'
+import hashlib, os, pathlib, re, shlex, shutil, subprocess, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+flow = root / 'flow/syn'
+files = {pathlib.Path(os.environ['KARU_LIB']).resolve()}
+files.update(flow / name for name in (
+    'syn_setup.sh', 'syn_yosys.sh', 'tcl/yosys_run_synth.tcl',
+    'tcl/abc_fast.script', 'tcl/sta_run_reports.tcl', 'sdc/karu64.abc.sdc'))
+files.add(pathlib.Path(os.environ.get('KARU_SDC_TEMPLATE',
+    str(flow / 'sdc/karu64.sdc.in'))).resolve())
+sources = []
+manifest = os.environ.get('KARU_RTL_MANIFEST')
+if manifest:
+    path = pathlib.Path(manifest).resolve()
+    files.add(path)
+    for line in path.read_text().splitlines():
+        name = line.split('//', 1)[0].split('#', 1)[0].strip()
+        if name:
+            source = pathlib.Path(name)
+            sources.append(source if source.is_absolute() else root / source)
+else:
+    excluded = {'karu_clint.v', 'karu_plic.v'}
+    sources = [root / 'rtl/karu64.v']
+    sources += [p for p in (root / 'rtl').glob('karu_*.v')
+                if p.name not in excluded]
+    sources += list((root / 'rtl/zvk').glob('*.v'))
+defines = dict(token.split('=', 1) for token in
+               shlex.split(os.environ.get('KARU_DEFINES', '')) if '=' in token)
+pending = [p.resolve() for p in sources]
+while pending:
+    path = pending.pop()
+    if path in files:
+        continue
+    files.add(path)
+    text = re.sub(r'/\*.*?\*/', '', path.read_text(), flags=re.S)
+    for match in re.finditer(r'^\s*`include\s+("[^"]+"|`\w+)', text, re.M):
+        token = match.group(1)
+        if token.startswith('`'):
+            value = defines.get(token[1:])
+            if value is None:
+                continue  # An active undefined include also fails the frontend.
+            name = value.strip('\\"')
+        else:
+            name = token[1:-1]
+        candidates = [path.parent / name, flow / name,
+                      root / 'rtl' / name, root / 'dbg' / name]
+        include = next((p.resolve() for p in candidates if p.is_file()), None)
+        if include is None:
+            raise SystemExit(f'Cannot fingerprint include {name!r} from {path}')
+        pending.append(include)
+yosys = pathlib.Path(shutil.which('yosys')).resolve()
+config = yosys.parent / 'yosys-config'
+data = (pathlib.Path(subprocess.check_output([str(config), '--datdir'], text=True).strip())
+        if config.is_file() else yosys.parent.parent / 'share/yosys')
+if not data.is_dir():
+    raise SystemExit(f'Cannot fingerprint Yosys mapping resources: {data}')
+files.update(p.resolve() for p in data.rglob('*')
+             if p.is_file() and p.suffix in {'.v', '.vh', '.lib'})
+for path in sorted(files):
+    print(hashlib.sha256(path.read_bytes()).hexdigest(), ' ', path, sep='')
+PY
 }
 input_manifest > "$KARU_OUT_DIR/log/inputs.before.sha256"
 
@@ -56,6 +132,8 @@ input_manifest > "$KARU_OUT_DIR/log/inputs.before.sha256"
 		git -C ../.. status --short -- rtl flow/syn
 	fi
 	printf 'KARU_DEFINES=%s\nKARU_CLK_PS=%s\nKARU_ABC_UPRATE_PS=%s\n' "$KARU_DEFINES" "$KARU_CLK_PS" "$KARU_ABC_UPRATE_PS"
+	printf 'KARU_TOP=%s\nKARU_RTL_MANIFEST=%s\n' "$KARU_TOP" "${KARU_RTL_MANIFEST:-}"
+	printf 'KARU_SDC_TEMPLATE=%s\nKARU_TCK_PS=%s\n' "${KARU_SDC_TEMPLATE:-}" "${KARU_TCK_PS:-100000}"
 	printf 'KARU_IN_PCT=%s\nKARU_OUT_PCT=%s\nKARU_NOSHARE=%s\n' "$KARU_IN_PCT" "$KARU_OUT_PCT" "${KARU_NOSHARE:-}"
 	printf 'KARU_NO_STA=%s\nKARU_ABC_FULL=%s\nKARU_ABC_FAST=%s\nKARU_FLATTEN=%s\nKARU_DIV_AUDIT_ONLY=%s\n' "${KARU_NO_STA:-}" "${KARU_ABC_FULL:-}" "${KARU_ABC_FAST:-}" "${KARU_FLATTEN:-}" "${KARU_DIV_AUDIT_ONLY:-}"
 	cat "$KARU_OUT_DIR/log/inputs.before.sha256"
@@ -66,15 +144,17 @@ input_manifest > "$KARU_OUT_DIR/log/inputs.before.sha256"
 clk_ns=$(awk "BEGIN{printf \"%.4f\", $KARU_CLK_PS/1000.0}")
 in_ns=$(awk  "BEGIN{printf \"%.4f\", ($KARU_IN_PCT/100.0)*($KARU_CLK_PS/1000.0)}")
 out_ns=$(awk "BEGIN{printf \"%.4f\", (1.0 - $KARU_OUT_PCT/100.0)*($KARU_CLK_PS/1000.0)}")
+tck_ns=$(awk "BEGIN{printf \"%.4f\", ${KARU_TCK_PS:-100000}/1000.0}")
 
 sed -e "s/@CLK_NS@/$clk_ns/g" \
     -e "s/@IN_NS@/$in_ns/g"  \
     -e "s/@OUT_NS@/$out_ns/g" \
-	sdc/karu64.sdc.in > "$KARU_OUT_DIR/generated/karu64.sdc"
+    -e "s/@TCK_NS@/$tck_ns/g" \
+	"${KARU_SDC_TEMPLATE:-sdc/karu64.sdc.in}" > "$KARU_OUT_DIR/generated/$KARU_TOP.sdc"
 
 #	ABC SDC is the same minus the clock (yosys' abc pass takes the
 #	period via -D and only wants the driving cell / load).
-cp sdc/karu64.abc.sdc "$KARU_OUT_DIR/generated/karu64.abc.sdc"
+cp sdc/karu64.abc.sdc "$KARU_OUT_DIR/generated/$KARU_TOP.abc.sdc"
 
 export KARU_OUT_DIR KARU_LIB KARU_CLK_PS KARU_ABC_UPRATE_PS
 
@@ -96,6 +176,11 @@ if [ "${KARU_NO_STA:-0}" = "1" ] || [ "${KARU_NO_STA:-}" = "yes" ]; then
 else
 	echo "===== opensta reports ====="
 	sta -no_init -no_splash tcl/sta_run_reports.tcl 2>&1 | tee "$KARU_OUT_DIR/log/sta.log"
+	# OpenSTA may report a Tcl/SDC error without a failing process status.
+	if grep -Eq '^Error:|^error:' "$KARU_OUT_DIR/log/sta.log"; then
+		echo "OpenSTA reported an error; timing results are invalid" >&2
+		exit 1
+	fi
 fi
 
 input_manifest > "$KARU_OUT_DIR/log/inputs.after.sha256"

@@ -2802,3 +2802,12 @@ HTIF_MODEL_DIRS = $(VERI_DIR) $(VERI_FP_DIR) $(VERI_IC_DIR) $(VERI_VP_DIR) \
 	$(VERI_KEC_DIR) $(VERI_ZVKKEC_DIR) $(VERI_STATEEN_DIR) \
 	$(VERI_SMCNTR_DIR) $(VERI_SMCNTR_NOS_DIR) $(VERI_SSCOF_DIR) $(VERI_SSCOF_NOS_DIR)
 $(addsuffix /Vhtif_tb.mk,$(HTIF_MODEL_DIRS)) $(BUILD)/htif_tb.vvp: test/htif_pbmt_check.vh test/htif_ifu_fault_check.vh test/htif_hcontext_preempt_check.vh
+
+# Opt-in debug and AXI protection validation; generated outputs stay in _build/dbg.
+include dbg/axi.mk
+include dbg/dm.mk
+include dbg/jtag.mk
+include dbg/core-test.mk
+include dbg/synthesis.mk
+include dbg/checks.mk
+include dbg/fpga.mk

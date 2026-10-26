@@ -43,6 +43,8 @@
 //  ======================================================================
 //  System / board configuration
 //  ======================================================================
+//  KARU_DBG independently opts into Sdext/core debug ports. It is never
+//  implied by KARU_RVA23S64; the combined debug manifest also needs -Idbg.
 //  KARU_ASIC removes FPGA power-up values from RAM/register-file storage and
 //  the v0 shadow, and excludes FPGA RAM inference attributes. It does not
 //  change memory read latency or instantiate a foundry macro. Architectural

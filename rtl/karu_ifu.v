@@ -20,6 +20,7 @@
 module karu_ifu (
     input  wire         clk,
     input  wire         rst,
+    input  wire [1:0]   access_priv, // fetch privilege, captured before translation
 
     //  -- redirect from BRU / trap / mret --
     input  wire         redir,
@@ -74,6 +75,7 @@ module karu_ifu (
     output reg                      rready
 );
     parameter [63:0] RESET_PC = 64'h0000_0000_8000_0000;
+    parameter NONSECURE = 1; // trusted static AXI security domain
 
     reg [63:0]  pc;             //  next instruction byte address
 
@@ -86,6 +88,7 @@ module karu_ifu (
     reg [63:0]  ar_pa;          //  physical address of in-flight fetch
     reg [2:0]   fault_offset;   //  first instruction byte in this fetch quad
     reg         xlate_pending;
+    reg [2:0]   fetch_prot;
     reg         io_wait;       // translated IO demand waits for older execution
     reg         r_discard;      //  the next R is stale (post-redirect drain)
     reg         xlate_discard;  //  an in-flight sv39 walk predates a redirect; drop its result
@@ -271,6 +274,7 @@ module karu_ifu (
                     && !xlate_busy && !fault_valid && (need_buf0 || need_buf1)) begin
                     xlate_va <= next_ar_addr;
                     xlate_req <= 1'b1;
+                    fetch_prot <= {1'b1, (NONSECURE != 0), (access_priv != 2'd0)};
                     ar_addr <= next_ar_addr;
                     //  First fetch faults identify pc, not its aligned quad.
                     //  The second fetch of a straddled instruction identifies
@@ -307,7 +311,7 @@ module karu_ifu (
                         arlen   <= 0;
                         arsize  <= `AXI_SIZE_8B;
                         arburst <= `AXI_BURST_INCR;
-                        arprot  <= 0;
+                        arprot  <= fetch_prot;
                         // IO fetches are non-speculative. A naturally aligned
                         // 8-byte implicit-read region is permitted; bypass the
                         // I-cache and wait until older execution is irrevocable.

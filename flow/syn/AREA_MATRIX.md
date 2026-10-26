@@ -1,11 +1,12 @@
 # Karu area and timing estimates
 
-This file records the current release measurements for the `karu64` processor
-top. Older checkpoints and superseded tool runs are intentionally omitted;
-the retained output manifests under `_build/syn_out` bind each result to its
-exact RTL, scripts, tools and Liberty input. These September 15 measurements
-predate the Genus declaration cleanup and the 1W2R FP register-file change;
-no updated Yosys/OpenSTA area matrix is claimed for that image. Its FPGA
+This file records selected processor area/timing measurements. The retained
+output manifests under `_build/syn_out` bind each result to its exact RTL,
+scripts, tools and Liberty input. The October 26 debug comparison below uses
+the final conventional debug top for area and mapped timing. The September
+15 feature matrix is a separate
+checkpoint, predating the Genus declaration cleanup, 1W2R FP register file and
+karudbg; its rows are not measurements of the current tree. That image's FPGA
 routed timing and board results are in the
 [release diagnostics](../../doc/release-diagnostics-2026-09-14.md).
 
@@ -14,13 +15,66 @@ macro-area estimate, a signoff timing result or an FPGA utilization report.
 Memories are mapped to cells by this flow; use the maintained
 [`flow/asic` inventory](../asic/README.md) when planning SRAM replacement.
 
+## Shipping debug comparison — 2026-10-26
+
+Both rows include the shipping RVA23S64/I-cache/Zvk/Keccak/pipeline/PMU defines
+and AXI protection metadata. They use identical VLEN=256/ELEN=64/VBUS=128
+geometry, two 64-bit compute lanes with FP units and `NONSECURE=1`. The debug row adds `KARU_DBG`
+and the DM/private bridges/conventional JTAG integration top. The mapping
+uses FPGA/default initialization semantics, not `KARU_ASIC`; separate ASIC
+initialization/inventory audits are recorded with the results.
+
+| Configuration | Top | kGE | Increment |
+| --- | --- | ---: | ---: |
+| Shipping, debug disabled | `karu64` | 4,385.849 | baseline |
+| Shipping + karudbg, including reset conditioner | `karudbg_top` | 4,406.184 | +20.334 kGE / +0.4636% |
+
+Yosys 0.69+24 (`d0e71cfb7`), hierarchical `synth -noshare`, fast area-only ABC,
+NanGate45 typical (`NAND2_X1=0.798 um²`). Before/after source/input fingerprints
+match in both area rows. The completed 200 MHz timing comparison is:
+
+| Configuration | Register-to-register WNS | TNS | Longest path |
+| --- | ---: | ---: | --- |
+| Debug disabled | -0.4436 ns | -26.11 ns | IFU buffered address through compressed decode/FP register file to double FMA |
+| Debug enabled, final conventional top | -0.7621 ns | -69.83 ns | Vector scalar operand through fanout buffers, widening and estimate logic into shared vector storage |
+
+These rows do not close at 200 MHz; electrical-limit violations also remain.
+The final enabled path contains more than 30 serial `BUF_X1` stages, about
+2 ns before the widening/estimate logic. The unchanged vector RTL was mapped
+differently from the earlier baseline; these raw estimates do not attribute
+the slack difference to the reset-conditioner flops. The final enabled run
+has identical before/after input fingerprints. The disabled row's original
+broad-directory integrity guard exited with status 1 for four new, unconsumed
+debug files. The retained consumed-input audit proves all pre-existing
+recorded dependencies unchanged and lists actual frontend sources; this
+qualification accompanies the reused disabled result.
+
+The corresponding conventional-JTAG VCU118-device OOC run completes at 75 MHz
+with routed WNS +0.238 ns, TNS 0, WHS +0.036 ns and THS 0. Its reset CDC
+findings prompted the final conditioner, so it is not final CDC or board
+acceptance. Final debug-enabled area and mapped timing are complete; the
+debug-disabled processor RTL is unchanged. The September timing result below
+does not describe this implementation.
+The separate board implementation completed synthesis and placement, then
+stopped during routing without producing a new bitstream. Its CPU setup
+slack after placement is +0.977 ns at 75 MHz; this is not routed closure.
+It loaded an earlier debug constraint set.
+The final clock/reset-entry constraint source passes static checks and six
+negative controls, but corrected routed validation has not been performed;
+the current board artifacts cannot establish closure for that source fix.
+
+See [karudbg measurements](../../dbg/MEASUREMENTS.md) for exact defines,
+source-input hashes, tools, initialization/memory scope and reproduction
+targets. This is a paired debug comparison, not a rerun of every feature row.
+
 ## Release setup
 
 - Yosys 0.69+24 (`d0e71cfb7`).
 - OpenSTA 3.1.0, resolved from `PATH` and fingerprinted in the run manifest.
 - NanGate45 typical Liberty; `NAND2_X1 = 0.798 um2`.
 - Hierarchical `synth -noshare`, no flattening.
-- Generic timing constraints with 30% input and 70% output budgets.
+- Generic timing constraints with input arrival at 30% and output deadline at
+  70% of the period (1.5 ns input/output delays for a 5 ns clock).
 - Full timing-oriented ABC mapping for the 5 ns run.
 - Fast ABC mapping with STA disabled for area comparison rows.
 
@@ -29,7 +83,7 @@ baseline and umbrella configurations, and the exact shipping composition. The
 minimal RVA23S64 row does not enable vector crypto, so the `.vs` correction
 cannot change its mapped logic.
 
-## Current results — 2026-09-15
+## Feature matrix checkpoint — 2026-09-15
 
 All six corrected-source rows completed successfully. The before/after input
 manifests are byte-identical for every row; the summary CSV SHA-256 is

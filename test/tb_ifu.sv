@@ -3,10 +3,12 @@
 `include "karu_axi_defs.vh"
 `timescale 1ns/1ps
 
-module tb_ifu;
+module tb_ifu #(parameter NONSECURE=1);
     reg clk = 0;
     always #5 clk = ~clk;
     reg rst = 1;
+    reg [1:0] access_priv = 3;
+    reg [2:0] expected_prot = 7;
     reg redir = 0;
     reg [63:0] redir_pc = 0;
     wire ins_valid;
@@ -40,7 +42,7 @@ module tb_ifu;
     reg [`AXI_RESP_W-1:0] rresp = 0;
     reg rlast = 1, rvalid = 0;
     wire rready;
-    karu_ifu dut (.*);
+    karu_ifu #(.NONSECURE(NONSECURE)) dut (.*);
 
     integer checks = 0;
     integer offset, error_kind, implicit_pte;
@@ -95,6 +97,10 @@ module tb_ifu;
         if (xlate_va !== address || fault_valid)
             $fatal(1, "translation request: got %h expected %h", xlate_va, address);
         xlate_busy = 1;
+        expected_prot = {1'b1, (NONSECURE != 0), (access_priv != 0)};
+        // Change live privilege before translation completes: AR must retain
+        // the original request's context, including through IO deferral.
+        access_priv = access_priv == 0 ? 2'd1 : 2'd0;
         checks = checks + 1;
     endtask
 
@@ -120,7 +126,7 @@ module tb_ifu;
 
     task automatic expect_ar(input [31:0] address);
         while (!arvalid) @(negedge clk);
-        if (araddr !== address || arid !== 0 || arprot !== 0 || arlen !== 0
+        if (araddr !== address || arid !== 0 || arprot !== expected_prot || arlen !== 0
             || arsize !== `AXI_SIZE_8B || arburst !== `AXI_BURST_INCR)
             $fatal(1, "AXI request: got %h expected %h", araddr, address);
         checks = checks + 1;

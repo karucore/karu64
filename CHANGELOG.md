@@ -6,6 +6,29 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Added — opt-in karudbg and AXI requester metadata
+
+- `KARU_DBG` enables precise execution-based debug entry, resume and stepping,
+  debug CSRs, counter freeze and command-exception containment. The separate
+  `dbg/` integration supplies a single-hart Debug 1.0-targeted DM, eight-word
+  Program Buffer, generated two-scratch ROM and conventional JTAG DTM. SBA,
+  hardware triggers and authentication are absent. The private debug page is
+  accessible only in Debug Mode through the core's ports.
+- The optional VCU118 debug target connects the DM through a USER4 nested-TAP
+  BSCAN tunnel compatible with mainline OpenOCD. Transport reset release is
+  synchronized, and `ndmreset` cancels both sides of the DDR AXI path before
+  releasing the hart while leaving the DM alive.
+- AXI instruction/data and effective privilege attributes now propagate through
+  request producers, caches, queues and the FPGA DDR interconnect. A trusted
+  `NONSECURE` parameter selects the static per-hart security domain. External
+  privilege enforcement is limited to physically non-cacheable regions; this
+  does not add PMP or dynamic security domains.
+- Repository tests cover the DM, AXI adapter, CDC/reset, actual-core register
+  and execution context, MMIO, OpenOCD and GDB. The pinned OpenOCD compatibility
+  patch handles absent autoexec and rejects unsupported software translations
+  safely. See [dbg/README.md](dbg/README.md) for commands, scope and acceptance
+  status. FPGA board/BSCAN acceptance and a compliance claim remain pending.
+
 ### Documented — out-of-range `vstart` policy (issue #5)
 
 - [doc/architecture.md](doc/architecture.md#vector-unit-rvv-10-v) now states

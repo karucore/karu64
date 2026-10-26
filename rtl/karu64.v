@@ -10,6 +10,9 @@
 `include "karu_axi_defs.vh"
 `include "karu_uop_defs.vh"
 `include "karu_vcfg.vh"
+`ifdef KARU_DBG
+`include "karudbg_defs.vh"
+`endif
 
 module karu64 #(
     parameter [63:0] RESET_PC = 64'h0000_0000_8000_0000,
@@ -19,10 +22,20 @@ module karu64 #(
     //  rdtime and the CLINT mtimecmp share one counter domain (Linux timer
     //  deadlines). EXT_TIME=0 (default) uses the cycle counter, so non-CLINT
     //  builds need not connect time_in.
-    parameter        EXT_TIME = 0
+    parameter        EXT_TIME = 0,
+    // Trusted static integration choice: AXI AxPROT[1], 1=Non-secure.
+    // Changing domains requires a platform reset/quiescence and cache flush.
+    parameter        NONSECURE = 1
 ) (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    input  wire         debug_halt_req_i,
+    // Accepted resume request AND the ROM RESUMING acknowledgement.
+    input  wire         debug_resume_req_i,
+    output wire         debug_mode_o,
+    output wire         debug_resume_ack_o,
+`endif
     output reg          trap,
     input  wire         irq,
     input  wire         irq_software,
@@ -107,6 +120,20 @@ module karu64 #(
     //  ==================================================================
     wire [1:0]  csr_priv;
     wire [1:0]  csr_data_priv;
+`ifdef KARU_DBG
+    reg debug_mode;
+    wire debug_mode_i;
+    assign debug_mode_i = debug_mode;
+    wire dbg_enter, dbg_exit, dbg_ebreak_entry, dbg_exception, dbg_end_command;
+    wire dbg_dret_raw, dbg_dret_bad, dbg_xret_exception;
+    wire dbg_wrs_nop;
+    wire [63:0] dbg_dpc, dbg_entry_pc;
+    wire dbg_step, dbg_ebreak;
+    reg dbg_halt_pending, dbg_step_active, dbg_step_issued, dbg_step_done;
+    reg [63:0] dbg_next_pc;
+    assign debug_mode_o = debug_mode;
+    assign debug_resume_ack_o = dbg_exit;
+`endif
     `include "karu_pma.vh"
     wire [63:0] csr_satp;
     wire        csr_pbmte;
@@ -283,8 +310,9 @@ module karu64 #(
     wire irq_take;   //  declared here: read below before its driver
     wire exec_busy;   //  declared here: read below before its driver
     reg ex_valid;   //  declared here: read below before its driver
-    karu_ifu #(.RESET_PC(RESET_PC)) ifu (
+    karu_ifu #(.RESET_PC(RESET_PC), .NONSECURE(NONSECURE)) ifu (
         .clk(clk), .rst(rst),
+        .access_priv(csr_priv),
         .redir(ifu_redir), .redir_pc(ifu_redir_pc),
         .ins_valid(ifu_valid), .ins_pc(ifu_pc), .ins_w(ifu_w),
         .take(ifu_take),
@@ -328,8 +356,11 @@ module karu64 #(
     wire                    immu_bready;
 
 `ifdef KARU_EN_S
-    karu_sv39 immu (
+    karu_sv39 #(.NONSECURE(NONSECURE)) immu (
         .clk(clk), .rst(rst),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode),
+`endif
         .req(ifu_xlate_req), .va(ifu_xlate_va), .access(2'd0),
         .priv(csr_priv), .satp(csr_satp), .pbmte(csr_pbmte),
         .status_sum(csr_status_sum), .status_mxr(csr_status_mxr),
@@ -591,6 +622,13 @@ module karu64 #(
     wire vlsu_fault_abort;   //  declared here: read below before its driver
     karu_csr csr (
         .clk(clk), .rst(rst),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode), .debug_enter_i(dbg_enter), .debug_exit_i(dbg_exit),
+        .debug_pc_i(dbg_entry_pc),
+        .debug_cause_i((debug_halt_req_i || dbg_halt_pending) ? 3'd3 :
+                      dbg_ebreak_entry ? 3'd1 : 3'd4),
+        .debug_dpc_o(dbg_dpc), .debug_step_o(dbg_step), .debug_ebreak_o(dbg_ebreak),
+`endif
         .op_req(csr_req), .op_addr(csr_addr), .op_src(csr_src),
         .op_sub(csr_sub), .op_rs1(csr_rs1), .op_rd_v(csr_rd_v),
         .csr_illegal(csr_illegal),
@@ -1217,6 +1255,13 @@ module karu64 #(
     assign vlsu_ff = (ex_ins[6:0] == 7'b0000111) && (ex_ins[27:26] == 2'b00)
                    && (ex_ins[24:20] == 5'b10000);
     wire [1:0] dmmu_pbmt;   //  declared here: read below before its driver
+    // A vector stream retains the issue context even while stores queue and
+    // drain. Never reconstruct its protection attributes from later CSRs.
+    reg [2:0] vmem_prot;
+    always @(posedge clk) begin
+        if (vlsu_req)
+            vmem_prot <= {1'b0, (NONSECURE != 0), (csr_data_priv != 2'd0)};
+    end
 `ifdef KARU_EN_V
     karu_vlsu vlsu (
         .clk(clk), .rst(rst),
@@ -1740,8 +1785,11 @@ module karu64 #(
     assign      vxlate_fault = vxlate_done && dmmu_fault;
     assign      vxlate_pa    = dmmu_pa;
 
-    karu_sv39 dmmu (
+    karu_sv39 #(.NONSECURE(NONSECURE)) dmmu (
         .clk(clk), .rst(rst),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode),
+`endif
         //  walk-2 (beat-2 page) translates the latched second-page VA + access;
         //  walk-1 and the VLSU path are unchanged.
         .req(dmmu_req),
@@ -1826,8 +1874,12 @@ module karu64 #(
     //  The scalar LSU is an AXI master into karu_mem's slave port (km_s_*);
     //  karu_mem (the unified write-through L1) forwards to dmem. Its address is
     //  already physical (Sv39-translated via lsu_pa_w).
-    karu_lsu lsu (
+    karu_lsu #(.NONSECURE(NONSECURE)) lsu (
         .clk(clk), .rst(rst),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode), .debug_clear_reservation_i(dbg_enter),
+`endif
+        .access_priv(lsu_data_priv),
         .req(lsu_req_pa), .busy(lsu_busy),
         .is_store(lsu_is_store), .sub_in(ex_sub),
         .addr(lsu_pa_w), .addr2(lsu_addr2), .wdata(lsu_wdata),
@@ -1864,6 +1916,9 @@ module karu64 #(
         .flush(lsu_req_pa && (lsu_is_cbocf || lsu_is_cboinval)),
         .store_pending(mem_store_pending),
         .clk(clk), .rst(rst), .uncache_page(uncache_page),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode),
+`endif
         .s_arid(lsu_arid),      .s_araddr(lsu_araddr),
         .s_arlen(lsu_arlen),    .s_arsize(lsu_arsize),
         .s_arburst(lsu_arburst), .s_arprot(lsu_arprot),
@@ -1881,6 +1936,7 @@ module karu64 #(
         .s_bid(km_s_bid),       .s_bresp(km_s_bresp),
         .s_bvalid(km_s_bvalid), .s_bready(lsu_bready),
         .v_req(vmem_req),       .v_busy(vmem_busy), .v_is_store(vmem_is_store),
+        .v_prot(vmem_prot),
         .v_allow_post(vmem_allow_post), .v_va(vmem_va),
         .v_pbmt(vmem_pbmt), .v_size(vmem_size), .v_rstrb(vmem_rstrb),
         .v_fault(vmem_fault), .v_fault_va(vmem_fault_va),
@@ -2232,7 +2288,19 @@ module karu64 #(
                     || (issue_csr && ex_is_vcsr && csr_exc == 0);
     wire issue_cacheop;
     assign issue_cacheop = issue_sys &&
-          (ex_sub == `SYS_FENCE || ex_sub == `SYS_FENCEI);
+          (ex_sub == `SYS_FENCE || ex_sub == `SYS_FENCEI)
+`ifdef KARU_DBG
+          && !dbg_wrs_nop
+`endif
+          ;
+`ifdef KARU_DBG
+    // The decoder shares FENCE for the normal retiring WRS implementation.
+    // Sdext requires a true NOP in Debug Mode and while stepping: no cache
+    // handshake may hold either wait instruction in a stalled state.
+    assign dbg_wrs_nop = (debug_mode || dbg_step_active) && issue_sys &&
+                        ex_sub == `SYS_FENCE &&
+                        (ex_ins[31:20] == 12'h00d || ex_ins[31:20] == 12'h01d);
+`endif
     assign vlsu_req = issue_vlsu;
 
     //  vset* writes vl/vtype the cycle it issues (single-cycle, serialising
@@ -2270,7 +2338,11 @@ module karu64 #(
     //  start before the trap -- the VLSU still owns the FU this cycle).
     wire vlsu_page_fault;
     assign vlsu_page_fault = vlsu_active && vlsu_fault_abort;
-    assign irq_take = csr_irq_pending && !exec_busy && !ex_valid && !ifu_page_fault && !immu_pte_io_pending;
+    assign irq_take = csr_irq_pending && !exec_busy && !ex_valid && !ifu_page_fault && !immu_pte_io_pending
+`ifdef KARU_DBG
+        && !debug_mode && !debug_halt_req_i && !dbg_halt_pending && !dbg_step_active
+`endif
+        ;
 
     //  IFU/ID: advance one instruction when the ID/EX slot can accept it.
     //  Do not predecode behind a just-issued long-latency instruction; that
@@ -2279,6 +2351,10 @@ module karu64 #(
     // drain, but do not admit a new one or take an interrupt until it finishes.
     wire id_accept;
     assign id_accept = ifu_valid && !ifu_fault_valid && !ifu_redir && !irq_take && !exec_busy && !immu_pte_io_pending
+`ifdef KARU_DBG
+          && (debug_mode || (!debug_halt_req_i && !dbg_halt_pending))
+          && (!dbg_step_active || !dbg_step_issued)
+`endif
           && (!ex_valid || (issuing && !issue_long));
     assign ifu_take   = id_accept;
 
@@ -2292,7 +2368,11 @@ module karu64 #(
     //  halt -- Linux must be able to recognize it (insn_is_vector for RVV first-use)
     //  and SIGILL/handle it.
     wire sys_ill_trap;
-    assign sys_ill_trap = issue_sys && ex_sub == `SYS_TRAP;
+    assign sys_ill_trap = (issue_sys && ex_sub == `SYS_TRAP)
+`ifdef KARU_DBG
+        || dbg_dret_bad
+`endif
+        ;
     //  Unimplemented-CSR access -> proper illegal-instruction exception (cause 2)
     //  to mtvec/stvec, so M-mode firmware can catch it (e.g. OpenSBI's optional-
     //  extension probes). Like the SYS_TRAP illegal opcode above, this vectors as
@@ -2345,7 +2425,11 @@ module karu64 #(
     assign sfinval_ill = sys_sfinval_raw;
 `endif
     wire wfi_ill;
-    assign wfi_ill = sys_wfi_raw && (csr_priv != 2'd3) && (csr_tw
+    assign wfi_ill = sys_wfi_raw
+`ifdef KARU_DBG
+        && !debug_mode && !dbg_step_active
+`endif
+        && (csr_priv != 2'd3) && (csr_tw
 `ifdef KARU_EN_S
        || (!csr_virt && csr_priv == 2'd0)
 `endif
@@ -2360,7 +2444,11 @@ module karu64 #(
     wire sfinval_virtual;
     assign sfinval_virtual = sys_sfinval_raw && csr_virt && csr_priv == 0;
     wire wfi_virtual;
-    assign wfi_virtual = sys_wfi_raw && csr_virt && !csr_tw && (csr_priv == 0 || csr_vtw);
+    assign wfi_virtual = sys_wfi_raw && csr_virt && !csr_tw && (csr_priv == 0 || csr_vtw)
+`ifdef KARU_DBG
+        && !dbg_step_active
+`endif
+        ;
     // Both guest modes get cause 22, even when host TVM is set. Only the
     // G-stage fence checks TVM in HS; VVMA ignores both TVM and VTVM.
     wire hfence_virtual;
@@ -2378,9 +2466,17 @@ module karu64 #(
     assign sys_priv_ill = mret_ill || sret_ill || sfence_ill || sfinval_ill || wfi_ill || hfence_ill || hmem_ill;
     //  effective (gated) -- the privileged effect fires only when legal:
     wire sys_mret;
-    assign sys_mret = sys_mret_raw && !mret_ill;
+    assign sys_mret = sys_mret_raw && !mret_ill
+`ifdef KARU_DBG
+        && !debug_mode
+`endif
+        ;
     wire sys_sret;
-    assign sys_sret = sys_sret_raw && !sret_ill && !sret_virtual;
+    assign sys_sret = sys_sret_raw && !sret_ill && !sret_virtual
+`ifdef KARU_DBG
+        && !debug_mode
+`endif
+        ;
     wire sys_fence;
     assign sys_fence = issue_sys && ex_sub == `SYS_FENCE;
     //  FENCE.I: refetch from the next PC so the IFU prefetch buffers (which may
@@ -2399,9 +2495,20 @@ module karu64 #(
     //  SFENCE.VMA and SINVAL.VMA redirect the IFU to the next PC: flush prefetch
     //  buffers and drop any in-flight IMMU walk via the IFU discard path, so
     //  the post-sfence stream is translated after the TLB/PWC flush.
-    assign ifu_redir  = (issue_bru && bru_taken) || sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take
+    assign ifu_redir  =
+`ifdef KARU_DBG
+                     dbg_enter || dbg_exit || dbg_xret_exception ||
+`endif
+                     (issue_bru && bru_taken) || sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take
                      || sys_mret || sys_sret || sys_sfencevma || (cacheop_active && cacheop_fencei && cache_flush_done);
-    assign ifu_redir_pc = (sys_mret || sys_sret) ? ret_pc  :
+    assign ifu_redir_pc =
+`ifdef KARU_DBG
+                           dbg_enter ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_ENTRY} :
+                           dbg_exit ? dbg_dpc :
+                           dbg_end_command ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_ENTRY} :
+                           dbg_exception ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_EXCEPTION} :
+`endif
+                           (sys_mret || sys_sret) ? ret_pc  :
                            (sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take) ? trap_vec :
                            (sys_sfencevma || (cacheop_active && cacheop_fencei && cache_flush_done)) ? pc_next :
                                           bru_target;
@@ -2414,7 +2521,63 @@ module karu64 #(
     assign csr_rs1  = ex_rs1;
 
     //  Trap / mret
-    assign trap_req = sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take;
+    wire trap_raw;
+    assign trap_raw = sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take;
+    assign trap_req = trap_raw
+`ifdef KARU_DBG
+        && !debug_mode && !dbg_enter
+`endif
+        ;
+`ifdef KARU_DBG
+    assign dbg_ebreak_entry = !debug_mode && issue_sys &&
+                             ex_sub == `SYS_EBREAK && dbg_ebreak;
+    assign dbg_enter = !debug_mode && (dbg_ebreak_entry ||
+        (!ex_valid && !exec_busy && !immu_pte_io_pending &&
+         (debug_halt_req_i || dbg_halt_pending || dbg_step_done)));
+    assign dbg_entry_pc = dbg_ebreak_entry ? ex_pc : dbg_next_pc;
+    assign dbg_dret_raw = issue_sys && ex_sub == `SYS_DRET;
+    assign dbg_exit = dbg_dret_raw && debug_mode && debug_resume_req_i &&
+                     ex_pc == ({32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_DRET});
+    assign dbg_dret_bad = dbg_dret_raw && !dbg_exit;
+    assign dbg_xret_exception = debug_mode && (sys_mret_raw || sys_sret_raw);
+    assign dbg_end_command = debug_mode && issue_sys && ex_sub == `SYS_EBREAK;
+    assign dbg_exception = debug_mode && !dbg_end_command &&
+                           (trap_raw || dbg_xret_exception);
+
+    always @(posedge clk) begin
+        if (rst) begin
+            debug_mode <= 0;
+            dbg_halt_pending <= 0;
+            dbg_step_active <= 0;
+            dbg_step_issued <= 0;
+            dbg_step_done <= 0;
+            dbg_next_pc <= RESET_PC;
+        end else begin
+            if (!debug_mode && debug_halt_req_i) dbg_halt_pending <= 1;
+            if (!debug_mode && id_accept && dbg_step_active) dbg_step_issued <= 1;
+            if (!debug_mode && perf_retire)
+                dbg_next_pc <= (issue_bru && bru_taken) ? bru_target :
+                               (sys_mret || sys_sret) ? ret_pc : pc_next;
+            if (!debug_mode && trap_req) dbg_next_pc <= trap_vec;
+            if (!debug_mode && dbg_step_active && (perf_retire || trap_req))
+                dbg_step_done <= 1;
+            if (dbg_enter) begin
+                debug_mode <= 1;
+                dbg_halt_pending <= 0;
+                dbg_step_active <= 0;
+                dbg_step_issued <= 0;
+                dbg_step_done <= 0;
+            end
+            if (dbg_exit) begin
+                debug_mode <= 0;
+                dbg_step_active <= dbg_step;
+                dbg_step_issued <= 0;
+                dbg_step_done <= 0;
+                dbg_next_pc <= dbg_dpc;
+            end
+        end
+    end
+`endif
     //  Instruction-fault EPC is the instruction's start VA (ifu_pc). The IFU
     //  reports the exact faulting instruction byte in ifu_fault_va for tval,
     //  not the aligned fetch-quad address. For a split instruction, tval may
@@ -2580,7 +2743,14 @@ module karu64 #(
            (ex_unit == `UNIT_VCFG && !vs_off_ill) ||
            (ex_unit == `UNIT_SYS && ex_sub != `SYS_TRAP && !sys_priv_ill &&
             !sys_virtual_trap && !sys_trap_ent &&
-            ex_sub != `SYS_FENCE && ex_sub != `SYS_FENCEI));
+`ifdef KARU_DBG
+            !sys_ill_trap && !dbg_xret_exception &&
+`endif
+            (ex_sub != `SYS_FENCE
+`ifdef KARU_DBG
+             || dbg_wrs_nop
+`endif
+            ) && ex_sub != `SYS_FENCEI));
     assign perf_retire = retire_issue
         || (lsu_active    && lsu_done)          //  loads, stores, AMOs
         || (m_active      && m_done)
