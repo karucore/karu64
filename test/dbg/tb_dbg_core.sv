@@ -268,6 +268,109 @@ module tb_dbg_core;
         end
     endtask
 
+    task exception_register_effects;
+        reg [63:0] saved_a1, saved_a2, saved_a3;
+        begin
+            phase = "completed register effects before PB exception";
+            read_reg(16'h100b, saved_a1); read_reg(16'h100c, saved_a2);
+            read_reg(16'h100d, saved_a3);
+            write_reg(16'h100b, 64'h13000000); // unmapped physical address
+            pb(0, 32'h00940413); // addi s0,s0,9
+            pb(1, 32'h00d50513); // addi a0,a0,13
+            pb(2, 32'h0005a603); // faulting lw a2,0(a1)
+            pb(3, 32'h00100073);
+            execute_pb(3);
+            expect_reg(16'h1008, canary_s0 + 9);
+            expect_reg(16'h100a, canary_a0 + 13);
+            expect_reg(16'h100c, saved_a2);
+            write_reg(16'h1008, canary_s0); write_reg(16'h100a, canary_a0);
+            check_saved;
+
+            // The same rule applies to instructions outside the buffer.
+            memory.put_insn('h2c0, 32'h01140413); // addi s0,s0,17
+            memory.put_insn('h2c4, 32'h01350513); // addi a0,a0,19
+            memory.put_insn('h2c8, 32'h0005a603);
+            write_reg(16'h100d, 64'h800002c0);
+            pb(0, 32'h00068067); // jalr zero,0(a3)
+            execute_pb(3);
+            expect_reg(16'h1008, canary_s0 + 17);
+            expect_reg(16'h100a, canary_a0 + 19);
+            write_reg(16'h1008, canary_s0); write_reg(16'h100a, canary_a0);
+            check_saved;
+
+            // A completed transfer must survive a later postexec fault.
+            pb(0, 32'h0005a603); pb(1, 32'h00100073);
+            wr(7'h04, 32'h89abcdef); wr(7'h05, 32'h01234567);
+            command(32'h00371008, 3); // write s0, then execute PB
+            expect_reg(16'h1008, 64'h0123456789abcdef);
+            expect_reg(16'h100a, canary_a0);
+            write_reg(16'h1008, canary_s0);
+            wr(7'h04, 32'h87654321); wr(7'h05, 32'hfacebeef);
+            command(32'h0037100a, 3); // write a0, then execute PB
+            expect_reg(16'h100a, 64'hfacebeef87654321);
+            expect_reg(16'h1008, canary_s0);
+            write_reg(16'h100a, canary_a0);
+            check_saved;
+
+            // Faults in generated transfer code must hide its borrowed GPRs.
+            command(32'h003207a0, 3); check_saved; // absent trigger CSR read
+            wr(7'h04, 32'h76543210); wr(7'h05, 32'hfedcba98);
+            command(32'h00330f11, 3); check_saved; // read-only mvendorid write
+            write_reg(16'h100b, saved_a1); write_reg(16'h100c, saved_a2);
+            write_reg(16'h100d, saved_a3);
+            $display("karudbg exception register effects: PASS");
+            phase = "context";
+        end
+    endtask
+
+    task vector_fault_context;
+        integer n;
+        reg [63:0] status, old_vl, old_vtype, old_vstart;
+        reg [63:0] saved_a1, saved_a2, saved_a3, actual;
+        begin
+`ifdef KARU_EN_V
+            phase = "vector bus fault preserves permitted prefix effects";
+            read_reg(16'h0300, status); write_reg(16'h0300, status | 64'h600);
+            read_reg(16'h0c20, old_vl); read_reg(16'h0c21, old_vtype);
+            read_reg(16'h0008, old_vstart);
+            read_reg(16'h100b, saved_a1); read_reg(16'h100c, saved_a2);
+            read_reg(16'h100d, saved_a3);
+            for (n = 0; n < 4; n = n + 1)
+                for (integer b = 0; b < 8; b = b + 1)
+                    memory.ram['h6000 + n*8 + b] =
+                        8'((64'hd00d000000000000 + 64'(n)) >> (8*b));
+            for (n = 0; n < 8; n = n + 1)
+                memory.ram['hfff8+n] = 8'(64'h0123456789abcdef >> (8*n));
+            write_reg(16'h0008, 0); write_reg(16'h100b, 64'h80006000);
+            pb(0, 32'h02858207); pb(1, 32'h00100073); execute_pb(0); // vl1re8 v4
+            write_reg(16'h100c, 4);
+            pb(0, 32'h01867057); pb(1, 32'h00100073); execute_pb(0); // e64,m1,vl=4
+            // RAM slave rejects 0x80010000, after the first element succeeds.
+            write_reg(16'h100b, 64'h8000fff8);
+            pb(0, 32'h0205f207); pb(1, 32'h00100073); execute_pb(3); // vle64 v4
+            // Sdext 4.1(4) explicitly permits partial vector/vstart updates.
+            expect_reg(16'h0008, 1);
+            expect_reg(16'h0c20, 4); expect_reg(16'h0c21, 24);
+            check_saved;
+            write_reg(16'h0008, 0); write_reg(16'h100d, 64'h80006040);
+            pb(0, 32'h02868227); pb(1, 32'h00100073); execute_pb(0); // vs1r v4
+            for (n = 0; n < 4; n = n + 1) begin
+                actual = memory.ram_word(32'h80006040 + 32'(8*n));
+                check(actual == (n == 0 ? 64'h0123456789abcdef :
+                                          64'hd00d000000000000 + 64'(n)),
+                      "fault preserves successful vector prefix and untouched suffix");
+            end
+            write_reg(16'h100c, old_vl); write_reg(16'h100d, old_vtype);
+            pb(0, 32'h80d67057); pb(1, 32'h00100073); execute_pb(0); // restore vtype/vl
+            write_reg(16'h0008, old_vstart);
+            write_reg(16'h100b, saved_a1); write_reg(16'h100c, saved_a2);
+            write_reg(16'h100d, saved_a3); write_reg(16'h0300, status);
+            $display("karudbg vector fault prefix: PASS");
+            phase = "context";
+`endif
+        end
+    endtask
+
     task masked_vector_context;
         integer n;
         reg [31:0] word, expected;
@@ -1246,6 +1349,8 @@ module tb_dbg_core;
         pb(3, 32'h00160613); pb(4, 32'h00100073);
         write_reg(16'h100c, 99); execute_pb(0); expect_reg(16'h100c, 100); check_saved;
 
+        exception_register_effects;
+        vector_fault_context;
         extended_context;
         compressed_debug;
         pointer_mask_debug;

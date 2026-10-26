@@ -10,7 +10,7 @@
     .option norvc
     .option norelax
     .section .text
-    .global entry, exception, resume_dret
+    .global entry, exception, exception_abstract, resume_dret
     .equ DSCRATCH0, 0x7b2
     .equ DSCRATCH1, 0x7b3
     .equ HALTED,    0x100
@@ -46,7 +46,10 @@ entry_loop:
     bnez s0, resume_body
     j entry_loop
 
-exception_body:
+// Generated transfers temporarily borrow a0/s0. An exception in that fixed
+// sequence restores their saved values. Program Buffer exceptions take the
+// separate handler below, preserving writes completed before the exception.
+exception_abstract_body:
     auipc a0, 0
     srli a0, a0, 12
     slli a0, a0, 12
@@ -66,3 +69,19 @@ resume_body:
     csrr s0, DSCRATCH0
 resume_dret:
     .word 0x7b200073
+    ebreak
+
+exception_abstract:
+    j exception_abstract_body
+    nop
+
+exception_body:
+    csrw DSCRATCH0, s0
+    csrw DSCRATCH1, a0
+    auipc a0, 0
+    srli a0, a0, 12
+    slli a0, a0, 12
+    sw zero, EXCEPTION(a0)
+    csrr a0, DSCRATCH1
+    csrr s0, DSCRATCH0
+    ebreak

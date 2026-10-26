@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the BSCAN protocol bench rejects clocking and bit-skew defects."""
+"""Prove the BSCAN bench rejects clocking, bit-skew and reset-resync defects."""
 # SPDX-License-Identifier: BSD-3-Clause
 import argparse
 from pathlib import Path
@@ -22,6 +22,8 @@ mutants = [
      '.tck(drck),.reset_i(!frame_trst_n)', '.tck(tck),.reset_i(!frame_trst_n)'),
     ('inverted-output-bit', 'dbg/karudbg_bscan_tunnel.v',
      'tdo_o <= inner_tdo_i;', 'tdo_o <= !inner_tdo_i;'),
+    ('wait-state-tms-corruption', 'dbg/karudbg_bscan_tunnel.v',
+     "inner_tms_o = 1'b0;", "inner_tms_o = phase == WAIT ? tdi_i : 1'b0;"),
 ]
 for name, source, old, new in mutants:
     text = Path(source).read_text()

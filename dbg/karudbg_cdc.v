@@ -6,6 +6,9 @@
 // https://github.com/pulp-platform/riscv-dbg/blob/643607e19df3435cfd77cc56143e2637f5900a6e/src/dmi_cdc.sv
 // Adaptation: bounded single-outstanding four-phase bundled-data mailbox,
 // Verilog-2001; transport resets flush the DMI channel without resetting DM.
+// Interface contract: connect dmi_reset_o to the receiving DM channel reset.
+// A clear may withdraw request VALID without READY; the receiver must block
+// acceptance during clear (karudbg gates req_ready_o with dmi_reset_i).
 // Solderpad Hardware License 0.51; see LICENSE.Solderpad.
 
 module karudbg_cdc (

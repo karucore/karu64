@@ -68,9 +68,32 @@ foreach group [list $request_bundle $request_capture $response_bundle $response_
 }
 set_bus_skew [expr {$period * 0.4}] -from $request_bundle -to $request_capture
 set_bus_skew [expr {$tck_period * 0.4}] -from $response_bundle -to $response_capture
-set_false_path -from [get_ports {rst trst_n}]
+# rst is a timed synchronous input to the core/DM clk domain. Exempt only
+# external-reset paths into TCK-domain asynchronous reset pins; the released
+# reset's registered Q -> consumer reset checks remain timed.
+set release_stages [get_cells -hier -filter {NAME =~ tck_reset_release/release_q_reg*}]
+if {[llength $release_stages] != 2} {
+    error "Reset constraint did not find exactly two TCK release stages"
+}
+foreach stage $release_stages {
+    if {[string toupper [get_property ASYNC_REG $stage]] ni {TRUE 1}} {
+        error "TCK reset release stage lacks ASYNC_REG: $stage"
+    }
+}
+set tck_async_resets [all_registers -clock [get_clocks tck] -async_pins]
+set release_reset_count 0
+foreach pin $tck_async_resets {
+    if {[string match {tck_reset_release/*} [get_property NAME $pin]]} {
+        incr release_reset_count
+    }
+}
+if {$release_reset_count != 2} {
+    error "Reset constraint did not find exactly two TCK release reset pins"
+}
+set_false_path -from [get_ports {rst trst_n}] -to $tck_async_resets
+set_input_delay -clock clk [expr {$period * 0.3}] [get_ports rst]
 set_input_delay -clock clk [expr {$period * 0.3}] \
-    [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != tck && NAME != tms && NAME != tdi && NAME != trst_n}]
+    [get_ports -filter {DIRECTION == IN && NAME != clk && NAME != rst && NAME != tck && NAME != tms && NAME != tdi && NAME != trst_n}]
 set_output_delay -clock clk [expr {$period * 0.3}] \
     [get_ports -filter {DIRECTION == OUT && NAME != tdo && NAME != tdo_oe}]
 set_input_delay -clock tck 10.0 [get_ports {tms tdi}]

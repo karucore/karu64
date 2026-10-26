@@ -25,9 +25,13 @@ enforcement and board acceptance remain separate obligations.
 
 Current stage: RTL implementation is complete for pre-board review. Directed
 core tests include xRET stepping, Program Buffer control transfers and all
-implemented interrupt sources. The final aggregate passes for the
-reset-conditioned conventional top and FPGA tunnel. Area and OpenSTA measurements
-are complete. The FPGA build stopped during routing after successful synthesis
+implemented interrupt sources. The hartinfo and exception-handler fixes pass
+the aggregate functional gate, including corrected reset-constraint checks.
+The refreshed area estimate and OpenSTA reports include those fixes and
+corrected synchronous-reset timing. At 200 MHz, register-to-register WNS is
+-0.4436 ns without debug and -0.3977 ns with debug; neither row closes.
+The FPGA build stopped
+during routing after successful synthesis
 and placement; it used the earlier constraints and produced no new bitstream.
 Physical validation of the corrected constraints and board acceptance are open.
 Check an item only when its implementation and
@@ -50,7 +54,7 @@ items; a documented design choice alone does not close an implementation item.
   reproducible logs and source hashes in `_build/dbg/axi-prot/results.json`.
 - [x] DM register bank and abstract-command engine: implement the
   [initial contract](#initial-contract); pass `dbg-unit-test`.
-  Evidence: 902 unit checks, including accepted-command channel reset and
+  Evidence: 947 unit checks, including accepted-command channel reset and
   `ndmreset` abort/recovery; `_build/dbg/dm-unit.log`.
 - [x] [Core Sdext and run control](#3-milestone-b-core-sdext-support-and-precise-run-control):
   implement halt/resume/step, debug CSRs and instruction rules; pass
@@ -72,8 +76,8 @@ items; a documented design choice alone does not close an implementation item.
 - [x] Functional acceptance: pass `dbg-test`, negative controls, four-state
   startup, lint and selected ordinary ISA regressions; rerun `axi-prot-test`
   with debug enabled. Publish the requirements-to-tests evidence.
-  Evidence: the final aggregate passed in 147.45 seconds with unchanged source
-  hashes; ordinary ISA and ASIC startup checks are separate recorded runs.
+  The current aggregate passed in 334.65 seconds with unchanged input hashes.
+  Ordinary ISA and ASIC startup checks are separate recorded runs.
 - [x] FPGA platform integration: connect a board-compatible debug transport,
   retain the private debug aperture and reset contract, and verify the
   integration in simulation before board acceptance.
@@ -81,7 +85,8 @@ items; a documented design choice alone does not close an implementation item.
   compiled models. Standard-flow implementation has its separate gate below.
 - [x] [ASIC inventory and mapped area](MEASUREMENTS.md): zero initialized
   state, unchanged data-memory geometry and the paired Yosys area estimate.
-  Final conventional debug adds 20.334 kGE (+0.4636%) over the shipping core.
+  The corrected conventional debug increment is 20.644 kGE (+0.471%);
+  the fresh ASIC audit confirms zero initialized state and unchanged memory geometry.
 - [ ] [Timing and FPGA synthesis acceptance](#synthesis-and-hardware-acceptance):
   run OpenSTA at the 200 MHz target and record
   Vivado routed timing at the 75 MHz core target.
@@ -95,7 +100,7 @@ items; a documented design choice alone does not close an implementation item.
 ## Run the non-board gates
 
 Run from the repository root. Tests need Verilator, Icarus, a RISC-V ELF
-toolchain, RISC-V GDB, Python 3 and the pinned mainline OpenOCD source/tools
+toolchain, RISC-V GDB, Python 3, Tcl 8.6 and the pinned mainline OpenOCD source/tools
 described below. The isolated OpenOCD build also needs its normal Autotools
 and Jim Tcl development dependencies. These prerequisites are installed for
 the recorded validation; no board connection is used.
@@ -115,34 +120,33 @@ the OpenOCD/model builds. Individual targets are listed below. Ordinary
 ### Functional validation record, 2026-10-26
 
 The final conventional-JTAG and USER4 BSCAN implementation passed `make dbg-test`
-in 147.45 seconds, using the previously compiled models. The record completed
-at 20:18 UTC. `_build/dbg/validation.json` records exit status 0,
+in 334.65 seconds, including incremental model builds. The record completed
+after the hartinfo, exception-handler and reset-timing fixes.
+`_build/dbg/validation.json` records exit status 0,
 unchanged source hashes before/after, tool identities and the isolated OpenOCD
 patch/build identity. Detailed output is in `_build/dbg/validation.log`.
-The reset-conditioned integration models were freshly compiled and checked
-before this aggregate; `_build/dbg/rebuild-bscan.json` also records the BSCAN
-model rebuild and unchanged inputs. Subsequent source changes require a new
-record when they affect a functional gate or its compiled models.
-The later BSCANE2 return-clock and reset-synchronizer exception corrections
-change only FPGA timing constraints,
-which the functional gates do not execute. The separate
-`_build/dbg/validation-constraints-audit.json` records its old/new hash and
-confirms that all functional RTL, test and build inputs remain unchanged.
+The record covers current RTL, tests and build inputs, including both FPGA
+and conventional-top constraint sources. Functional simulators do not execute
+the Vivado constraints; their scope is checked by the Tcl command-model test,
+with separate OpenSTA netlist evidence recorded in [measurements](MEASUREMENTS.md).
+Subsequent changes affecting a functional gate or its compiled models require
+a new record.
 
 | Check | Result and evidence under `_build/dbg/` |
 | --- | --- |
 | AXI protection, debug disabled and enabled | 15/15 cases each, including five source-mutation controls; `axi-prot/results.json`, `axi-prot-debug/results.json` |
-| DM and abstract commands | 902 checks; `dm-unit.log` |
+| DM and abstract commands | 947 checks; `dm-unit.log` |
 | TAP/CDC and debug-memory AXI | 94 transport checks and 813 AXI checks; four transport mutation controls |
-| Scalar/FP actual-core debug | 178,124 checks, 272,840 cycles; `core/run.log` |
-| Shipping-profile context debug | 564,921 checks, 856,473 cycles; `core-profile/run.log` |
-| ASIC scalar four-state startup/debug | 154,659 checks, 237,845 cycles; `core-four-state/run.log` |
-| AWREADY dependent on WVALID | 154,659 checks, 237,845 cycles; `core-aw-wait/run.log` |
+| Scalar/FP actual-core debug | 186,580 checks, 285,376 cycles; `core/run.log` |
+| Shipping-profile context debug | 587,501 checks, 890,049 cycles; `core-profile/run.log` |
+| ASIC scalar four-state startup/debug | 163,115 checks, 250,381 cycles; `core-four-state/run.log` |
+| AWREADY dependent on WVALID | 163,115 checks, 250,381 cycles; `core-aw-wait/run.log` |
 | Core negative controls | Six source mutations detected: DPC, application trap leakage, wait instructions, unauthorized DRET, scratch corruption and extra stepping |
 | OpenOCD actual-core memory/MMIO | Native-width transfers, counted side effects, block reads, faults and recovery pass; pristine-tool autoexec failure retained as a negative control |
 | OpenOCD software translation | 28 checks; `openocd-translation/openocd-jtag.log`; unsupported Svnapot walks report errors |
 | GDB 17.2 | GPR/CSR/RAM, 64-bit FP and 256-bit vector transfers, code update, exact stepping and detach/reconnect pass; `gdb/gdb-registers.log`, `gdb/gdb-context.log` |
-| USER4 BSCAN | 103 protocol checks, two negative controls, 48 reset-release checks and 18 FPGA reset-ordering checks; actual-core OpenOCD, GDB and 28 translation checks pass |
+| USER4 BSCAN | 1,680 protocol checks, including 481 reset/pause cases; three negative controls, 48 reset-release checks and 18 FPGA reset-ordering checks; actual-core OpenOCD, GDB and 28 translation checks pass |
+| Conventional reset timing constraints | Tcl command-model scope checks, two bad-exception mutations and three fail-closed guards pass; `make dbg-ooc-reset-constraints-test` |
 | Parsing and lint | Declaration-order, Verilator and strict Verilog-2001 checks pass |
 | Separate ordinary ISA regression | `make test`: 110/110; `riscv-tests.log` |
 | Separate ASIC checks | Four-state memory checks and `vresv`, `vperm`, `vstart` at seeds 1 and 42 pass; see [measurements](MEASUREMENTS.md) for inventory evidence |
@@ -219,6 +223,8 @@ upstream source or interface compatibility. For every adopted file:
 | Debug CSRs | `dcsr`, `dpc`, `dscratch0`, `dscratch1`; accessible only in Debug Mode |
 | Abstract commands | Access Register with 32- and 64-bit reads of RV64 GPR/CSR views, full-width writes, and `postexec`; define every exposed register's width and reject oversized/reserved accesses |
 | Abstract data | Two 32-bit data registers for a 64-bit argument |
+| Hart information | `hartinfo=0x00200000`: two scratch CSRs, no advertised data-register CSR/memory shadow (`datasize=0`); the private ROM still accesses its internal data window |
+| Busy run control | Ignore `haltreq` (including zero), `resumereq` and `ackhavereset` writes during an abstract command, as Debug 1.0 recommends; `dmactive` and `ndmreset` remain available for recovery |
 | Auto-execution | `abstractauto` unimplemented: read zero, ignore writes; data/Program Buffer accesses never implicitly re-execute a command |
 | Program Buffer | Eight 32-bit words initially; explicit terminating EBREAK, `impebreak=0` |
 | Debug access checks | `abstractcs.relaxedpriv=0`; ordinary M-mode permission and instruction-state checks apply |
@@ -466,6 +472,8 @@ The main integration points are `rtl/karu64.v`, `rtl/karu_csr.v`,
 - Route EBREAK/C.EBREAK to Debug Mode according to `dcsr`; otherwise retain
   the architectural breakpoint exception. Use the specified priority between
   simultaneous debug-entry causes and exceptions.
+  For implemented simultaneous causes, use `haltreq` before EBREAK before
+  single-step, matching [Debug 1.0 Table 8](https://docs.riscv.org/reference/debug/_attachments/riscv-debug-specification.pdf#page=57).
 - On an authorized ROM-resume DRET, restore `dpc`, privilege and virtualization
   state and clear MPRV when returning below M-mode. Do not use or overwrite
   application trap CSRs as storage for debug entry.
@@ -515,6 +523,15 @@ sequence. Confirm the core's actual exit before acknowledging resume and
 reporting it running. A rejected DRET must preserve saved DPC, privilege/V
 state and the DM's halted status.
 
+The normal command-exception entry remains `BASE+0x810`. Its handler saves
+the current `a0`/`s0` before reporting the exception, preserving completed
+Program Buffer or external-code writes, including a transfer followed by a
+failing `postexec`. Faults in the generated transfer sequence
+`[BASE+0x338, BASE+0x360)` use `BASE+0x890` instead and restore the borrowed
+registers from their saved values. Selection uses the executing instruction's
+PC. DRET remains at `BASE+0x888`; both exception entries are generated and
+checked from the shared ROM/map sources.
+
 ### 4. Debug ROM, Program Buffer and memory integration
 
 - Allocate a dedicated 4 KiB debug page outside existing ROM, scratch RAM and
@@ -545,6 +562,9 @@ state and the DM's halted status.
   EBREAK termination must return to the parking loop without an exception
   error or overwriting the saved `dpc` and entry cause. Preserve application
   trap CSRs, including H trap metadata.
+  This preserves completed instruction effects: [Debug 1.0 section 4.1(4)](https://docs.riscv.org/reference/debug/_attachments/riscv-debug-specification.pdf#page=53)
+  explicitly permits partial vector destinations and `vstart` updates on a
+  vector load/store fault. It does not require register rollback.
 - Validate FP, vector and custom instructions through the Program Buffer.
   Apply the Sdext choices above, including ordinary FS/VS checks where
   applicable; save and restore any debugger-modified `mstatus`, vector
@@ -579,6 +599,22 @@ state and the DM's halted status.
   establish compatibility with the board, Vivado debug IP and OpenOCD before
   assigning them. State whether that integration is the standard JTAG DTM or
   a custom transport, as required by the specification.
+
+The DMI channel's reset contract permits withdrawing an unaccepted request or
+pending response during `dmi_reset`. Connect the CDC's `dmi_reset_o` to the
+DM's `dmi_reset_i`: the DM gates request-ready low during that reset and
+discards the response-channel state. An already accepted command is not
+undone. A substitute DMI endpoint must honor the same cancellation contract;
+ordinary ready/valid rules apply outside reset.
+
+The reserved DMI operation `op=3` produces sticky failed status without a DM
+request. A failure response coincident with Capture-DR may instead leave
+sticky busy status; this permitted transport choice does not promise retention
+of the original failure code. Recovery uses the documented DTM status/reset
+protocol. The private core-only memory bridges tie `allow_i` high because
+their source identity is fixed by routing and ordinary-mode access is blocked
+by the core PMA. The reusable adapter retains the authorization input for
+integrations that need it; `AxPROT` does not identify debug origin.
 
 The conventional TAP is tested through remote bitbang. Its parameterized
 default IDCODE `0x00000db3` is the inherited PULP
@@ -629,6 +665,7 @@ acceptance are separate gates.
 | `dbg-context-test` | M/S/U/VS/VU entry and return; H metadata; scalar FP, vector, Zvk and Keccak state round trips; representative arithmetic and memory instructions in Debug Mode |
 | `dbg-translation-test` | Pinned OpenOCD software walks for host/guest pages, high GPAs, Svnapot, error containment and documented differences from hardware translation |
 | `dbg-jtag-test` | TAP/DTM protocol, CDC, sticky busy/errors, TMS/TRST reset, frequency/phase variation, and OpenOCD/GDB through remote bitbang |
+| `dbg-ooc-reset-constraints-test` | Tcl command-model checks for timed synchronous reset, narrow TCK reset exceptions and fail-closed guards; no Vivado or physical timing claim |
 | `dbg-test` | Aggregate debug functional gate, including debug-enabled and debug-disabled protection tests; ordinary `make test` is a separate ISA regression |
 
 Directed core tests must include:
@@ -702,6 +739,12 @@ Directed core tests must include:
   the original request's attributes must remain unchanged.
 - Reset during each DMI/abstract-command phase; DM deactivation and
   reactivation; sticky `havereset` and command-error clearing.
+  The BSCAN sweep also interrupts every IR/DR frame position with reset pulses,
+  pauses and stopped clocks. Reset puts framing in WAIT, which drives inner
+  TMS low; the TAP reaches Idle before the next header preamble. An interrupted
+  scan is discarded, and the debugger must reselect DTMCS/DMI after transport
+  reset instead of relying on a cached IR selection. Check that no unintended
+  DMI request is committed while recovering.
 - Four-state startup checks and random initial values for unreset payloads.
   Control must become known after its reset; payload must be known whenever
   VALID is asserted and stable until accepted. Check control and validity

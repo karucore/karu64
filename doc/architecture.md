@@ -496,6 +496,16 @@ privately from the core's instruction/data ports. Debug commands use physical
 M-mode accesses (`mprven=0`), mask interrupts and freeze hart-local counters.
 Application trap CSRs are preserved on command exceptions. Resume requires
 the ROM's RESUMING handshake and DRET at the designated immutable ROM site.
+Completed Program Buffer register effects survive a later command exception;
+vector load/store faults may preserve a partial destination and update
+`vstart`, as Debug 1.0 explicitly permits. Generated abstract-transfer faults
+restore the ROM's borrowed GPRs instead.
+With `KARU_PMA_CUSTOM_HEADER`, the integration must provide its own Debug Mode
+permission for this page in `karu_pma_ok`, alongside the private routing and
+cache-bypass contract. The default debug-page clause is not added around a
+custom PMA implementation. If the custom map excludes this page, the ROM
+remains inaccessible and debug entry cannot complete. The custom PMA must
+enforce the Debug Mode restriction itself.
 The conventional transport top synchronizes reset release over two TCK edges,
 including when TCK has been stopped; core/DM reset remains synchronous. The
 optional VCU118 integration uses a USER4 nested-TAP tunnel and keeps the DM

@@ -4,12 +4,11 @@
 
 create_clock -name clk -period @CLK_NS@ [get_ports clk]
 
-#	Treat reset as ideal -- not part of the timing budget.
-set_false_path -from [get_ports rst]
-
 #	Generic IO budget: every non-clock input arrives @IN_NS@ ns into
 #	the period; every output must settle @OUT_NS@ ns before the end.
-set_input_delay  -clock clk @IN_NS@  [get_ports * -filter {direction == input && full_name != clk}]
+#	rst is synchronous to clk and must meet the same input timing budget.
+set_input_delay  -clock clk @IN_NS@  [get_ports rst]
+set_input_delay  -clock clk @IN_NS@  [get_ports * -filter {direction == input && full_name != clk && full_name != rst}]
 set_output_delay -clock clk @OUT_NS@ [all_outputs]
 
 #	Drive / load assumptions.

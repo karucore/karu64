@@ -30,7 +30,9 @@ def main():
     subprocess.run([args.xchain + 'objcopy', '-O', 'binary', str(elf), str(binary)], check=True)
     symbols = subprocess.check_output([args.xchain + 'nm', '-n', str(elf)], text=True)
     defs = (root / 'dbg/karudbg_defs.vh').read_text()
-    for symbol, macro in [('entry', 'ENTRY'), ('exception', 'EXCEPTION'), ('resume_dret', 'DRET')]:
+    for symbol, macro in [('entry', 'ENTRY'), ('exception', 'EXCEPTION'),
+                          ('exception_abstract', 'EXCEPTION_ABSTRACT'),
+                          ('resume_dret', 'DRET')]:
         expected = int(re.search(r'`define KARUDBG_' + macro + r'\s+12\'h([0-9a-fA-F]+)', defs)[1], 16)
         actual = int(re.search(r'^([0-9a-fA-F]+)\s+\w\s+' + symbol + r'$', symbols, re.M)[1], 16)
         if actual != expected:

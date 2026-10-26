@@ -4,7 +4,10 @@ DBG_LINT_FLAGS = -Irtl -Idbg -DKARU_DBG -DKARU_RVA23S64 -DKARU_ICACHE \
  -DKARU_ZVK -DKARU_KECCAK -DKARU_V_LANE_PIPE -DKARU_V_CWB_STAGE
 
 .PHONY: dbg-lint dbg-rom-test dbg-memory-test dbg-jtag-test dbg-gdb-test \
- dbg-test dbg-functional-gates
+ dbg-test dbg-functional-gates dbg-ooc-reset-constraints-test
+
+dbg-ooc-reset-constraints-test:
+	tclsh test/dbg/test_ooc_reset_constraints.tcl
 dbg-lint:
 	mkdir -p $(BUILD)/dbg
 	python3 flow/asic/lint_decl.py $(DBG_ALL_RTL)
@@ -33,7 +36,8 @@ dbg-functional-gates: axi-prot-test axi-prot-debug-test dbg-unit-test dbg-rom-te
  dbg-memory-test dbg-core-profile-test dbg-core-four-state-test \
  dbg-core-negative-test dbg-transport-negative-test dbg-jtag-test \
  dbg-openocd-negative-test dbg-translation-test dbg-gdb-test dbg-lint \
- dbg-bscan-test dbg-bscan-core-test dbg-bscan-gdb-test dbg-bscan-translation-test
+ dbg-bscan-test dbg-bscan-core-test dbg-bscan-gdb-test dbg-bscan-translation-test \
+ dbg-ooc-reset-constraints-test
 
 DBG_GATE_JOBS ?= 3
 dbg-test:

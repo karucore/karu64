@@ -128,7 +128,9 @@ module tb_dm;
         wr(7'h10, 1);
         rd(7'h04, 0);
         rd(7'h11, 32'h00000c83); // running, version1.0, authenticated
-        rd(7'h12, 32'h00212380);
+        rd(7'h12, 32'h00200000); // nscratch=2; no false low-address data shadow
+        wr(7'h12, 32'hffffffff);
+        rd(7'h12, 32'h00200000); // hartinfo is entirely read-only
         rd(7'h16, 32'h08000002);
         // Single-hart selection and all optional control fields are WARL zero.
         wr(7'h10, 32'h0fffffff);
@@ -228,6 +230,30 @@ module tb_dm;
         dmi(1, 7'h05, 0, value);
         mw(12'h108, 0, 8'h0f); mw(12'h100, 0, 8'h0f);
         rd(7'h16, 32'h08000102); clear_error;
+
+        // Debug 1.0 forbids asserting these run-control requests while busy;
+        // the DM follows its recommendation to ignore their writes while busy.
+        // In particular, a zero haltreq is ignored too, rather than clearing
+        // the latched request midway through an abstract operation.
+        @(negedge clk); hart_reset = 1;
+        @(posedge clk); #1;
+        @(negedge clk); hart_reset = 0;
+        mw(12'h100, 0, 8'h0f);
+        wr(7'h10, 32'h80000001);
+        check(halt_req, "idle halt request accepted before command");
+        wr(7'h17, 32'h00321001);
+        wr(7'h10, 32'h00000001);
+        check(halt_req, "busy haltreq=0 is ignored per Debug 1.0");
+        wr(7'h10, 32'h40000001);
+        check(halt_req && !resume_req, "busy resumereq does not start resume");
+        wr(7'h10, 32'h10000001);
+        rd(7'h11, 32'h000c0383); // busy ack cannot erase sticky reset
+        rd(7'h16, 32'h08001002);
+        mw(12'h108, 0, 8'h0f); mw(12'h100, 0, 8'h0f);
+        check(halt_req, "busy run-control writes retain halt through completion");
+        wr(7'h10, 32'h10000001);
+        check(!halt_req, "idle haltreq=0 clears the retained request");
+        rd(7'h11, 32'h00000383); // idle ackhavereset clears it normally
 
         // Resume is not acknowledged merely by the ROM store.
         wr(7'h10, 32'h80000001); check(halt_req, "halt request latched");

@@ -12,6 +12,10 @@
 // Read data/error are combinational for that request; read data is the aligned
 // 64-bit word containing mem_addr_i. Writes use aligned AXI-style byte lanes.
 // The integration must enforce requester authorization before this interface.
+// DMI channel cancellation: dmi_reset_i suppresses req_ready_o and discards
+// pending response state. The paired CDC may withdraw VALID during this
+// reset; it must forward the same reset to this endpoint. Accepted commands
+// and DM architectural state are not rolled back by a channel reset.
 
 `include "karudbg_defs.vh"
 
@@ -189,7 +193,10 @@ module karudbg (
                 7'h05: dmi_read = busy ? 0 : data_q[63:32];
                 7'h10: dmi_read = {30'b0, ndmreset_q, dmactive_q};
                 7'h11: dmi_read = dmstatus;
-                7'h12: dmi_read = 32'h00212380;
+                // Two scratch CSRs; no data-register shadow is advertised.
+                // hartinfo.dataaddr is absolute/sign-extended, so the private
+                // data window at BASE+0x380 cannot be described by that field.
+                7'h12: dmi_read = 32'h00200000;
                 7'h13, 7'h40: dmi_read = {31'b0, acknowledged_halted && available};
                 7'h16: dmi_read = abstractcs;
                 7'h20, 7'h21, 7'h22, 7'h23,

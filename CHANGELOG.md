@@ -6,6 +6,18 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Fixed — debug metadata, exceptions and reset timing
+
+- `hartinfo` advertises two scratch CSRs without a data-register memory shadow;
+  the former 12-bit address could not describe the private data window.
+- Program Buffer exceptions preserve completed `a0`/`s0` writes, including an
+  abstract transfer followed by a failing `postexec`. Faults inside generated
+  transfer code use a separate ROM entry to restore its temporary GPRs.
+- Synchronous reset paths remain timed in the core and debug synthesis flows.
+  External-reset exceptions are restricted to TCK asynchronous reset pins.
+  Directed tests cover the exception cases and BSCAN resets during scans;
+  Vivado implementation of these fixes remains pending.
+
 ### Added — opt-in karudbg and AXI requester metadata
 
 - `KARU_DBG` enables precise execution-based debug entry, resume and stepping,

@@ -30,8 +30,23 @@ foreach signal {req_sync1 clear_sync1 resp_sync1 ack_sync1} {
     }
     if {$count != 1} { error "CDC constraint did not find exactly one $signal first-stage flop: $count" }
 }
-set_false_path -from [get_ports {rst trst_n}]
-set_input_delay -clock clk @IN_NS@ [get_ports * -filter {direction == input && full_name != clk && full_name != tck && full_name != tms && full_name != tdi && full_name != trst_n}]
+# rst is synchronous in the clk domain. Only its asynchronous ingress into
+# TCK reset pins is exempt, including the lower-level raw-rst assertion term.
+# The -from qualifier does not cross the release synchronizer's flops, so
+# release-Q -> consumer-reset recovery/removal checks remain timed.
+set tck_async_resets [all_registers -clock tck -async_pins]
+set release_reset_count 0
+foreach pin $tck_async_resets {
+    if {[string match {tck_reset_release/*} [get_property $pin full_name]]} {
+        incr release_reset_count
+    }
+}
+if {$release_reset_count != 2} {
+    error "Reset constraint did not find exactly two TCK release stages: $release_reset_count"
+}
+set_false_path -from [get_ports {rst trst_n}] -to $tck_async_resets
+set_input_delay -clock clk @IN_NS@ [get_ports rst]
+set_input_delay -clock clk @IN_NS@ [get_ports * -filter {direction == input && full_name != clk && full_name != rst && full_name != tck && full_name != tms && full_name != tdi && full_name != trst_n}]
 set_output_delay -clock clk @OUT_NS@ [get_ports * -filter {direction == output && full_name != tdo && full_name != tdo_oe}]
 set_input_delay -clock tck 10.0 [get_ports {tms tdi}]
 set_output_delay -clock tck 10.0 [get_ports {tdo tdo_oe}]

@@ -126,6 +126,7 @@ module karu64 #(
     assign debug_mode_i = debug_mode;
     wire dbg_enter, dbg_exit, dbg_ebreak_entry, dbg_exception, dbg_end_command;
     wire dbg_dret_raw, dbg_dret_bad, dbg_xret_exception;
+    wire dbg_abstract_exception;
     wire dbg_wrs_nop;
     wire [63:0] dbg_dpc, dbg_entry_pc;
     wire dbg_step, dbg_ebreak;
@@ -2506,7 +2507,9 @@ module karu64 #(
                            dbg_enter ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_ENTRY} :
                            dbg_exit ? dbg_dpc :
                            dbg_end_command ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_ENTRY} :
-                           dbg_exception ? {32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_EXCEPTION} :
+                           dbg_exception ? {32'b0, `KARUDBG_BASE} +
+                               (dbg_abstract_exception ? {52'b0, `KARUDBG_EXCEPTION_ABSTRACT} :
+                                                         {52'b0, `KARUDBG_EXCEPTION}) :
 `endif
                            (sys_mret || sys_sret) ? ret_pc  :
                            (sys_trap_ent || csr_ill_trap || sys_priv_ill || virtual_trap || v_vstart_trap || v_resv_trap || v_fpsew_trap || fsvs_trap || cbo_ill || sys_ill_trap || issue_vcrypto_trap || ifu_page_fault || lsu_page_fault || vlsu_page_fault || irq_take) ? trap_vec :
@@ -2543,6 +2546,13 @@ module karu64 #(
     assign dbg_end_command = debug_mode && issue_sys && ex_sub == `SYS_EBREAK;
     assign dbg_exception = debug_mode && !dbg_end_command &&
                            (trap_raw || dbg_xret_exception);
+    // Generated transfers temporarily borrow a0/s0; their failures restore
+    // the saved values. Program Buffer/external-code failures instead keep
+    // completed register writes. Classify the executing instruction, never
+    // a prefetched address that may already point into another region.
+    assign dbg_abstract_exception =
+        ex_pc >= ({32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_ABSTRACT}) &&
+        ex_pc < ({32'b0, `KARUDBG_BASE} + {52'b0, `KARUDBG_PROGBUF});
 
     always @(posedge clk) begin
         if (rst) begin
