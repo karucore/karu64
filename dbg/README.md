@@ -30,10 +30,10 @@ the aggregate functional gate, including corrected reset-constraint checks.
 The refreshed area estimate and OpenSTA reports include those fixes and
 corrected synchronous-reset timing. At 200 MHz, register-to-register WNS is
 -0.4436 ns without debug and -0.3977 ns with debug; neither row closes.
-The FPGA build stopped
-during routing after successful synthesis
-and placement; it used the earlier constraints and produced no new bitstream.
-Physical validation of the corrected constraints and board acceptance are open.
+The standard 75 MHz FPGA flow completed on 2026-10-27 with the committed
+review fixes and corrected constraints. Whole-design setup/hold slack is
++0.005/+0.011 ns; CPU setup slack is +0.482 ns. All 16 bus-skew constraints
+pass, and bitstream DRC reports zero errors. Board acceptance remains open.
 Check an item only when its implementation and
 required tests are complete. Add source and result links beside completed
 items; a documented design choice alone does not close an implementation item.
@@ -76,7 +76,7 @@ items; a documented design choice alone does not close an implementation item.
 - [x] Functional acceptance: pass `dbg-test`, negative controls, four-state
   startup, lint and selected ordinary ISA regressions; rerun `axi-prot-test`
   with debug enabled. Publish the requirements-to-tests evidence.
-  The current aggregate passed in 334.65 seconds with unchanged input hashes.
+  The clean-build aggregate passed in 293.86 seconds with unchanged input hashes.
   Ordinary ISA and ASIC startup checks are separate recorded runs.
 - [x] FPGA platform integration: connect a board-compatible debug transport,
   retain the private debug aperture and reset contract, and verify the
@@ -86,13 +86,15 @@ items; a documented design choice alone does not close an implementation item.
 - [x] [ASIC inventory and mapped area](MEASUREMENTS.md): zero initialized
   state, unchanged data-memory geometry and the paired Yosys area estimate.
   The corrected conventional debug increment is 20.644 kGE (+0.471%);
-  the fresh ASIC audit confirms zero initialized state and unchanged memory geometry.
-- [ ] [Timing and FPGA synthesis acceptance](#synthesis-and-hardware-acceptance):
-  run OpenSTA at the 200 MHz target and record
-  Vivado routed timing at the 75 MHz core target.
-  OpenSTA is complete and misses the 200 MHz target. The corrected BSCANE2
-  clocks and narrow reset-synchronizer exceptions await physical validation;
-  the existing FPGA implementation loaded the earlier constraint set.
+  the post-review ASIC audit confirms zero initialized state and unchanged memory geometry.
+- [x] [FPGA synthesis and timing acceptance](#synthesis-and-hardware-acceptance):
+  standard-flow Vivado implementation at the 75 MHz core target, including
+  corrected BSCANE2 clocks and narrow reset exceptions. Setup, hold, pulse width
+  and all 16 bus-skew constraints pass; bitstream DRC reports zero errors.
+  Evidence: `_build/vcu118_ddr.bit` and [routed measurements](MEASUREMENTS.md).
+- [ ] 200 MHz mapped timing closure: the paired OpenSTA runs are complete,
+  but WNS remains -0.4436 ns without debug and -0.3977 ns with debug.
+  This ASIC performance goal is separate from the completed 75 MHz FPGA build.
 - [ ] [Board acceptance](#synthesis-and-hardware-acceptance): demonstrate
   debug operations and MMIO, then normal karudeb boot and board acceptance
   after detach; record the tested configuration and compliance scope.
@@ -120,8 +122,9 @@ the OpenOCD/model builds. Individual targets are listed below. Ordinary
 ### Functional validation record, 2026-10-26
 
 The final conventional-JTAG and USER4 BSCAN implementation passed `make dbg-test`
-in 334.65 seconds, including incremental model builds. The record completed
-after the hartinfo, exception-handler and reset-timing fixes.
+in 293.86 seconds after rebuilding the generated models from a clean `_build`.
+The run used committed review fixes at `175b842` and completed after the
+hartinfo, exception-handler and reset-timing fixes.
 `_build/dbg/validation.json` records exit status 0,
 unchanged source hashes before/after, tool identities and the isolated OpenOCD
 patch/build identity. Detailed output is in `_build/dbg/validation.log`.

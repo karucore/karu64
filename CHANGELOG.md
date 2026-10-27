@@ -15,8 +15,11 @@ yet; unreleased changes appear first, followed by merged checkpoints.
   transfer code use a separate ROM entry to restore its temporary GPRs.
 - Synchronous reset paths remain timed in the core and debug synthesis flows.
   External-reset exceptions are restricted to TCK asynchronous reset pins.
-  Directed tests cover the exception cases and BSCAN resets during scans;
-  Vivado implementation of these fixes remains pending.
+  Directed tests cover the exception cases and BSCAN resets during scans.
+  The committed fixes completed Vivado implementation on 2026-10-27 at
+  75 MHz: whole-design setup/hold +0.005/+0.011 ns, CPU setup +0.482 ns,
+  16/16 bus-skew constraints met and zero bitstream DRC errors. Board
+  acceptance remains pending.
 
 ### Added — opt-in karudbg and AXI requester metadata
 

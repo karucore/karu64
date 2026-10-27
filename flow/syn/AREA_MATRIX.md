@@ -45,10 +45,12 @@ are +0.0566 ns and +2.0143 ns. Its newly timed synchronous reset also reaches
 input-to-register and register-to-output slack are +1.1159 ns and +2.7162 ns;
 it has no input-to-output paths. Both enabled runs have identical before/after
 input fingerprints.
-The earlier VCU118 board design synthesized and placed with CPU setup slack
-+0.977 ns at 75 MHz, then stopped during routing. It predates the review and
-clock/reset-constraint corrections. No new debug bitstream or current routed
-closure is claimed; FPGA and board acceptance remain open.
+The review-corrected VCU118 debug build completed on 2026-10-27 at 75 MHz.
+Whole-design routed setup/hold slack is +0.005/+0.011 ns; CPU setup slack is
++0.482 ns. All 16 bus-skew constraints pass and bitstream DRC reports zero
+errors. Routed use is 333,645 LUTs, 88,712 registers, 317.5 BRAM tiles and
+29 DSPs. Board acceptance remains open; FPGA timing closure does not change
+the separate 200 MHz OpenSTA shortfall above.
 
 See [karudbg measurements](../../dbg/MEASUREMENTS.md) for exact defines, current
 source/tool evidence, disabled-row equivalence proof, initialization scope and

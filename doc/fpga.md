@@ -17,14 +17,41 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Last validated profile image — 2026-10-07
+## Current debug image — 2026-10-27
+
+The standard `vcu118-ddr-sgmii-rom-rva23s64-dbg` build completed from RTL
+commit `175b842`, including the reviewed debug fixes and corrected BSCAN
+clock/reset constraints. Vivado 2026.1 meets routed timing at 75 MHz:
+whole-design setup/hold +0.005/+0.011 ns, CPU setup/hold +0.482/+0.011 ns,
+minimum pulse-width slack +0.005 ns, 16/16 bus-skew constraints met, and
+zero bitstream DRC errors. The final design uses 333,645 LUTs, 88,712
+registers, 317.5 BRAM tiles and 29 DSPs.
+
+`_build/vcu118_ddr.bit` has SHA-256
+`bc5e3d3d1639d02c1657c44759d46fa6afd2e833f4811b9621aca66bab97571c`.
+Use `make vcu118-program-bundle` to package it for transfer with its probes,
+ROM manifest and extracted control DTB. The generated
+`_build/vcu118_programming.tgz` is 12,976,720 bytes, with SHA-256
+`4f024b69cae624863c750a2a444c1d8284be6fa684a29734af0e801ac4d82e6a`.
+The ROM inputs match karudeb
+`a3e6b70`, including DTB `d617ba56…bcec9` and the lab netboot command.
+The source/ROM hash record is `_build/vcu118_build_inputs.json`; routed
+reports are under `_build/fpga_rpt/`. See [measurements](../dbg/MEASUREMENTS.md)
+for timing scope and the separate 200 MHz mapped timing shortfall.
+
+This image has not been programmed or booted on the board. USER4 debug,
+detach and normal karudeb boot remain the hardware acceptance gates; use
+the [karudbg instructions](#optional-karudbg-integration) and patched pinned
+OpenOCD build for those tests.
+
+## Last board-validated profile image — 2026-10-07
 
 The RVA23S64 DDR/SGMII ROM image `28085356…abbd7` contains the element-group
 `vkeccak.vi` (`99078e3`, branch `dev-keccak`). Vivado 2026.1 closed routed
 timing at 75 MHz: whole-design setup/hold +0.007/+0.011 ns, `cpu_clk`
 +0.244/+0.011 ns, 14/14 bus-skew constraints met and zero bitstream DRC
 errors. It was built on a host without the board; the programming bundle
-(bitstream, `.ltx`, ROM manifest and the ROM's DTB) is
+(bitstream, `.ltx`, ROM manifest and the ROM's DTB) at that checkpoint was
 `_build/vcu118_programming.tgz`, SHA-256 `1ab66159…c178`. The ROM bakes
 the lab netboot command and the karudeb `dev-keccak` (`b3b6abf`) control
 DTB `d617ba56…bcec9`. **Validated on the board 2026-10-07**: programmed over
@@ -49,7 +76,7 @@ and `.ltx` bundle.
 
 The image was programmed on September 25. It boots Linux 7.2.6-zvk from NFS
 and passes `board_accept.sh` (memory, cache, crypto, KVM API and profile checks).
-An FP probe completed; full on-board TestFloat3 is running. The September 22
+An FP probe completed. The September 22
 reference image `03eeb088…e73d2` passed additional KVM guest, OpenSSL and
 vector ABI tests, recorded separately by image hash. See
 [diagnostics and result hashes](release-diagnostics-2026-09-14.md) and the
@@ -313,10 +340,11 @@ Xilinx outer TAP, the production tunnel and real DM/DTM/core with actual
 OpenOCD/GDB, plus pause/abort/reset and negative controls. This verifies the
 tunnel protocol and software integration, rather than a physical FPGA cable
 or primitive timing. The synthesis/placement evidence and outstanding timing
-gates are recorded in [karudbg measurements](../dbg/MEASUREMENTS.md). The build
-stopped during routing and produced no new debug bitstream. Board debug,
-detach and normal karudeb boot still require hardware acceptance. The
-previously validated images above do not contain karudbg.
+gates are recorded in [karudbg measurements](../dbg/MEASUREMENTS.md). The
+2026-10-27 build completes routed setup, hold, pulse-width and bus-skew
+checks with the corrected constraints and produces the current debug
+bitstream above. Board debug, detach and normal karudeb boot still require
+hardware acceptance. The earlier board-validated images do not contain karudbg.
 
 For board programming on another host, run `make vcu118-program-bundle` and
 transfer `_build/vcu118_programming.tgz`. Its members retain the `_build/...`

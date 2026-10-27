@@ -364,4 +364,6 @@ privilege, instruction/data traffic and a static trusted security domain,
 including across stalls and queued accesses. The current VCU118 design does
 not enforce access control with these attributes. The core's MMU and physical
 access checks remain active. Opt-in execution-based debug is documented in
-[the karudbg implementation and testing plan](dbg/README.md).
+[the karudbg implementation and testing plan](dbg/README.md). Its reviewed
+VCU118 image completed routed timing at 75 MHz on 2026-10-27; board debug and
+boot acceptance remain pending. See [the current FPGA image](doc/fpga.md#current-debug-image--2026-10-27).
