@@ -91,6 +91,19 @@ the assigned platform identity; the default is a simulation placeholder.
 The October 26 combined audit reports zero initialized state and the same
 97,024 data-array bits, with one additional Program Buffer control array.
 
+The [karudbg extension plan](../../dbg/README.md#extension-implementation-and-testing-plan)
+tracks auto-execution, hardware address triggers and SBA for the single-hart
+ASIC, with separate FPGA validation. It covers the portable bus/clock/reset
+contract, cache coherence, four-state startup, macro-interface preservation,
+CDC/RDC, timing and DFT integration. Those extensions are planned, not part of
+the current measured implementation; multi-hart support is excluded.
+The [fixed E0 decisions](../../dbg/README.md#fixed-e0-decisions) select
+debugger-owned triggers, post-pointer-masking
+address comparison, explicit FF watchpoint entry, and reuse of whole-cache
+flush/refill-poison logic for SBA coherence. SBA RAM writes use a hardware
+issue/drain and fetch-resynchronization handshake, without Program Buffer
+execution; account for its cache-loss/stall cost in ASIC integration.
+
 `sources.tcl` supplies variables for the site's Genus script. It does not
 load technology libraries or run Cadence. The manifest was elaborated with
 Yosys; Cadence execution and compiler-macro binding have not been performed.

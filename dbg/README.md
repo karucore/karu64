@@ -8,7 +8,10 @@ Debug 1.0 compliance claim remain pending.
 
 The first implementation targets one RV64 hart, using execution-based debug
 with a Debug ROM and Program Buffer. System Bus Access (SBA) and hardware
-breakpoint/watchpoint triggers are outside the first implementation.
+breakpoint/watchpoint triggers are outside the first implementation. The
+[follow-on implementation and testing plan](#extension-implementation-and-testing-plan)
+adds auto-execution, hardware triggers and SBA for an ASIC implementation,
+with FPGA validation. Multi-hart support is out of scope.
 
 The same update also includes the core/platform AXI protection-metadata work
 required by [security review finding S1](../doc/security-review-2026-09-14.md#s1--high-axi-protection-metadata-does-not-describe-the-requester).
@@ -823,15 +826,297 @@ attributes the pinned tool actually supports.
   are all documented. Distinguish simulated, synthesized and board-tested
   configurations.
 
-## Deferred work
+## Extension implementation and testing plan
 
-SBA requires a separate AXI master, full-address error handling and a cache
-coherence policy before it is advertised. Gate address autoincrement on a
-successful bus transfer, including error-response tests required by v1.0.
-Dynamic security domains, richer AXI context sidebands and context-sensitive
-cache/TLB/PWC reuse require a separate platform contract when such protection
-is needed; they are not prerequisites for milestone A's limited contract.
-Hardware triggers, additional harts, authentication protocols, debug power
-management and hardware-translated debugger memory accesses have separate
-scope. Any later feature must update discoverability, provenance and the
-requirements-to-tests record before being enabled.
+Planned on 2026-10-29; implementation has not started. The current contract,
+validation record and FPGA image above describe the existing implementation,
+not these extensions. Check a task only when its implementation and required
+evidence are complete; record the source revision, configuration, command,
+result and artifact paths beside it. Reference documents are Debug 1.0's
+[DM chapter](https://docs.riscv.org/reference/debug/v1.0/debug_module.html) and
+[Sdtrig chapter](https://docs.riscv.org/reference/debug/v1.0/Sdtrig.html).
+
+The destination is a single-hart RV64 ASIC. Use the conventional JTAG TAP/DTM
+and portable core, DM and bus-interface RTL there. Keep Xilinx primitives,
+USER4 framing, MIG and board clock/reset wiring in the FPGA integration.
+Implement in this order: **contract and fixtures → autoexec → triggers → SBA
+→ combined acceptance**. SBA interface/coherence design can proceed while
+trigger implementation is tested.
+
+| Milestone | Planned deliverable | Completion evidence |
+| --- | --- | --- |
+| E0 | ASIC/platform contracts and test fixtures | Reviewed interface, reset, matching and coherence decisions |
+| E1 | Abstract-command auto-execution | DM protocol tests and actual OpenOCD bulk/MMIO tests |
+| E2 | Hardware address breakpoints/watchpoints | CSR, scalar/vector/H tests, reference checks and GDB watchpoints |
+| E3 | Independent System Bus Access | AXI, cache, protection and running-hart tests |
+| E4 | Combined ASIC/FPGA acceptance | Integrated regressions, mapped estimates, ASIC handoff and routed FPGA results |
+
+### E0 — contracts, configuration and shared fixtures
+
+- [ ] **E0.1** Specify independently selectable feature configurations:
+  existing debug, each extension separately, all extensions, and debug disabled.
+  Disabled features must elaborate away and report their absence correctly.
+  Preserve the single-hart interface; do not add hart-array/group machinery.
+- [ ] **E0.2** Record exact supported trigger fields and WARL/reset behavior,
+  SBA address/data widths and bus map, autoexec ordering, and error priorities
+  before writing RTL, using the four fixed decisions below. Advertise only
+  implemented and tested capabilities.
+- [ ] **E0.3** Specify core/DM/TCK/SBA clock and reset ownership. DM and SBA
+  must remain usable while the hart is halted; distinguish hart halt/reset,
+  `ndmreset`, `dmactive=0`, DMI reset and TAP reset. A platform-reset bus need
+  not service SBA, but cancellation must not leave a stuck owner or stale reply.
+- [ ] **E0.4** Keep the existing synchronous core/DM reset convention and
+  conditioned TCK reset release. Record ASIC clock-gating, scan/test-mode and
+  reset/isolation requirements with the SoC integrator; do not substitute
+  blanket timing exceptions or a global asynchronous-reset conversion.
+- [ ] **E0.5** Extend reusable fixtures: side-effect-counted MMIO, controllable
+  faults/stalls, cached RAM aliases, instruction replacement, vector access
+  traces and guest contexts. Store harnesses and negative controls under
+  `test/dbg/`, with maintained Make targets; generated files stay in `_build`.
+
+#### Fixed E0 decisions
+
+These choices resolve the initial scope and behavior; implementation and its
+tests remain unchecked above and below.
+
+**E0-D1 — debugger-owned triggers.** An active trigger must have `type=6`,
+`dmode=1`, `action=1`. Authorized writes requesting `dmode=0` normalize the
+slot to disabled `type=15`, with `dmode=0`; writing zero also disables it.
+Unsupported active actions normalize to disabled type 15. Reset slots are
+disabled type 15 with `dmode=0`. Existing `dmode=1` protection takes priority:
+M-mode writes cannot alter any protected `tdata` register, and M-mode cannot
+set `dmode`. In an unprotected slot, an M-mode write requesting an active
+trigger therefore reads back disabled type 15 with `dmode=0`. Debug Mode can
+clear `dmode`, but doing so disables the trigger even
+if the write requests action 1. Discovery must report the supported types.
+This follows the Debug 1.0 `tdata1` protection and action-1 rules. Native
+OpenSBI/Linux-managed breakpoint/watchpoint exceptions are not supported in
+this phase; an external debugger can still watch Linux and guest accesses.
+Action 0 and `tcontrol` remain deferred.
+
+**E0-D2 — whole-cache hardware coherence for SBA writes.** Reuse the existing
+D-cache and I-cache flush/refill-poison mechanisms, rather than adding per-line
+invalidation. For an SBA write to RAM that may have cached aliases, a hardware
+maintenance handshake drains older core writes and pauses new issue at an
+instruction boundary. After the write response, flush both caches, discard
+IFU prefetch and unissued decode state, and restart fetch at the held next
+instruction PC. Do not report SBA completion until maintenance is acknowledged;
+release the pause unless another halt/reset condition applies. Also perform
+maintenance after a failed response if an accepted write may have modified RAM.
+The default FPGA class includes the whole DRAM window, regardless of CPU
+Svpbmt aliases; ASIC/custom maps must identify equivalent RAM regions.
+Running-hart writes temporarily pause execution and lose cache contents.
+Neither Program Buffer execution nor a ROM-resume fence is required. Pure MMIO
+access does not invoke this RAM maintenance. Page-table edits still require
+the appropriate architectural translation fence.
+
+**E0-D3 — compare the pointer-masked access address.** Apply the same pointer
+masking transformation as the explicit memory access, then compare its
+effective address before translation. Guest accesses compare before VS/G-stage
+translation as applicable. With masking disabled, compare the original
+effective address. Use the effective privilege and its MPRV/SPVP/MXR rules;
+instruction PCs are not pointer-masked. CSR writes to `tdata2` are not masked:
+the debugger programs the address/range it intends to match. SBA remains a
+physical bus operation and does not inherit CPU pointer masking. The source
+for this rule is the
+[Pointer Masking specification, §17.1.2.6](https://docs.riscv.org/reference/isa/v20260120/priv/zpm.html),
+which explicitly applies masking to memory addresses used by debug triggers.
+
+**E0-D4 — fault-only-first watchpoints enter Debug Mode.** A hit at active
+element `i`, including `i>0`, takes the precise debug entry, leaves `vl`
+unchanged and sets `vstart=i`; DPC identifies the vector instruction. Preserve
+completed earlier elements and stop before the matching element's side effects.
+For segmented operations, stop before the matching segment's side effects so
+element-level restart does not repeat non-idempotent field accesses. A genuine
+earlier fault retains its normal priority/FF-trimming behavior; a watchpoint
+must not be converted into a fault-only-first trim to avoid reporting it.
+This chooses the behavior recommended by
+[RVV 1.0's fault-only-first rules, §31.7.7](https://docs.riscv.org/reference/isa/v20240411/_attachments/riscv-unprivileged.pdf).
+
+### E1 — abstract-command auto-execution
+
+This is confined primarily to the DM. It reuses the existing saved command
+and execution engine; it does not add another processor or memory master.
+
+- [ ] **E1.1** Implement `abstractauto` for both data registers and all eight
+  Program Buffer words: ten writable enable bits, with other bits reading zero.
+  Reset/`dmactive` behavior must agree with the register contract.
+- [ ] **E1.2** Trigger exactly once per accepted selected DMI access. A read
+  returns the current value before re-execution; a write supplies the new value
+  before re-execution. Route launches through the same availability, halted,
+  command-validity, busy and `cmderr` checks as explicit command writes.
+- [ ] **E1.3** Test every enable bit, read and write, reserved bits, postexec,
+  backpressure, busy/error clearing, exception recovery and reset cancellation.
+  Assert no duplicate launch from a held request or a delayed response.
+- [ ] **E1.4** Run actual pinned OpenOCD/GDB bulk RAM/register transfers.
+  For MMIO, count transactions for one-element and block transfers and prove
+  the selected tool path makes no speculative, trailing or duplicate device
+  access. Do not alter architectural autoexec semantics to hide tool overreads.
+- [ ] **E1.5** Test the native autoexec path and the unsupported-autoexec
+  fallback configuration separately. Review the existing OpenOCD patch in
+  parts: implementing autoexec does not remove its independent software-walk
+  safeguards. Document any remaining tool policy needed for MMIO.
+- [ ] **E1.6** Negative controls must detect a duplicate command and incorrect
+  read/write ordering. Pass the existing DM, command-exception and transport
+  gates, then record incremental area and timing impact.
+
+### E2 — hardware address breakpoints and watchpoints
+
+Start with **two address-match slots**, with a four-slot configuration for
+cost/timing comparison. Use standard `mcontrol6` triggers for execute, load
+and store addresses, with exact and supported NAPOT range matching. Initial
+scope is debugger-owned triggers entering Debug Mode. Data-value matching,
+chaining, instruction-count/interrupt/exception triggers, native breakpoint
+actions and ASID/VMID/context matching are deferred; expose unsupported fields
+through correct WARL/discovery behavior rather than partial emulation.
+
+- [ ] **E2.1** Implement `tselect`, `tinfo`, `tdata1`/`tdata2` and the required
+  absent-register behavior. Specify type enumeration, slot exhaustion, hit
+  reporting, `dmode` write protection and M/S/U/VS/VU matching. Disable matching
+  during Debug Mode and establish the trigger debug-entry cause/priority.
+  Apply E0-D1's disabled-type normalization and protected-write precedence.
+- [ ] **E2.2** Match execute addresses at an architectural instruction boundary,
+  not speculative prefetch. Match data accesses before the core cache can hide
+  them. Use E0-D3's post-masking, pre-translation address and its Pointer
+  Masking specification reference, including guest execution; exclude implicit
+  page walks, cache fills and independent SBA traffic from architectural matching.
+- [ ] **E2.3** Cover scalar integer/FP loads/stores, LR/SC, AMOs and the required
+  cache-block operations. Define precise match/fault ordering and suppress
+  watched side effects when using before-access timing. Resume must neither
+  repeat a committed store nor omit an uncompleted access.
+- [ ] **E2.4** Integrate RVV at the active-element level. Cover contiguous,
+  strided, indexed, segmented and whole-register accesses, fault-only-first,
+  masks, tails and `vstart`. A 16-byte memory granule can contain several
+  watched elements; comparing its AXI base alone is insufficient. Preserve
+  completed elements and the correct restart point across debug entry.
+  Apply E0-D4 to fault-only-first and segmented hits; do not trim `vl` on a hit.
+- [ ] **E2.5** Keep comparators off normal critical paths where possible.
+  Permit extra sequencing while triggers are enabled; measure that disabled
+  triggers preserve normal cycle counts. Precompute range masks when configured
+  if useful, use bounded/balanced logic, and infer no runtime divider/modulo or
+  extra register-file/memory ports.
+- [ ] **E2.6** Add CSR tests and directed instruction subjects. Sweep access
+  widths, alignment, range boundaries, cache hits/misses, page boundaries,
+  privilege/guest contexts and fault priority. For RVV, sweep SEW/LMUL, active
+  lengths and masked/prestart/tail cases, including a match beyond the first
+  byte/element of a granule. Check DPC, cause, registers, memory side effects,
+  application trap state and exact continuation after disabling the trigger.
+  Explicitly test M-mode writes to protected slots, `dmode=0,action=1` writes
+  to writable slots, debugger disarming and zero writes. Test tagged/untagged
+  address pairs at PMLEN 0/7/16, Sv39/Bare, MXR and MPRV/SPVP settings, and
+  verify `tdata2` retains its written bits. For fault-only-first, test hits at
+  elements 0, 1 and the last active element, masked element 0, nonzero `vstart`,
+  segmented hits and an earlier real fault; verify unchanged `vl`, exact
+  restart and no repeated non-idempotent access when the watchpoint fires.
+- [ ] **E2.7** Cross-check supported trigger cases with a pinned Spike where
+  its model covers the same semantics; use independent expected access traces
+  and assertions for remaining cases. Do not weaken the oracle to match Karu.
+  Exercise actual GDB hardware breakpoints and read/write/access watchpoints,
+  slot allocation, stepping over a hit and detach/reconnect through OpenOCD.
+- [ ] **E2.8** Negative controls must catch a missed cache-hit watchpoint,
+  a missed later vector element, a masked-element false hit and a wrong restart
+  point. Run the existing scalar/vector, privilege and debug regressions.
+
+### E3 — System Bus Access
+
+Adapt the SBA engine/register behavior from the pinned PULP `dm_sba.sv` and
+`dm_csrs.sv`, retaining provenance and licenses. Start with one outstanding
+single-beat access, native 8/16/32/64-bit transfers and a generic platform bus
+adapter. Bursts and multiple outstanding requests are not prerequisites.
+
+- [ ] **E3.1** Implement truthful `sbcs`, `sbaddress*` and `sbdata*` discovery,
+  read-on-address/data, write launch, autoincrement, sticky errors and busy
+  rules. Increment only after a successful transfer. Never truncate an
+  advertised address silently; reject invalid sizes/alignment/addresses before
+  bus activity where possible.
+- [ ] **E3.2** Add arbitration upstream of the platform memory/peripheral
+  decoder, downstream of the core caches. The existing FPGA host-loader mux
+  selects DDR only while the CPU is held; it is not concurrent SBA arbitration.
+  Preserve transaction ownership through independent AW/W acceptance and until
+  B/RLAST, response backpressure and every supported reset sequence.
+- [ ] **E3.3** Implement E0-D2's hardware maintenance handshake using the
+  existing whole-cache flush/refill-poison paths. Add the issue/drain and
+  IFU/decode restart coordination, not a new cache-tag/per-line mechanism.
+  Preserve running/halted state and report completion only after coherence
+  acknowledgement, including errors with possible write side effects. Document
+  cache-loss/stall cost and translation fences for edited page tables.
+  Live SBA is not an atomic snapshot of a running program.
+- [ ] **E3.4** Preserve native-width MMIO and exact byte enables; make no
+  speculative reads or automatic retries with duplicate device effects. Set
+  AXI privilege/security/data attributes from an explicit debug-master policy,
+  not the interrupted hart's mutable context. Retain core-only authorization
+  for the private debug page and define the SoC enable/lock gate for SBA.
+- [ ] **E3.5** Test each access width and trigger mode, bus error, illegal
+  address, unsupported size, alignment, autoincrement and error clearing.
+  Stall AR/AW/W/R/B independently, including W before AW, and exercise reset
+  and DMI cancellation at every transaction phase. Prove no lost, duplicated
+  or misrouted transaction and no increment on failure.
+- [ ] **E3.6** Test cached-data readback after SBA writes, fills racing with
+  invalidation, outstanding/posted CPU writes, code replacement plus fetch
+  synchronization, and physical aliases. Exercise RAM and counted MMIO with
+  the hart halted and running. Test prefetched/unissued old instructions,
+  pending interrupts and errors after an accepted RAM write. Prove completion
+  waits for maintenance, execution resumes at the correct PC without register
+  corruption, and no Program Buffer command or ROM-resume fence is needed.
+- [ ] **E3.7** Test OpenOCD's SBA method explicitly, including its block-access
+  controls and error recovery. Do not allow an unnoticed Program Buffer
+  fallback to make the SBA test pass. Verify inaccessible private-page and
+  disabled-master attempts generate no downstream access.
+- [ ] **E3.8** Negative controls must catch an ignored bus error, a high-address
+  alias, stale cached data after an SBA write and an extra MMIO transfer.
+
+### E4 — combined verification, ASIC handoff and FPGA validation
+
+- [ ] **E4.1** Run bounded unit/assertion tests first, then directed Verilator,
+  Spike and real OpenOCD/GDB tests. Reuse compiled models and unchanged
+  reference artifacts, use explicit timeouts, and record seeds/configurations.
+  Run focused ordinary ISA/ACT4 slices when core issue/trap logic changes;
+  run the full applicable release inventory once the combined RTL is stable,
+  in bounded batches. Ordinary ACT4 success is not a debug-compliance verdict.
+- [ ] **E4.2** Test interactions: watchpoint hit during normal execution followed
+  by autoexec register access and SBA inspection; SBA accesses must not trigger
+  hart watchpoints. Cover pending interrupts, stepping, guest state, command
+  exceptions, reset recovery and ordinary execution after detach. Preserve the
+  existing application trap-state and scratch-register invariants.
+- [ ] **E4.3** Run four-state and randomized `KARU_ASIC` startup tests. Prove
+  disabled/unconfigured comparators and uninitialized payloads cannot leak X
+  into control, handshakes or a false trigger. Re-run declaration-order lint,
+  strict Verilog parsing, memory/initialization and live-divider audits.
+- [ ] **E4.4** Update generic source manifests, include/define lists, provenance
+  and the combined ASIC inventory. Keep small trigger/DM state as control
+  flops; preserve RF/cache/VRF macro interfaces unless an explicitly reviewed
+  change requires otherwise. Conventional ASIC builds must contain no Xilinx
+  primitives or dependence on FPGA power-up initialization.
+- [ ] **E4.5** Measure base, each extension and combined area/timing against
+  identical RTL/tool/library baselines. Report absolute and incremental results
+  and normal/debug cycle costs. The current 200 MHz OpenSTA target already
+  misses timing; neither hiding reset/CDC paths nor passing FPGA timing closes
+  that ASIC goal. Inspect trigger issue gating, SBA arbitration, invalidation
+  fanout and register-to-register paths in particular.
+- [ ] **E4.6** Produce ASIC clock/reset/CDC/RDC and timing constraints for the
+  supported integration, retaining bundled-data bounds and reset-release
+  checks. Review test/scan and clock-gating interactions. NanGate45/Yosys and
+  OpenSTA are comparative estimates; foundry libraries, memory binding, PVT,
+  physical timing and DFT signoff remain technology-specific acceptance gates.
+- [ ] **E4.7** Rebuild the combined shipping FPGA image through the standard
+  75 MHz RVA23S64/SGMII/ROM flow and locations. Pass routed setup, hold,
+  pulse-width, bus-skew and DRC checks; record hashes and compare the packed
+  karudeb inputs. Update discovery/companion documentation only as implemented
+  features require it, with no unsupported certification claims.
+- [ ] **E4.8** On FPGA, exercise hardware watchpoints/breakpoints, autoexec bulk
+  access and SBA RAM/MMIO while halted and running, using reserved scratch
+  memory and counted device tests. Verify detach, normal karudeb boot and the
+  maintained board acceptance tests. Record simulator, FPGA and ASIC evidence
+  separately; FPGA success does not establish silicon CDC/DFT/timing signoff.
+- [ ] **E4.9** Update the implemented contract, requirements-to-tests map,
+  measurements, handoff and tool instructions as features land. Keep unmet
+  gates unchecked and distinguish hardware support from debugger limitations.
+
+### Further deferred work
+
+Multi-hart support is excluded from this plan. Authentication protocols,
+dynamic security domains, richer context sidebands/cache partitioning, debug
+power management and hardware-translated debugger memory access remain separate
+scope. Production lifecycle/fuse policy belongs to the ASIC SoC integration;
+the enable/lock and transaction-authorization contract must be explicit without
+requiring those larger features in the first extension implementation.
