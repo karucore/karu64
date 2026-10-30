@@ -5,6 +5,7 @@
 // 643607e19df3435cfd77cc56143e2637f5900a6e (ETH Zurich/University of Bologna).
 `ifndef KARUDBG_DEFS_VH
 `define KARUDBG_DEFS_VH
+`include "karudbg_cfg.vh"
 `define KARUDBG_BASE       32'h0012_0000
 `define KARUDBG_ENTRY      12'h800
 `define KARUDBG_EXCEPTION  12'h810

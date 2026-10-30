@@ -1,16 +1,72 @@
 # Karu area and timing estimates
 
-The current comparison below records the 2026-10-26 review-corrected processor
-composition. Source/input manifests under `_build/syn_out` bind each result
-to RTL, scripts, tools and Liberty. The September feature matrix later in this
-file is a separate checkpoint, predating the Genus cleanup, 1W2R FP register
-file and karudbg; its rows are not measurements of the current tree.
+The complete debug-extension comparison is dated 2026-10-29. All twelve
+area/timing rows were fresh mappings with identical before/after input hashes
+at that checkpoint; no mapped-design reuse was used.
+Manifests under `_build/syn_out` bind each result to RTL, scripts, tools and
+Liberty. Earlier comparisons below are separate historical checkpoints.
+
+The October 30 RTL registers the SBA pause to remove the reset-to-trigger
+feedthrough introduced by fetch-fault pause qualification. The freshly mapped
+full two-trigger row has register WNS **−0.3978 ns**, TNS **−17.40 ns** and
+input-to-register slack **+0.2328 ns** (previously −0.1739 ns). Register-to-output
+and input-to-output slack are +0.3106/+0.5794 ns. IO groups pass; 200 MHz
+still misses on the IFU/decode-to-double-FMA register path. Only this timing
+row was rerun; the area table and other timing values below retain the
+October 29 source. See the
+[pause follow-up](../../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30)
+for the current result and its scope. The accepted FPGA bundle is unchanged.
 
 These are comparative NanGate45 standard-cell estimates, with memories mapped
 to cells. They are not ASIC macro-area or signoff timing results. Use the
 [ASIC inventory](../asic/README.md) when planning memory-macro replacement.
 
-## Shipping debug comparison — 2026-10-26
+## Debug extensions — 2026-10-29
+
+These rows use the same shipping processor and conventional-JTAG debug top.
+Base debug has `KARU_DBG`; the full rows add autoexec, SBA and two or four
+debugger-owned address triggers.
+
+| Configuration | kGE | Increment kGE | Increment % |
+| --- | ---: | ---: | ---: |
+| Base debug | 4,406.7233 | 0.0000 | 0.0000 |
+| Autoexec | 4,406.8260 | 0.1027 | 0.0023 |
+| Two triggers | 4,412.8477 | 6.1243 | 0.1390 |
+| SBA | 4,415.0943 | 8.3710 | 0.1900 |
+| Full, two triggers | 4,421.3380 | 14.6147 | 0.3316 |
+| Full, four triggers | 4,425.0677 | 18.3443 | 0.4163 |
+
+All six timing rows are complete and none closes at 200 MHz. Base debug has
+register-to-register WNS −0.3991 ns and TNS −16.64 ns; the selected full
+two-trigger row has −0.3978 ns and −20.38 ns. The full row's longest path
+remains IFU buffered address through compressed decode and FP operands to
+double FMA, with 5.36 ns arrival. The registered VLSU watch address does not
+set that critical path.
+
+The full row also has **−0.1739 ns input-to-register slack**, from timed
+synchronous `rst` through DM/SBA and trigger/core control to the IFU. The
+specified input delay is 1.50 ns; arrival is 5.14 ns. Base debug's input group
+passes at +0.4428 ns. Full-debug output groups pass (+0.3106 ns register-to-
+output, +0.3510 ns input-to-output), so these results must not be summarized
+as all IO paths passing.
+
+The optional four-trigger row has WNS −0.9432 ns, TNS −96.76 ns and reset
+input slack −0.2210 ns. Its longest path is scalar FP distribution through
+widening/FP-estimate logic to `ksbuf`, not a trigger comparator. Mapping
+variation in unchanged logic prevents attributing that difference solely to
+the slot count.
+
+See [the complete extension matrix and reproduction commands](../../dbg/MEASUREMENTS.md#extension-measurements--2026-10-29)
+for all path groups, source/report evidence and the separate FPGA acceptance.
+The standard full-debug/two-trigger FPGA image also completed on 2026-10-29:
+75 MHz routed setup/hold +0.010/+0.011 ns overall and +0.048/+0.011 ns in the
+CPU, with 16/16 bus-skew constraints and zero bitstream DRC errors. It uses
+375,881 LUTs. Its +12.66% LUT count versus the older base-debug FPGA checkpoint
+is an unisolated source/configuration comparison, not the controlled +0.3316%
+NanGate45 increment. See the measurements for hashes and scope. Board testing
+and 200 MHz mapped timing closure remain open.
+
+## Historical shipping debug comparison — 2026-10-26
 
 Both rows use RVA23S64, I-cache, Zvk, Keccak, pipeline and PMU defines with
 AXI protection metadata. Geometry is VLEN=256/ELEN=64/VBUS=128, two 64-bit

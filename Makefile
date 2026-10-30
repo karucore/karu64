@@ -165,7 +165,7 @@ HTIF_SRC =	rtl/htif_tb.v rtl/karu_clint.v \
 			rtl/karu_ram_prim.v \
 			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
 			rtl/karu_sv39.v \
-			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v rtl/karu_trigger.v \
 			rtl/karu_m.v \
 			rtl/karu_fregfile.v rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
 			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
@@ -1508,7 +1508,7 @@ vrf-bram-core-test bwe-core-test:	$(VERI_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vp
 #	core RTL minus the sim-only testbench + assertion checker
 CORE_RTL =	rtl/karu_ram_prim.v \
 			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
-			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_trigger.v \
 			rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
 			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
 			rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
@@ -2806,8 +2806,11 @@ $(addsuffix /Vhtif_tb.mk,$(HTIF_MODEL_DIRS)) $(BUILD)/htif_tb.vvp: test/htif_pbm
 # Opt-in debug and AXI protection validation; generated outputs stay in _build/dbg.
 include dbg/axi.mk
 include dbg/dm.mk
+include dbg/sba.mk
 include dbg/jtag.mk
 include dbg/core-test.mk
+include dbg/trigger.mk
 include dbg/synthesis.mk
 include dbg/checks.mk
+include dbg/isa.mk
 include dbg/fpga.mk

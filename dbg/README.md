@@ -6,12 +6,14 @@ tracks the implementation, testing plan and acceptance evidence. The opt-in
 RTL and simulation targets have passed the functional gates below; board acceptance and a
 Debug 1.0 compliance claim remain pending.
 
-The first implementation targets one RV64 hart, using execution-based debug
-with a Debug ROM and Program Buffer. System Bus Access (SBA) and hardware
-breakpoint/watchpoint triggers are outside the first implementation. The
-[follow-on implementation and testing plan](#extension-implementation-and-testing-plan)
-adds auto-execution, hardware triggers and SBA for an ASIC implementation,
-with FPGA validation. Multi-hart support is out of scope.
+The base `KARU_DBG` configuration targets one RV64 hart using execution-based
+debug with a Debug ROM and Program Buffer. Optional auto-execution, address
+triggers and System Bus Access (SBA) are tracked in the
+[extension implementation and testing plan](#extension-implementation-and-testing-plan).
+`KARU_DBG_AUTOEXEC`, `KARU_DBG_TRIGGERS` and `KARU_DBG_SBA` select them
+independently; `KARU_DBG_FULL` enables all three. The base configuration retains
+the unsupported-feature fallback tests. The destination is an ASIC, with FPGA
+validation; multi-hart support is out of scope.
 
 The same update also includes the core/platform AXI protection-metadata work
 required by [security review finding S1](../doc/security-review-2026-09-14.md#s1--high-axi-protection-metadata-does-not-describe-the-requester).
@@ -26,17 +28,31 @@ enforcement and board acceptance remain separate obligations.
 
 ## Progress checklist
 
-Current stage: RTL implementation is complete for pre-board review. Directed
-core tests include xRET stepping, Program Buffer control transfers and all
-implemented interrupt sources. The hartinfo and exception-handler fixes pass
-the aggregate functional gate, including corrected reset-constraint checks.
-The refreshed area estimate and OpenSTA reports include those fixes and
-corrected synchronous-reset timing. At 200 MHz, register-to-register WNS is
--0.4436 ns without debug and -0.3977 ns with debug; neither row closes.
-The standard 75 MHz FPGA flow completed on 2026-10-27 with the committed
-review fixes and corrected constraints. Whole-design setup/hold slack is
-+0.005/+0.011 ns; CPU setup slack is +0.482 ns. All 16 bus-skew constraints
-pass, and bitstream DRC reports zero errors. Board acceptance remains open.
+The October 30 RTL registers the SBA issue hold to cut the new reset-to-trigger
+feedthrough. Its combined functional gate passes, and the fresh full
+two-trigger row restores input-to-register slack to +0.2328 ns. The complete
+matrix and FPGA checklist below record the
+October 29 checkpoint; that programming bundle is unchanged and does not
+include this follow-up. See [current timing scope](MEASUREMENTS.md#registered-sba-pause--2026-10-30).
+
+- [x] October 30 pause follow-up: combined source-hashed gate passes in 1,094.03 seconds with 274 unchanged inputs.
+- [x] October 30 full two-trigger timing: input-to-register +0.2328 ns; register WNS −0.3978 ns, so the overall 200 MHz goal remains open.
+
+October 29 checkpoint: autoexec, triggers and SBA pass the combined non-board gate on
+the review-corrected source. The follow-up adds invariants, locked-SBA
+discovery, scratch synchronization and the platform-cache completion handshake.
+All six area and six timing rows were complete for that checkpoint;
+the full two-trigger increment is 14.6147 kGE (+0.3316%). The 200 MHz goal
+remains open, including a reset-input miss in the combined configuration.
+The checkpoint FPGA image passes routed timing at 75 MHz. Checkpoint results are in
+[measurements](MEASUREMENTS.md#extension-measurements--2026-10-29).
+The 2026-10-29 image contains full two-trigger debug: whole-design setup/hold
+slack is +0.010/+0.011 ns, CPU setup/hold +0.048/+0.011 ns, pulse-width
+slack +0.005 ns, all 16 bus-skew constraints pass and bitstream DRC reports
+zero errors. The packed karudeb inputs and programming bundle are verified;
+board acceptance remains open. The base checklist
+below records its reviewed checkpoint; the extension checklist records the
+current implementation and evidence.
 Check an item only when its implementation and
 required tests are complete. Add source and result links beside completed
 items; a documented design choice alone does not close an implementation item.
@@ -79,7 +95,7 @@ items; a documented design choice alone does not close an implementation item.
 - [x] Functional acceptance: pass `dbg-test`, negative controls, four-state
   startup, lint and selected ordinary ISA regressions; rerun `axi-prot-test`
   with debug enabled. Publish the requirements-to-tests evidence.
-  The clean-build aggregate passed in 293.86 seconds with unchanged input hashes.
+  The historical base-debug aggregate passed in 293.86 seconds with unchanged input hashes.
   Ordinary ISA and ASIC startup checks are separate recorded runs.
 - [x] FPGA platform integration: connect a board-compatible debug transport,
   retain the private debug aperture and reset contract, and verify the
@@ -95,8 +111,8 @@ items; a documented design choice alone does not close an implementation item.
   corrected BSCANE2 clocks and narrow reset exceptions. Setup, hold, pulse width
   and all 16 bus-skew constraints pass; bitstream DRC reports zero errors.
   Evidence: `_build/vcu118_ddr.bit` and [routed measurements](MEASUREMENTS.md).
-- [ ] 200 MHz mapped timing closure: the paired OpenSTA runs are complete,
-  but WNS remains -0.4436 ns without debug and -0.3977 ns with debug.
+- [ ] 200 MHz mapped timing closure: the current OpenSTA results and path
+  groups are recorded in [measurements](MEASUREMENTS.md).
   This ASIC performance goal is separate from the completed 75 MHz FPGA build.
 - [ ] [Board acceptance](#synthesis-and-hardware-acceptance): demonstrate
   debug operations and MMIO, then normal karudeb boot and board acceptance
@@ -121,19 +137,55 @@ and overall result in `_build/dbg/validation.json`; detailed output is in
 record. Set `DBG_GATE_JOBS` to adjust gate parallelism and `DBG_JOBS` for
 the OpenOCD/model builds. Individual targets are listed below. Ordinary
 `make test` remains the scalar ISA regression, separate from these debug gates.
+Four-state trigger simulations have a configurable 240-second wall limit
+(`DBG_TRIGGER_IV_TIMEOUT`); a timeout is a failure, and passing still requires
+the test's explicit completion marker and all assertions.
 
-### Functional validation record, 2026-10-26
+The replay, build-binding, cycle-comparison and measurement helpers also have
+bounded self-checks, including deliberately corrupted evidence:
 
-The final conventional-JTAG and USER4 BSCAN implementation passed `make dbg-test`
+```sh
+PYTHONPATH=test/dbg python3 -m unittest \
+  test_isa_replay test_htif_consumption test_idle_cycles \
+  test_measurement_collector test_source_equivalence test_dm_equivalence
+```
+
+### Current combined validation record — 2026-10-30
+
+`make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed at 01:08 UTC in
+1,094.03 seconds, including model rebuilds. All **274 captured input hashes**
+match before and after the run. `_build/dbg/validation.json` records
+`passed=true`, exit status zero, tool identities and source integrity;
+`validation.log` contains the individual results. The helper self-checks above
+also pass all 22 tests.
+
+The gate covers base, independently enabled and combined extensions; native
+OpenOCD/GDB and USER4 BSCAN; precise scalar/vector/guest triggers; SBA RAM/MMIO,
+coherence and cancellation; mutation controls; four-state and six-seed ASIC
+startup; seven build configurations; lint and reset constraints; and the
+live-divider audit. Separate CPU replay passes 2872/2872 preserved ACT4
+references and both 16-subject runs with identical idle cycle counts.
+The [CPU replay record](#ordinary-isa-replay-with-debug-idle) explains its
+reference and build-binding scope. Mapped results are in
+[measurements](MEASUREMENTS.md#extension-measurements--2026-10-29).
+This is pre-board evidence for the registered-pause RTL. The retained FPGA
+image passed its own October 29 routed gate and has not been rebuilt with
+this follow-up; hardware acceptance remains open. The prior functional
+record is preserved in `_build/dbg/reset-pause/before-validation.json`.
+
+### Historical base-debug validation record, 2026-10-26
+
+The reviewed base conventional-JTAG and USER4 BSCAN implementation passed `make dbg-test`
 in 293.86 seconds after rebuilding the generated models from a clean `_build`.
 The run used committed review fixes at `175b842` and completed after the
 hartinfo, exception-handler and reset-timing fixes.
-`_build/dbg/validation.json` records exit status 0,
+At completion, `_build/dbg/validation.json` recorded exit status 0,
 unchanged source hashes before/after, tool identities and the isolated OpenOCD
-patch/build identity. Detailed output is in `_build/dbg/validation.log`.
-The record covers current RTL, tests and build inputs, including both FPGA
-and conventional-top constraint sources. Functional simulators do not execute
-the Vivado constraints; their scope is checked by the Tcl command-model test,
+patch/build identity. That base run covered its recorded RTL, tests and build
+inputs, including FPGA and conventional-top constraint sources. New runs replace
+`validation.json` and `validation.log`; the old timing/counts below are historical
+base evidence, not a validation claim for the current extension RTL. Functional
+simulators do not execute the Vivado constraints; their scope is checked by the Tcl command-model test,
 with separate OpenSTA netlist evidence recorded in [measurements](MEASUREMENTS.md).
 Subsequent changes affecting a functional gate or its compiled models require
 a new record.
@@ -171,9 +223,18 @@ checklist gates and measurement records.
 
 The combined ASIC handoff is [karudbg.f](karudbg.f), or source
 [sources.tcl](sources.tcl) for tool-neutral `karu_sources`,
-`karu_include_dirs`, `karu_defines` and `karu_top`. The processor-only manifest
-remains unchanged. Generated ROM output is checked against
+`karu_include_dirs`, `karu_defines` and `karu_top`. The processor-only top remains `karu64`; optional debug modules elaborate
+away when their switches are disabled. Generated ROM output is checked against
 [its assembly source](rom/karudbg_rom.S); do not edit the encoded ROM by hand.
+
+The [ASIC guide](../flow/asic/README.md) records the conventional source and
+feature selection, common-clock/fabric assumptions, reset/CDC timing scope,
+maintenance clock requirements and remaining scan/technology obligations.
+`make dbg-config-matrix-test` emits strict parser/lint evidence for all seven
+feature configurations; `make dbg-asic-random-test` reuses one full-profile
+ASIC simulator across six startup seeds. These checks complement four-state
+coverage and the memory-initialization audit; they do not replace foundry
+macro binding, physical timing or DFT signoff.
 
 ## Specification and implementation origins
 
@@ -183,8 +244,8 @@ The normative reference is the ratified
 - [Debug Module and abstract commands](https://docs.riscv.org/reference/debug/v1.0/debug_module.html).
 - [Sdext: Debug Mode, stepping, debug CSRs and resume](https://docs.riscv.org/reference/debug/v1.0/Sdext.html).
 - [JTAG Debug Transport Module](https://docs.riscv.org/reference/debug/v1.0/dtm.html).
-- [Sdtrig](https://docs.riscv.org/reference/debug/v1.0/Sdtrig.html), for the
-  required behavior when triggers are absent and for later extensions.
+- [Sdtrig](https://docs.riscv.org/reference/debug/v1.0/Sdtrig.html), for address
+  matching and the base configuration's absent-trigger behavior.
 
 The adoption reference is
 [pulp-platform/riscv-dbg at `643607e19df3435cfd77cc56143e2637f5900a6e`](https://github.com/pulp-platform/riscv-dbg/tree/643607e19df3435cfd77cc56143e2637f5900a6e).
@@ -210,13 +271,18 @@ upstream source or interface compatibility. For every adopted file:
 
 | Function to adopt | PULP reference | Karu adaptation |
 | --- | --- | --- |
-| DM register bank | `src/dm_csrs.sv`, `src/dm_pkg.sv` | Single hart; Debug 1.0 register behavior; no SBA advertisement |
+| DM register bank | `src/dm_csrs.sv`, `src/dm_pkg.sv` | Single hart; Debug 1.0 register behavior; optional autoexec and SBA registers |
+| SBA register/transaction engine | `src/dm_sba.sv`, `src/dm_csrs.sv` | Portable native-width request interface, success-only increment and explicit ownership during DM deactivation |
 | Abstract-command engine and debug memory | `src/dm_mem.sv` | RV64 transfers, Karu interfaces and exception protocol |
 | Parking/command/resume ROM | `debug_rom/debug_rom.S`, `debug_rom/debug_rom.sv` | Two scratch CSRs; relocatable nonzero debug page; reproducible ROM generation |
 | JTAG DTM and CDC | `src/dmi_jtag.sv`, `src/dmi_jtag_tap.sv`, `src/dmi_cdc.sv` | Local RTL conventions, explicit clock/reset contract and transport tests |
 | FPGA transport reference, not adopted | `src/dmi_bscane_tap.sv` | Direct USER-chain protocol differs from mainline OpenOCD; Karu's original USER4 nested-TAP bridge implements the required framing |
 
 ## Initial contract
+
+This table describes the base `KARU_DBG` configuration. The optional
+[implemented SBA contract](#implemented-sba-contract) and extension checklist
+record the additional feature configurations separately.
 
 | Item | Initial scope |
 | --- | --- |
@@ -237,12 +303,22 @@ upstream source or interface compatibility. For every adopted file:
 | Memory access | Instructions executed by the halted hart; no independent system-bus manager |
 | Peripheral access | Required: physical MMIO reads/writes through the Program Buffer and the hart's normal memory path |
 | AXI protection | Milestone A: meaningful `ARPROT`/`AWPROT`, static trusted per-hart Secure/non-secure selection, and preservation of transaction attributes end to end |
-| SBA | Unimplemented: advertise `sbasize=0`, return zero and ignore writes for absent SBA registers, and generate no SBA requests |
-| Triggers | Sdtrig absent; accesses to its CSRs raise illegal-instruction exceptions, including from Debug Mode |
+| SBA | Base configuration: `sbasize=0`, absent registers read zero and ignore writes, no SBA requests. `KARU_DBG_SBA` adds the [independent manager](#implemented-sba-contract) |
+| Triggers | Base configuration: absent CSRs. `KARU_DBG_TRIGGERS` adds two (optionally four) debugger-owned Sdtrig 1.0 address slots; see the [supported contract and tests](TRIGGERS.md) |
 | Optional DM features | No hart arrays/groups, Quick Access, Access Memory command, or separately programmable reset-halt request |
 | Availability fields | `stickyunavail=0`: report current availability; `ndmresetpending=0` as an unimplemented optional field; `havereset` remains sticky |
 | Absent core features | `dcsr.cetrig`, `dcsr.pelp` and `dcsr.nmip` read zero; no Smdbltrp, Zicfilp or NMI source in the initial configuration |
 | Authentication | No authentication protocol initially; advertise that accurately. Define a platform enable/lock policy before deployment |
+
+The core's `debug_resume_ack_o` is the same-clock DRET acceptance event,
+sampled by the DM on the edge that leaves Debug Mode. It deliberately has no
+additional acknowledgement register or extra cycle of run-control latency.
+INV40 checks this pulse contract alongside precise trigger entry and the SBA
+maintenance request/acknowledgement history. Direction-filtered vector arming
+and fetch-fault trigger admission during an SBA pause are covered by
+`dbg-trigger-review-test`; `dbg-trigger-invariant-test` checks independent legal
+sequences and 15 corrupted-observation controls. See the
+[trigger verification contract](TRIGGERS.md) for their scope.
 
 The compliance target is the full external-debug specification using its
 Program Buffer option, rather than the separately defined "Minimal RISC-V
@@ -263,11 +339,13 @@ Use mainline OpenOCD: the archived `riscv-openocd` fork directs ongoing RISC-V
 development upstream. The initial source-review baseline is
 [mainline `cb0c224e936091156ecf3025ba05657408ed64c8`](https://github.com/openocd-org/openocd/blob/cb0c224e936091156ecf3025ba05657408ed64c8/src/target/riscv/riscv.c#L3200)
 (2026-10-24), which implements software VS/G-stage translation, including
-G-stage translation of VS page-table reads. The interoperability tests use
-this base plus the repository's [OpenOCD compatibility patch](openocd-no-autoexec.patch).
-Record both the base revision and patch hash; the pristine binary alone is
-not the tested block-access configuration. Software translation is not
-automatically equivalent to hardware MPRV permission,
+G-stage translation of VS page-table reads. Native autoexec, SBA and hardware
+trigger interoperability tests use this pristine pin. Base-DM fallback and
+software-translation tests use the pin plus the repository's
+[OpenOCD compatibility patch](openocd-no-autoexec.patch). Record the selected
+revision, patch and binary hashes; hardware autoexec support does not remove
+the patch's independent software-walker safeguards. Software translation is
+not automatically equivalent to hardware MPRV permission,
 A/D, PBMT or pointer-masking behavior; document the supported debugger contract.
 
 The OpenOCD installation prerequisite was verified on 2026-10-26. The binary
@@ -284,8 +362,9 @@ openocd -c 'echo [adapter list]; shutdown'
 
 The pristine tool passes the transport/DM connection test. Its block Program
 Buffer memory path assumes optional autoexec support and fails the deliberate
-`dbg-openocd-negative-test` against this DM's advertised absence. The isolated
-compatibility build probes autoexec and uses explicit single-element commands
+`dbg-openocd-negative-test` against the base `KARU_DBG` configuration's
+advertised absence. Native block transfers pass when `KARU_DBG_AUTOEXEC` is
+enabled. The isolated compatibility build probes autoexec and uses explicit single-element commands
 when unavailable, avoiding speculative or trailing MMIO accesses. It also
 rejects misaligned superpage PTEs and unsupported Svnapot software walks instead
 of returning data from an incorrect HPA. These are debugger changes; Karu's
@@ -350,8 +429,10 @@ debug commands. It requires the hart, its clock, memory path and target
 peripheral to be operational. It cannot access peripherals while the hart is
 held in reset or cannot execute the debug program, and does not provide
 independent peripheral access while the application continues running.
-Those capabilities require the deferred SBA system-bus manager and a working
-target bus/peripheral reset domain.
+Independent access while the application runs is provided by optional
+`KARU_DBG_SBA`, subject to its [bus/reset contract](#implemented-sba-contract).
+The current combined integration resets the SBA adapter with the hart and
+affected fabric, so it does not service requests while those resets are asserted.
 
 ## Implementation sequence
 
@@ -633,6 +714,14 @@ board solution. The original Karu [BSCAN tunnel](karudbg_bscan_tunnel.v)
 instead implements the mainline nested-TAP framing on USER4, with a
 [BSCANE2 wrapper](karudbg_bscan.v). Simulation covers the outer FPGA TAP,
 pause/deselection, reset recovery and actual-core OpenOCD memory/MMIO access.
+`make dbg-bscan-full-test` separately builds the full-profile/full-extension
+composition and runs the native OpenOCD Program Buffer, trigger and SBA
+scenarios, plus actual GDB hardware watchpoints, through that outer TAP. The
+2026-10-29 run passes all four sessions, including counted-MMIO command-cache
+recovery and actual GDB watchpoints. Its separate model and
+flag record are under `_build/dbg/obj_bscan_core_full/`, with results under
+`_build/dbg/bscan-full-*`. This covers the default full debug FPGA composition
+in simulation; it is separate from a physical cable/board acceptance.
 The two-edge reset-release conditioner works with stopped clocks; FPGA reset
 ordering keeps the DM alive and holds the hart until the UI-side AXI responders
 leave reset. Physical board transport acceptance remains pending.
@@ -646,8 +735,11 @@ make vcu118-ddr-sgmii-rom-rva23s64-dbg
 It uses the existing karudeb profile ROM inputs and `_build/vcu118_ddr.*`
 locations. USER4 is reserved for karudbg; the conflicting JTAG-AXI host-debug
 configuration is rejected. [vcu118.cfg](vcu118.cfg) configures mainline OpenOCD
-after an appropriate adapter configuration. Use the isolated patched build
-for block accesses, as described above. The FPGA TAP has IR length 6 and
+after an appropriate adapter configuration. This target defaults to
+`KARU_DBG_FULL`; set `VCU118_DBG_EXT_DEFINES=` for base debug. The combined image
+uses the pinned pristine OpenOCD for native autoexec/SBA block accesses;
+base-DM Program Buffer blocks need the fallback patch. Software translation
+retains the separately documented patched-walker policy. The FPGA TAP has IR length 6 and
 USER4 opcode `0x23`; the tunneled RISC-V TAP has IR length 5. This optional
 target is separate from the conventional-TAP OOC measurement and requires its
 own implementation and board acceptance evidence.
@@ -665,12 +757,22 @@ acceptance are separate gates.
 | --- | --- |
 | `axi-prot-test` | Milestone A with debug disabled: effective privilege, fixed Secure/non-secure domain, request producers, cache contract, queues, stalls and peripheral firewall denial; extend and rerun with debug in milestone B |
 | `dbg-unit-test` | DM CSR reset/WARL/read-only behavior; native/narrow reads and rejected writes; hart selection; current availability; activation; absent/autoexec registers; DMI backpressure; abstract-command errors and recovery |
+| `dbg-autoexec-test` | All ten autoexec enables, read/write ordering, backpressure, busy/error behavior, exception recovery and reset cancellation |
+| `dbg-autoexec-core-test`, `dbg-autoexec-gdb-test` | Native pinned OpenOCD/GDB with autoexec enabled; RAM blocks, exact MMIO counts, FP/vector registers and reconnect |
+| `dbg-sba-unit-test` | SBA register/engine tests at 32/64-bit advertised address widths, DMI integration and negative controls |
+| `dbg-sba-bus-test` | Core/SBA arbitration, native lane strobes, independent AW/W, bus errors, ownership, reset, pre-write drain and post-write maintenance; secure/non-secure and locked configurations |
+| `dbg-sba-core-test`, `dbg-sba-core-negative-test` | Cached readback, live code replacement and independent retirement trace, LR/SC, MMIO, held instruction reads, cancellation/reset and four coherence mutations |
+| `dbg-full-openocd-test` | Full-profile combined autoexec/trigger/SBA model with native OpenOCD Program Buffer and SBA acceptance |
+| `dbg-trigger-openocd-test`, `dbg-trigger-gdb-test` | Actual hardware breakpoint/read/write/access watchpoint allocation, precise continuation, GDB reconnect and armed-trigger exclusion of independent SBA |
 | `dbg-rom-test` | Reproducible ROM image; scratch preservation; halt/going/exception/resume handshake and authorized DRET; each supported abstract transfer; malformed commands |
 | `dbg-core-test` | Precise halt/resume/step, correct DPC/cause, debug CSR permissions, EBREAK controls, rejected Program Buffer DRET and debug exception containment |
 | `dbg-memory-test` | Core Debug Mode and platform requester gates for the debug page; MMIO permissions/cache bypass; access widths and byte lanes; device side effects; AXI stalls/errors; independent AW/W; repeated requests; dynamic Program Buffer updates; code-write/FENCE.I readback |
 | `dbg-context-test` | M/S/U/VS/VU entry and return; H metadata; scalar FP, vector, Zvk and Keccak state round trips; representative arithmetic and memory instructions in Debug Mode |
 | `dbg-translation-test` | Pinned OpenOCD software walks for host/guest pages, high GPAs, Svnapot, error containment and documented differences from hardware translation |
 | `dbg-jtag-test` | TAP/DTM protocol, CDC, sticky busy/errors, TMS/TRST reset, frequency/phase variation, and OpenOCD/GDB through remote bitbang |
+| `dbg-bscan-full-test` | Full-profile/full-extension USER4 tunnel with native OpenOCD Program Buffer, trigger and SBA cases plus GDB hardware watchpoints |
+| `dbg-measurements-collector-test` | Synthetic measurement parsing, source/tool/library staleness and compatible-baseline delta checks |
+| `dbg-config-matrix-test`, `dbg-asic-random-test` | Seven strict ASIC elaboration/lint compositions and six randomized full-feature startup seeds |
 | `dbg-ooc-reset-constraints-test` | Tcl command-model checks for timed synchronous reset, narrow TCK reset exceptions and fail-closed guards; no Vivado or physical timing claim |
 | `dbg-test` | Aggregate debug functional gate, including debug-enabled and debug-disabled protection tests; ordinary `make test` is a separate ISA regression |
 
@@ -826,11 +928,211 @@ attributes the pinned tool actually supports.
   are all documented. Distinguish simulated, synthesized and board-tested
   configurations.
 
+## Implemented SBA contract
+
+`KARU_DBG_SBA` adds [SBA registers and ownership control](karudbg_sba.v) to
+[the DM](karudbg.v), with [a bus arbiter/coherence coordinator](karudbg_bus.v)
+downstream of the core caches and upstream of the platform decoder. The default
+advertises `sbversion=1`, `sbasize=32` and native 8/16/32/64-bit transfers.
+Unimplemented high address/data registers read zero. The portable register
+engine also accepts a wider `SBASIZE` parameter, but the current 32-bit platform
+adapter rejects every nonzero upper address bit before any bus transfer.
+Unsupported sizes and misalignment cause `sberror` before bus activity.
+
+One request is outstanding at a time. Address-triggered reads use the newly
+written address; data-triggered reads return the previous data before starting
+the next access. Writes combine the new low word with the saved high word.
+Only successful transfers autoincrement. Errors are sticky and bitwise W1C;
+busy address writes and data accesses set `sbbusyerror` without changing the
+live request. Busy `sbcs` writes are ignored, a defined local choice for a case
+the specification leaves undefined. Independent AW and W acceptance is
+supported, with no retry, read-modify-write, extra MMIO transfer or burst.
+
+SBA writes to DRAM (`0x80000000..0xffffffff`) or executable scratch SRAM
+(`0x00101000..0x00110fff`) require maintenance. Scratch is uncached, but fetched
+and decoded instructions can still be resident in the IFU. Custom maps must
+supply `sba_ram` through `KARU_DBG_SBA_RAM_HEADER` and keep that classifier
+consistent with their PMA header and decoder, including every writable
+cacheable or executable region. Such a write first
+registers the instruction-admission hold and waits for decoded work,
+active units, posted stores and outstanding instruction transactions to drain.
+Acceptance requires the registered hold as well as the quiet acknowledgement;
+an instruction admitted on the hold's assertion edge must also drain. This
+adds one control flip-flop and one hold-assertion clock before RAM-write
+acceptance. Request VALID retains reset suppression, while the hold has no
+combinational reset/request path into issue. Withdrawal before acceptance
+releases the hold on the next clock. Neither AW nor W is presented before
+the drain. The hold clears LR/SC
+reservations. After the write response, including a failed response that may
+have modified RAM, the existing whole I/D-cache flushes invalidate cached
+aliases and poison refills, and the IFU restarts at the tracked architectural
+next PC. Maintenance also pulses the existing platform `cache_flush_req`
+with `cache_flush_invalidate=1`, then samples `cache_flush_done` after the
+request clock, as for FENCE. An idle-high value at the request edge is not a
+completion. Once requested, the core retains the acknowledgement even if an
+instruction prefetch is still active, and waits for that read to drain before
+completing maintenance. A platform with no additional maintenance may tie done high. The pause
+and `sbbusy` remain asserted until that acknowledgement; an integration with
+no external cache must still supply the completion handshake. SBA completion
+waits for both local and external maintenance. This uses neither a Program
+Buffer command nor a ROM-resume fence, preserves running versus halted state,
+and costs a temporary issue pause and loss of cache contents. MMIO accesses
+skip RAM maintenance. Page-table edits still require the appropriate translation
+fence; live SBA is not an atomic snapshot of a running program.
+
+The arbiter's `flush_o` is a level request in its maintenance state. The core
+converts it to one local/platform flush pulse once internally idle; its
+`debug_sba_quiet_o` then stays low until the external acknowledgement is
+recorded. The platform must preserve dirty data when servicing maintenance.
+An outer data cache must be on the coherent path shared by core and SBA;
+bypassing an independent dirty cache needs additional pre-write coordination.
+
+DMI/TAP reset preserves an accepted operation. Deactivation withdraws an
+unaccepted request and releases its own hold; after platform acceptance,
+cleanup drains even while inactive, and reactivation cannot bypass it. Shared
+hart/fabric reset cancels ownership; an operation started before that reset,
+while the DM remains active, reports `sberror=7` when canceled. This does not
+promise an error response for new SBA commands issued while reset is held.
+Debug 1.0's Reset Control contract permits only `dmcontrol` reads/writes and
+`dmstatus.ndmresetpending` reads while `ndmreset` or any external reset is
+asserted; all other DMI accesses are undefined. Here `ndmresetpending` is the
+permitted unimplemented read-zero field. The platform must reset the responders
+too, preventing stale responses from acquiring a new owner. An unresponsive older core transaction
+can keep a RAM-write drain waiting indefinitely; an accepted SBA transaction
+whose responder never replies likewise retains its owner and `sbbusy`.
+Missing platform cache acknowledgement retains the maintenance pause.
+No implicit watchdog permits an unfinished operation to be overtaken. The default PMA map has no non-idempotent executable device
+region. A custom map permitting such instruction fetches needs its own rule
+for restart and refetch during cache/fetch synchronization.
+
+SBA transactions use physical addresses, privileged data `AxPROT`, and the
+trusted static `NONSECURE` setting. They do not inherit hart pointer masking,
+translation or privilege, and do not match hart watchpoints. The independent
+master cannot reach the private debug page, even while the hart is halted.
+The static `SBA_ENABLE=0` integration parameter removes the DM's SBA discovery
+and register engine: `sbcs` and the other SBA registers read zero, advertise no
+address size or transfer capabilities, and writes cannot launch a request or
+maintenance. The independent bus gate also denies SBA traffic. Ordinary core
+and Program Buffer accesses remain usable. This is a trusted SoC integration
+policy, not an authentication protocol.
+
+Focused simulator evidence on 2026-10-29:
+
+| Command | Result and scope |
+| --- | --- |
+| `make dbg-sba-unit-test` | 365 checks / 24 transfers for each 32/64-bit engine configuration; 166 DM checks / 6 accepted requests; four failing RTL mutations; strict Verilog-2001 parse and Verilator lint |
+| `make dbg-sba-invariant-test` | Independent handshake/ownership monitors, two passing baselines and 13 deliberately corrupted-state controls; request/response stability, routing isolation, registered pause, pre-write drain, maintenance and cancellation |
+| `make dbg-sba-core-locked-test` | Actual core plus DMI: 441 checks; zero SBA discovery/register reads, ignored launch attempts and preserved ordinary debug |
+| `make dbg-sba-review-negative-test` | Two rejected actual-core mutations: misleading locked discovery and omitted executable-scratch maintenance |
+| `make dbg-sba-core-four-state-test` | Four-state ASIC model: cached and scratch live-code replacement, independent retirement trace and delayed external-cache acknowledgement while halted/running |
+| `make dbg-sba-openocd-test` | Pinned unmodified OpenOCD, SBA-only RAM at every width and 1/2/5-element blocks, counted FIFO/read-to-clear MMIO, error recovery and private-page denial; deliberate core-cache warm/readback, executable replacement and running-hart access |
+
+The OpenOCD test explicitly selects `riscv mem_access sysbus`, so Program Buffer
+or abstract-memory fallback cannot satisfy its SBA accesses. Separate deliberate
+Program Buffer reads check the core cache. Running-hart commands use `phys`:
+without it, this OpenOCD version first tries to read hart privilege for software
+translation, which requires a halted hart. Logs are under `_build/dbg/` and the
+harnesses/configuration are under `test/dbg/`. Combined extension regressions,
+updated mapped/routed measurements and board acceptance remain separate gates.
+
+## Ordinary ISA replay with debug idle
+
+`make dbg-isa-replay` rebuilds the full RVA23S64 shipping-geometry HTIF model
+with `KARU_DBG_FULL`, CLINT and external interrupts, then replays the existing
+self-checking ELFs under
+`test/riscv-arch-test/work/karu64-rva23s64-smcntrpmf/elfs`. Debug inputs remain
+inactive, so this checks ordinary execution with the additional RTL present;
+it is separate from the DMI/JTAG, trigger and SBA tests.
+
+The runner never regenerates Sail results or changes the ACT4 dependency.
+The golden results are already baked into the ELFs. Before compilation,
+`build_isa.py` snapshots the runtime source inputs and flags; it verifies them
+after compilation and binds the simulator SHA-256 in
+`_build/Vhtif_dbg_full/build-inputs.json`. The replay runner checks that binding
+before executing ELFs. It records simulator, RTL/configuration and ELF
+SHA-256 identities, the preserved reference-config
+files, ACT4 revision/local dependency diff and exact simulator flags. It
+verifies runtime input hashes again after execution. Other test-flow and
+reference-generation files remain recorded provenance, with any changes listed
+separately; editing an unrelated recipe does not change a compiled simulator
+or golden ELF. Passing requires both an HTIF
+zero exit and the RVCP pass marker, with no failure or timeout. A changed
+input invalidates the run. Results and per-test logs retain relative test
+paths, including dotted instruction names, to avoid collisions.
+
+```sh
+make dbg-isa-runner-test
+make dbg-isa-manifest                # selection/hashes only; no ELF execution
+make dbg-isa-replay                  # complete existing shipping inventory
+make dbg-isa-replay EXT=rv64i/I,Zvbb,priv/InterruptsSm \
+  DBG_ISA_OUT=_build/dbg/isa-replay-focused
+make dbg-ordinary-isa-test           # Keccak/Zvk/Zvbb/vector/FMA and H subjects
+python3 test/dbg/compare_idle_cycles.py --run-baseline
+```
+
+`EXT` here selects directory prefixes, rather than generating ACT4 slices:
+`Zvbb` covers its four SEW directories; `rv64i/I` selects that specific path.
+Defaults are four parallel ELFs, 120 seconds and 20 million cycles per ELF.
+Override them through `DBG_ISA_JOBS`, `DBG_ISA_TIMEOUT` and
+`DBG_ISA_MAX_CYCLES`. Passing temporary binary/hex images are removed;
+`manifest.json`, `results.tsv`, `results.json` and logs remain under
+`_build/dbg/isa-replay` or `_build/dbg/ordinary-isa`. Failed images are retained.
+The ordinary subject target derives `tohost` from each ELF, so the H assembly
+and C/vector firmware can share the same simulator without address overrides.
+
+On 2026-10-29, all 16 ordinary subjects passed on the RTL with the registered
+watch-address stage.
+The matched base-debug and full-debug models also produced identical total
+firmware cycle counts for every subject. The comparison checks identical ELF
+and runtime-source hashes, successful bound builds, and flags differing only
+by `KARU_DBG_FULL`. Representative complete-subject totals are:
+
+| Subject | Base debug cycles | Full extensions idle cycles |
+| --- | ---: | ---: |
+| Keccak directed tests | 96,970 | 96,970 |
+| Zvbb directed tests | 546,257 | 546,257 |
+| FMA hazard tests | 88,951 | 88,951 |
+| H preemption tests | 299,753 | 299,753 |
+
+The complete 16-row table, source/result identities and log hashes are in
+`_build/dbg/idle-cycle-comparison/{cycles.csv,manifest.json}`. The
+[comparison harness](../test/dbg/compare_idle_cycles.py) can build and replay
+the base model from the full run's recorded configuration. These are ordinary
+execution cycle measurements with extensions inactive; frequency and area
+remain separate synthesis measurements.
+
+The current CPU replay on 2026-10-29 has **2872/2872 passing verdicts**
+for existing shipping reference ELFs. The initial four-worker run produced
+2870 passes and two wall-clock timeouts with a 120-second wall limit and a
+20-million-cycle limit per ELF. Both timeout cases pass on bounded one-worker
+retries with a 240-second wall limit and the same cycle limit; the original
+results are retained alongside the retries. The ordinary subjects also pass
+**16/16**, with zero cycle delta between base debug and idle full extensions.
+This replays preserved Sail-baked golden results; it does not regenerate
+references or establish debug compliance. Source/build identities, actual
+frontend consumption, reference provenance, exact ELF identities and the full
+result list are retained under `_build/dbg/isa-replay/`. The HTIF frontend does
+not instantiate the DM; command-cache behavior is covered by the separate
+958-check DM unit and real-hart DMI/OpenOCD tests. A forced frontend, compile
+and link rebuild hashes 81 inputs before and after compilation, covers all 74
+frontend source inputs and the C++ harness, and reproduces the exact tested
+full-model executable (`d1f74befa79e6feba50438ff75819e45cd10333da380bae0cd23e24e1a54583d`).
+`final-coverage.json` records the exact unique ELF inventory, selected passing
+logs, original and retry manifests, executable identity and fresh build binding.
+The maintained [replay harness](../test/dbg/replay_isa.py) supports individual
+retries through repeated `--elf-file` arguments; each run records its command,
+limits and identities. The base model is rebuilt too, and both 16-subject runs
+are checked by [the independent verifier](../test/dbg/verify_htif_consumption.py).
+The combined debug validation remains a separate gate.
+The superseded pre-stage replay is retained only as build evidence under
+`_build/dbg/isa-replay/pre-watch-stage/`.
+
 ## Extension implementation and testing plan
 
-Planned on 2026-10-29; implementation has not started. The current contract,
-validation record and FPGA image above describe the existing implementation,
-not these extensions. Check a task only when its implementation and required
+Started on 2026-10-29. The extension implementation and review follow-up pass
+the fresh combined functional gate. All twelve mapped comparisons are complete.
+The full-extension FPGA image passes 75 MHz routed acceptance; board testing
+remains open. Check a task only when its implementation and required
 evidence are complete; record the source revision, configuration, command,
 result and artifact paths beside it. Reference documents are Debug 1.0's
 [DM chapter](https://docs.riscv.org/reference/debug/v1.0/debug_module.html) and
@@ -853,31 +1155,39 @@ trigger implementation is tested.
 
 ### E0 — contracts, configuration and shared fixtures
 
-- [ ] **E0.1** Specify independently selectable feature configurations:
+- [x] **E0.1** Specify independently selectable feature configurations:
   existing debug, each extension separately, all extensions, and debug disabled.
   Disabled features must elaborate away and report their absence correctly.
   Preserve the single-hart interface; do not add hart-array/group machinery.
-- [ ] **E0.2** Record exact supported trigger fields and WARL/reset behavior,
+- [x] **E0.2** Record exact supported trigger fields and WARL/reset behavior,
   SBA address/data widths and bus map, autoexec ordering, and error priorities
   before writing RTL, using the four fixed decisions below. Advertise only
   implemented and tested capabilities.
-- [ ] **E0.3** Specify core/DM/TCK/SBA clock and reset ownership. DM and SBA
+- [x] **E0.3** Specify core/DM/TCK/SBA clock and reset ownership. DM and SBA
   must remain usable while the hart is halted; distinguish hart halt/reset,
   `ndmreset`, `dmactive=0`, DMI reset and TAP reset. A platform-reset bus need
   not service SBA, but cancellation must not leave a stuck owner or stale reply.
-- [ ] **E0.4** Keep the existing synchronous core/DM reset convention and
+- [x] **E0.4** Keep the existing synchronous core/DM reset convention and
   conditioned TCK reset release. Record ASIC clock-gating, scan/test-mode and
   reset/isolation requirements with the SoC integrator; do not substitute
   blanket timing exceptions or a global asynchronous-reset conversion.
-- [ ] **E0.5** Extend reusable fixtures: side-effect-counted MMIO, controllable
+- [x] **E0.5** Extend reusable fixtures: side-effect-counted MMIO, controllable
   faults/stalls, cached RAM aliases, instruction replacement, vector access
   traces and guest contexts. Store harnesses and negative controls under
   `test/dbg/`, with maintained Make targets; generated files stay in `_build`.
 
+E0 evidence: the seven-row configuration matrix covers debug disabled, base,
+each feature, full and four-slot full builds. Shared bus/core fixtures test
+reset ownership and counted MMIO. The four follow-up corner cases are also
+covered: cancellation during SBA maintenance, reservation clearing, older-core
+write drain before either SBA write channel, and FF watchpoint/resume followed
+by a real fault at the same element. Their detailed commands and evidence are
+recorded under E2 and E3; no board test is implied.
+
 #### Fixed E0 decisions
 
-These choices resolve the initial scope and behavior; implementation and its
-tests remain unchecked above and below.
+These choices resolve scope and behavior. The checklist separately records
+implementation and test completion; a decision alone does not close an item.
 
 **E0-D1 — debugger-owned triggers.** An active trigger must have `type=6`,
 `dmode=1`, `action=1`. Authorized writes requesting `dmode=0` normalize the
@@ -897,18 +1207,36 @@ Action 0 and `tcontrol` remain deferred.
 **E0-D2 — whole-cache hardware coherence for SBA writes.** Reuse the existing
 D-cache and I-cache flush/refill-poison mechanisms, rather than adding per-line
 invalidation. For an SBA write to RAM that may have cached aliases, a hardware
-maintenance handshake drains older core writes and pauses new issue at an
-instruction boundary. After the write response, flush both caches, discard
+maintenance handshake drains older core writes before issuing the SBA write
+(before either AW or W can be accepted) and pauses new issue at an instruction
+boundary. Clear the LSU's LR/SC reservation when entering RAM maintenance.
+After the write response, flush both caches, discard
 IFU prefetch and unissued decode state, and restart fetch at the held next
 instruction PC. Do not report SBA completion until maintenance is acknowledged;
 release the pause unless another halt/reset condition applies. Also perform
 maintenance after a failed response if an accepted write may have modified RAM.
-The default FPGA class includes the whole DRAM window, regardless of CPU
-Svpbmt aliases; ASIC/custom maps must identify equivalent RAM regions.
+The default FPGA class includes the whole DRAM window and executable scratch,
+regardless of CPU Svpbmt aliases. ASIC/custom maps must identify all equivalent
+cached or executable writable regions.
 Running-hart writes temporarily pause execution and lose cache contents.
 Neither Program Buffer execution nor a ROM-resume fence is required. Pure MMIO
 access does not invoke this RAM maintenance. Page-table edits still require
 the appropriate architectural translation fence.
+
+Maintenance cancellation is part of the hardware contract. DMI/TAP reset does
+not cancel an already accepted SBA operation or release its pause early.
+`dmactive=0` cancels a request before any SBA bus acceptance and releases its
+own issue hold; once a bus transfer has started, retain ownership, drain it
+and complete any required RAM maintenance before releasing the hold, while
+discarding the abandoned debug result. Reactivation cannot bypass that cleanup.
+`ndmreset` resets the core/caches and affected fabric together: cancel the
+maintenance state through the platform reset handshake without waiting for
+responses from a reset responder, and leave no stale hold after reset release.
+External reset follows the same reset-domain ownership rules. A core device
+access that never responds can keep the pre-write drain, and therefore
+`sbbusy`, waiting indefinitely; there is no implicit watchdog or unsafe write
+bypass. Deactivation may cancel a not-yet-issued SBA request, but recovery of
+the original stuck core transaction requires platform reset.
 
 **E0-D3 — compare the pointer-masked access address.** Apply the same pointer
 masking transformation as the explicit memory access, then compare its
@@ -938,27 +1266,61 @@ This chooses the behavior recommended by
 This is confined primarily to the DM. It reuses the existing saved command
 and execution engine; it does not add another processor or memory master.
 
-- [ ] **E1.1** Implement `abstractauto` for both data registers and all eight
+- [x] **E1.1** Implement `abstractauto` for both data registers and all eight
   Program Buffer words: ten writable enable bits, with other bits reading zero.
   Reset/`dmactive` behavior must agree with the register contract.
-- [ ] **E1.2** Trigger exactly once per accepted selected DMI access. A read
+- [x] **E1.2** Trigger exactly once per accepted selected DMI access. A read
   returns the current value before re-execution; a write supplies the new value
   before re-execution. Route launches through the same availability, halted,
   command-validity, busy and `cmderr` checks as explicit command writes.
-- [ ] **E1.3** Test every enable bit, read and write, reserved bits, postexec,
+- [x] **E1.3** Test every enable bit, read and write, reserved bits, postexec,
   backpressure, busy/error clearing, exception recovery and reset cancellation.
   Assert no duplicate launch from a held request or a delayed response.
-- [ ] **E1.4** Run actual pinned OpenOCD/GDB bulk RAM/register transfers.
+- [x] **E1.4** Run actual pinned OpenOCD/GDB bulk RAM/register transfers.
   For MMIO, count transactions for one-element and block transfers and prove
   the selected tool path makes no speculative, trailing or duplicate device
   access. Do not alter architectural autoexec semantics to hide tool overreads.
-- [ ] **E1.5** Test the native autoexec path and the unsupported-autoexec
+- [x] **E1.5** Test the native autoexec path and the unsupported-autoexec
   fallback configuration separately. Review the existing OpenOCD patch in
   parts: implementing autoexec does not remove its independent software-walk
   safeguards. Document any remaining tool policy needed for MMIO.
-- [ ] **E1.6** Negative controls must detect a duplicate command and incorrect
+- [x] **E1.6** Negative controls must detect a duplicate command and incorrect
   read/write ordering. Pass the existing DM, command-exception and transport
   gates, then record incremental area and timing impact.
+
+E1 directed evidence (2026-10-29): `make dbg-autoexec-test` passes 958
+checks, and `make dbg-unit-test` retains the feature-off 947-check result.
+The autoexec bench models Program Buffer contents independently and covers all
+ten enable bits, busy data/Program Buffer writes, exception recovery, held
+requests/responses, and DMI/platform/DM reset behavior. An explicit command
+accepted while idle with `cmderr=0` replaces the autoexec command even if it
+fails validation or the hart is not ready; writes while busy or with a sticky
+error do not replace it. Five autoexec mutations must fail: absent launches,
+duplicate launches, stale write operands, changing read replies and stale
+command replay after an unsupported explicit command. They run with the
+existing transport and SBA backend negative controls (17 total).
+
+`make dbg-autoexec-core-test dbg-autoexec-gdb-test` uses the pinned pristine
+mainline OpenOCD and a separate full-profile simulator compiled with
+`KARU_DBG_AUTOEXEC`. The OpenOCD run passes,
+including 8/16/32/64-bit RAM blocks and exact one-, three- and five-element FIFO
+access counts; no trailing MMIO reads occur on this tested path. It also
+caches a device-load command, replaces it with an unsupported explicit command,
+clears the error and retries through autoexec: the unsupported-command error
+returns without another device access. The full-extension native model passes
+the same scenario. The raw-DMI probe disables periodic target polling,
+flushes/invalidates OpenOCD's register context at its boundaries and writes the
+pointer through Access Register. A delay longer than the normal poll period
+keeps this check independent of deferred register writes and background polls.
+GDB passes register, FP/vector context,
+memory, stepping and reconnect checks on both models. The
+feature-off `dbg-openocd-core-test` still passes using the patched fallback
+while pristine OpenOCD's unsupported-autoexec negative
+control fails as expected. The software-walker safeguards in the local patch
+remain independent of autoexec support. Incremental area and 200 MHz timing
+measurements are complete in [the matrix](MEASUREMENTS.md#extension-measurements--2026-10-29).
+The [combined functional record](#current-combined-validation-record--2026-10-30)
+also passes on the final sources.
 
 ### E2 — hardware address breakpoints and watchpoints
 
@@ -970,32 +1332,64 @@ chaining, instruction-count/interrupt/exception triggers, native breakpoint
 actions and ASID/VMID/context matching are deferred; expose unsupported fields
 through correct WARL/discovery behavior rather than partial emulation.
 
-- [ ] **E2.1** Implement `tselect`, `tinfo`, `tdata1`/`tdata2` and the required
+- [x] **E2.1** Implement `tselect`, `tinfo`, `tdata1`/`tdata2` and the required
   absent-register behavior. Specify type enumeration, slot exhaustion, hit
   reporting, `dmode` write protection and M/S/U/VS/VU matching. Disable matching
   during Debug Mode and establish the trigger debug-entry cause/priority.
   Apply E0-D1's disabled-type normalization and protected-write precedence.
-- [ ] **E2.2** Match execute addresses at an architectural instruction boundary,
+  Evidence (2026-10-29 working tree): `make dbg-trigger-unit-test` passes
+  1,298 checks with two slots and 1,302 with four; the actual-core four-state
+  profile probe covers protected CSR writes and M/S/U/VS/VU contexts.
+  Logs: `_build/dbg/trigger-unit.log`, `trigger4-unit.log` and
+  `trigger-profile-four-state/run.log`; [supported contract](TRIGGERS.md).
+- [x] **E2.2** Match execute addresses at an architectural instruction boundary,
   not speculative prefetch. Match data accesses before the core cache can hide
   them. Use E0-D3's post-masking, pre-translation address and its Pointer
   Masking specification reference, including guest execution; exclude implicit
   page walks, cache fills and independent SBA traffic from architectural matching.
-- [ ] **E2.3** Cover scalar integer/FP loads/stores, LR/SC, AMOs and the required
+  Evidence (2026-10-29 working tree): the four-state profile probe checks
+  cached loads, split-fetch instruction-start priority, Sv39 and VS/G-stage
+  aliases, and PMLEN 0/7/16 before translation. `make dbg-trigger-haccess-test`
+  passes 20 HLV/HSV/HLVX cases across SPVP, HUPMM and MXR; log:
+  `_build/dbg/trigger-haccess-four-state/run.log`. Native OpenOCD also checks
+  that independent SBA traffic does not fire hart watchpoints.
+- [x] **E2.3** Cover scalar integer/FP loads/stores, LR/SC, AMOs and the required
   cache-block operations. Define precise match/fault ordering and suppress
   watched side effects when using before-access timing. Resume must neither
   repeat a committed store nor omit an uncompleted access.
-- [ ] **E2.4** Integrate RVV at the active-element level. Cover contiguous,
+  Evidence: the actual-core probe covers integer and FP widths, LR/SC/AMOs,
+  CBO.ZERO, translation/access-fault priority and counted MMIO continuation.
+  The source audit confirms CBO clean/flush/invalidate use the same
+  `lsu_is_cbo` before-access predicate; these three variants are not separate
+  directed watchpoint cases. See `test/dbg/trigger_core_tests.vh` and
+  `_build/dbg/trigger-profile-four-state/run.log`.
+- [x] **E2.4** Integrate RVV at the active-element level. Cover contiguous,
   strided, indexed, segmented and whole-register accesses, fault-only-first,
   masks, tails and `vstart`. A 16-byte memory granule can contain several
   watched elements; comparing its AXI base alone is insufficient. Preserve
   completed elements and the correct restart point across debug entry.
   Apply E0-D4 to fault-only-first and segmented hits; do not trim `vl` on a hit.
-- [ ] **E2.5** Keep comparators off normal critical paths where possible.
+  Evidence: `make dbg-trigger-vector-test` passes 1,066 independent four-state
+  cases (47,752 checks). The core probe checks all four SEWs and FF
+  watchpoint/resume/fault trimming. Whole-register EEW 8/16/32/64 device traces
+  prove exact prefix and restart behavior; the reversion control detects an
+  invalid interior-byte stop. Logs: `_build/dbg/trigger-vector-unit.log`,
+  `trigger-whole-four-state/run.log`, `trigger-negative/whole-element/run.log`.
+- [x] **E2.5** Keep comparators off normal critical paths where possible.
   Permit extra sequencing while triggers are enabled; measure that disabled
   triggers preserve normal cycle counts. Precompute range masks when configured
   if useful, use bounded/balanced logic, and infer no runtime divider/modulo or
   extra register-file/memory ports.
-- [ ] **E2.6** Add CSR tests and directed instruction subjects. Sweep access
+  The VLSU now registers each 64-bit post-masking watch address before comparing it,
+  separating indexed address generation from global debug-entry control. This
+  adds one cycle per armed field query; the disabled path is unchanged.
+  Independent capture assertions and a stale-address negative control pass,
+  together with the six-control suite and the profile/H/whole-register
+  four-state probes. All 16 ordinary subjects have zero idle cycle delta.
+  The complete current cost/path comparison, including the optional four-slot
+  configuration and the separate 200 MHz closure gate, is recorded in
+  [measurements](MEASUREMENTS.md#extension-measurements--2026-10-29).
+- [x] **E2.6** Add CSR tests and directed instruction subjects. Sweep access
   widths, alignment, range boundaries, cache hits/misses, page boundaries,
   privilege/guest contexts and fault priority. For RVV, sweep SEW/LMUL, active
   lengths and masked/prestart/tail cases, including a match beyond the first
@@ -1008,14 +1402,31 @@ through correct WARL/discovery behavior rather than partial emulation.
   elements 0, 1 and the last active element, masked element 0, nonzero `vstart`,
   segmented hits and an earlier real fault; verify unchanged `vl`, exact
   restart and no repeated non-idempotent access when the watchpoint fires.
-- [ ] **E2.7** Cross-check supported trigger cases with a pinned Spike where
+  Also hit at element `i>0`, disable the watchpoint and resume with a real
+  access fault at that element: expect normal FF completion with `vl=i`,
+  `vstart=0`, no application trap, and the already completed prefix preserved.
+  Evidence: the bank, independent VLSU, actual-core profile, whole-register
+  device and H-access targets above cover these cases. CSR and application
+  trap-state checks use the architectural DMI/Program Buffer interface;
+  independent device traces count side effects. The test inventory is bounded,
+  rather than an exhaustive proof of every encoding/context combination.
+- [x] **E2.7** Cross-check supported trigger cases with a pinned Spike where
   its model covers the same semantics; use independent expected access traces
   and assertions for remaining cases. Do not weaken the oracle to match Karu.
   Exercise actual GDB hardware breakpoints and read/write/access watchpoints,
   slot allocation, stepping over a hit and detach/reconnect through OpenOCD.
-- [ ] **E2.8** Negative controls must catch a missed cache-hit watchpoint,
+  Evidence (2026-10-29 working tree): `make dbg-trigger-spike-test` passes
+  the same `openocd_trigger_address.tcl` scenario used on Karu, covering
+  execute/read/write/access matches before side effects and continuation.
+  `_build/dbg/spike-triggers/reference.json` records the exact Spike binary
+  SHA-256 and pinned OpenOCD version. The native OpenOCD and actual GDB
+  trigger tests pass; logs are under `_build/dbg/openocd-triggers/` and
+  `_build/dbg/gdb-triggers/`.
+- [x] **E2.8** Negative controls must catch a missed cache-hit watchpoint,
   a missed later vector element, a masked-element false hit and a wrong restart
   point. Run the existing scalar/vector, privilege and debug regressions.
+  Evidence: all six trigger mutations fail for their intended checks; the
+  ordinary CPU replay passes 2872/2872 and directed subjects pass 16/16.
 
 ### E3 — System Bus Access
 
@@ -1024,81 +1435,155 @@ Adapt the SBA engine/register behavior from the pinned PULP `dm_sba.sv` and
 single-beat access, native 8/16/32/64-bit transfers and a generic platform bus
 adapter. Bursts and multiple outstanding requests are not prerequisites.
 
-- [ ] **E3.1** Implement truthful `sbcs`, `sbaddress*` and `sbdata*` discovery,
+- [x] **E3.1** Implement truthful `sbcs`, `sbaddress*` and `sbdata*` discovery,
   read-on-address/data, write launch, autoincrement, sticky errors and busy
   rules. Increment only after a successful transfer. Never truncate an
   advertised address silently; reject invalid sizes/alignment/addresses before
   bus activity where possible.
-- [ ] **E3.2** Add arbitration upstream of the platform memory/peripheral
+- [x] **E3.2** Add arbitration upstream of the platform memory/peripheral
   decoder, downstream of the core caches. The existing FPGA host-loader mux
   selects DDR only while the CPU is held; it is not concurrent SBA arbitration.
   Preserve transaction ownership through independent AW/W acceptance and until
   B/RLAST, response backpressure and every supported reset sequence.
-- [ ] **E3.3** Implement E0-D2's hardware maintenance handshake using the
+- [x] **E3.3** Implement E0-D2's hardware maintenance handshake using the
   existing whole-cache flush/refill-poison paths. Add the issue/drain and
   IFU/decode restart coordination, not a new cache-tag/per-line mechanism.
   Preserve running/halted state and report completion only after coherence
   acknowledgement, including errors with possible write side effects. Document
   cache-loss/stall cost and translation fences for edited page tables.
   Live SBA is not an atomic snapshot of a running program.
-- [ ] **E3.4** Preserve native-width MMIO and exact byte enables; make no
+- [x] **E3.4** Preserve native-width MMIO and exact byte enables; make no
   speculative reads or automatic retries with duplicate device effects. Set
   AXI privilege/security/data attributes from an explicit debug-master policy,
   not the interrupted hart's mutable context. Retain core-only authorization
   for the private debug page and define the SoC enable/lock gate for SBA.
-- [ ] **E3.5** Test each access width and trigger mode, bus error, illegal
+- [x] **E3.5** Test each access width and trigger mode, bus error, illegal
   address, unsupported size, alignment, autoincrement and error clearing.
   Stall AR/AW/W/R/B independently, including W before AW, and exercise reset
   and DMI cancellation at every transaction phase. Prove no lost, duplicated
   or misrouted transaction and no increment on failure.
-- [ ] **E3.6** Test cached-data readback after SBA writes, fills racing with
+  Inject `dmactive=0`, DMI/TAP reset and `ndmreset` during drain, bus transfer
+  and cache/fetch maintenance; prove the E0-D2 cancellation rules and eventual
+  release when the relevant bus/reset handshakes complete. Hold a core device
+  response forever as a bounded test of waiting `sbbusy` and reset recovery.
+- [x] **E3.6** Test cached-data readback after SBA writes, fills racing with
   invalidation, outstanding/posted CPU writes, code replacement plus fetch
   synchronization, and physical aliases. Exercise RAM and counted MMIO with
   the hart halted and running. Test prefetched/unissued old instructions,
   pending interrupts and errors after an accepted RAM write. Prove completion
   waits for maintenance, execution resumes at the correct PC without register
   corruption, and no Program Buffer command or ROM-resume fence is needed.
-- [ ] **E3.7** Test OpenOCD's SBA method explicitly, including its block-access
+  Test an older posted CPU store and a later SBA write to the same address:
+  the older write must complete first and SBA data must win. Test LR, SBA RAM
+  write, SC failure, then a fresh LR/SC succeeding; include maintenance cancel.
+- [x] **E3.7** Test OpenOCD's SBA method explicitly, including its block-access
   controls and error recovery. Do not allow an unnoticed Program Buffer
   fallback to make the SBA test pass. Verify inaccessible private-page and
   disabled-master attempts generate no downstream access.
-- [ ] **E3.8** Negative controls must catch an ignored bus error, a high-address
+- [x] **E3.8** Negative controls must catch an ignored bus error, a high-address
   alias, stale cached data after an SBA write and an extra MMIO transfer.
+
+Directed extension evidence (2026-10-30): `dbg-sba-bus-test` passes 652
+checks in each Secure and Non-secure configuration, including coincident AR/R
+acceptance, plus 59 checks with SBA
+locked off; the lock leaves ordinary core transactions working. Eight backend
+mutations are rejected, including early write acceptance, dropping pause while
+older core writes drain, skipped maintenance, wrong byte enables, damaged core
+burst forwarding and high-address aliasing. Added controls reject a
+combinational pause and RAM acceptance before the registered hold is asserted.
+
+The focused actual-core SBA probe covers all native-width lane offsets,
+cache-warmed readback, instruction replacement, a running loop and LR/SC.
+Its live-code test patches the running increment instruction and independently
+tracks retired PCs and opcodes: the first retirement after maintenance must
+resume at the next architectural PC, and no old increment opcode may retire.
+The four-state ASIC/no-F configuration completes 30,740 checks, including
+held instruction AR/R, DMI reset, deactivation cancellation and a bounded
+nonresponding instruction-read/reset recovery. Executable scratch replacement
+is checked with the same independent PC/opcode trace as the DRAM loop.
+A separate platform-cache model delays completion by 24 cycles in halted and
+running cases and checks exactly one request/acknowledgement, no early SBA
+response, preserved pause and eventual running-hart progress. Tests also cover
+idle-high completion, coincident halt entry, cancellation during maintenance,
+and acknowledgement arriving while an instruction prefetch is still active.
+The acknowledgement must be retained until that read drains.
+The same runner rejects eight
+independent mutations that remove reservation clearing, D-cache invalidation,
+I-cache invalidation or IFU redirection, allow an interrupt to overtake
+maintenance, acknowledge an external-cache operation prematurely, or lose its
+acknowledgement during a prefetch.
+Reproduce with
+`make dbg-sba-core-negative-test`; compilation and simulation have separate
+120-second limits, and timeouts do not count as successful negative controls.
+
+`dbg-trigger-openocd-test` passes with the full-profile combined simulator and
+pristine pinned OpenOCD. It checks both trigger slots,
+rejected third-slot allocation, execute/load/store/access hits and exact
+before-access effects/continuation. It also autoexecutes a GPR read while a
+watchpoint is armed, then performs physical SBA reads and a coherent write
+while the hart runs with that watchpoint armed: SBA must not halt the hart.
+`dbg-trigger-gdb-test` passes the actual GDB hardware breakpoint and read,
+write and access watchpoint commands, in addition to FP/vector context and
+reconnect coverage. The fixture ELF supplies symbols and CFI for its test
+functions so GDB does not unwind an artificial uninitialized caller.
+
+These are directed functional results. The final combined source-hashed
+regression record, synthesis measurements and physical FPGA/board evidence
+have separate acceptance gates below.
 
 ### E4 — combined verification, ASIC handoff and FPGA validation
 
-- [ ] **E4.1** Run bounded unit/assertion tests first, then directed Verilator,
+ASIC-focused evidence (2026-10-29): `dbg-config-matrix-test` passes all
+seven configurations, with strict Verilog-2001 preprocessing/elaboration,
+Verilator diagnostics and recorded source integrity. Generated manifests and
+preprocessed sources are under `_build/dbg/config-matrix/`; the disabled core
+has no debug ports and the conventional ASIC sources contain no FPGA primitive.
+The lint policy records its existing core warning exemptions and permits only
+the two named unused `karu_varith` scratch outputs as undriven signals.
+
+`dbg-asic-random-test` passes seeds 1, 2, 7, 19, 42 and 1234567 using one
+full-profile, full-debug `KARU_ASIC` model built with `--x-initial unique` and
+`--x-assign unique`. It executes the trigger and SBA architectural probes in
+sequence, including translation, vector restart, live code replacement and
+reset recovery. Each seed has a 90-second limit; the recorded input hashes
+match before/after that run. Logs and model/source hashes are under `_build/dbg/asic-random/`.
+This randomized two-state test supplements the separate four-state checks.
+The full ASIC memory audit reports zero initialized state; the
+[inventory and clock/reset/DFT contract](../flow/asic/README.md) records its
+scope and the remaining technology-specific obligations.
+
+- [x] **E4.1** Run bounded unit/assertion tests first, then directed Verilator,
   Spike and real OpenOCD/GDB tests. Reuse compiled models and unchanged
   reference artifacts, use explicit timeouts, and record seeds/configurations.
   Run focused ordinary ISA/ACT4 slices when core issue/trap logic changes;
   run the full applicable release inventory once the combined RTL is stable,
   in bounded batches. Ordinary ACT4 success is not a debug-compliance verdict.
-- [ ] **E4.2** Test interactions: watchpoint hit during normal execution followed
+- [x] **E4.2** Test interactions: watchpoint hit during normal execution followed
   by autoexec register access and SBA inspection; SBA accesses must not trigger
   hart watchpoints. Cover pending interrupts, stepping, guest state, command
   exceptions, reset recovery and ordinary execution after detach. Preserve the
   existing application trap-state and scratch-register invariants.
-- [ ] **E4.3** Run four-state and randomized `KARU_ASIC` startup tests. Prove
+- [x] **E4.3** Run four-state and randomized `KARU_ASIC` startup tests. Prove
   disabled/unconfigured comparators and uninitialized payloads cannot leak X
   into control, handshakes or a false trigger. Re-run declaration-order lint,
   strict Verilog parsing, memory/initialization and live-divider audits.
-- [ ] **E4.4** Update generic source manifests, include/define lists, provenance
+- [x] **E4.4** Update generic source manifests, include/define lists, provenance
   and the combined ASIC inventory. Keep small trigger/DM state as control
   flops; preserve RF/cache/VRF macro interfaces unless an explicitly reviewed
   change requires otherwise. Conventional ASIC builds must contain no Xilinx
   primitives or dependence on FPGA power-up initialization.
-- [ ] **E4.5** Measure base, each extension and combined area/timing against
+- [x] **E4.5** Measure base, each extension and combined area/timing against
   identical RTL/tool/library baselines. Report absolute and incremental results
   and normal/debug cycle costs. The current 200 MHz OpenSTA target already
   misses timing; neither hiding reset/CDC paths nor passing FPGA timing closes
   that ASIC goal. Inspect trigger issue gating, SBA arbitration, invalidation
   fanout and register-to-register paths in particular.
-- [ ] **E4.6** Produce ASIC clock/reset/CDC/RDC and timing constraints for the
+- [x] **E4.6** Produce ASIC clock/reset/CDC/RDC and timing constraints for the
   supported integration, retaining bundled-data bounds and reset-release
   checks. Review test/scan and clock-gating interactions. NanGate45/Yosys and
   OpenSTA are comparative estimates; foundry libraries, memory binding, PVT,
   physical timing and DFT signoff remain technology-specific acceptance gates.
-- [ ] **E4.7** Rebuild the combined shipping FPGA image through the standard
+- [x] **E4.7** Rebuild the combined shipping FPGA image through the standard
   75 MHz RVA23S64/SGMII/ROM flow and locations. Pass routed setup, hold,
   pulse-width, bus-skew and DRC checks; record hashes and compare the packed
   karudeb inputs. Update discovery/companion documentation only as implemented
@@ -1108,9 +1593,12 @@ adapter. Bursts and multiple outstanding requests are not prerequisites.
   memory and counted device tests. Verify detach, normal karudeb boot and the
   maintained board acceptance tests. Record simulator, FPGA and ASIC evidence
   separately; FPGA success does not establish silicon CDC/DFT/timing signoff.
-- [ ] **E4.9** Update the implemented contract, requirements-to-tests map,
+- [x] **E4.9** Update the implemented contract, requirements-to-tests map,
   measurements, handoff and tool instructions as features land. Keep unmet
   gates unchecked and distinguish hardware support from debugger limitations.
+  The current combined source-hashed record, all twelve fresh mapped rows,
+  routed FPGA reports and verified programming bundle are recorded. Board
+  acceptance and the 200 MHz ASIC timing goal remain separate open gates.
 
 ### Further deferred work
 

@@ -6,6 +6,57 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Fixed — registered SBA issue hold
+
+- Register the SBA pause and require it before accepting a RAM write. This
+  cuts the reset-to-trigger/issue path introduced by fetch-fault pause
+  qualification, while preserving reset suppression of bus requests and
+  draining work admitted on the hold's assertion edge. Directed tests and
+  negative controls cover registered timing, cancellation and early acceptance.
+  The combined gate passes with 274 unchanged inputs, including 13 invariant
+  corruption controls and 17 transport/backend controls.
+  Fresh full two-trigger OpenSTA input-to-register slack is +0.2328 ns,
+  replacing −0.1739 ns with unchanged constraints. Register WNS remains
+  −0.3978 ns on the IFU/decode-to-double-FMA path; 200 MHz is still open.
+  The October 29 FPGA programming bundle is unchanged; the full two-trigger
+  200 MHz timing follow-up is recorded in [measurements](dbg/MEASUREMENTS.md).
+
+### Added — karudbg autoexec, address triggers and System Bus Access
+
+- Core trigger-entry and maintenance invariants, plus SBA ownership/handshake
+  scoreboards, are exercised by deliberately corrupted controls. Static
+  `SBA_ENABLE=0` now hides SBA discovery as well as denying bus traffic.
+  Executable scratch writes synchronize fetch, and coherent writes wait for
+  the platform cache-maintenance acknowledgement. Watchpoint arming respects
+  vector load/store direction; fetch-fault triggers wait through SBA pauses.
+- Independent `KARU_DBG_AUTOEXEC`, `KARU_DBG_TRIGGERS` and `KARU_DBG_SBA`
+  switches extend the base DM; `KARU_DBG_FULL` selects all three. Autoexec
+  supports both data registers and all eight Program Buffer words.
+- Two debugger-owned `mcontrol6` address triggers (four optionally) support
+  before-access breakpoints/watchpoints, including vector element restart.
+  Native M-mode breakpoint actions, chains and data-value matching are deferred.
+- SBA provides native 8/16/32/64-bit physical RAM and MMIO access. RAM writes
+  drain older core accesses, clear LR/SC reservations, invalidate both caches
+  and restart fetch before completion, including while the application runs.
+  The private debug page remains accessible only through the core's ports.
+- The standard 75 MHz debug FPGA target selects the combined extensions;
+  `VCU118_DBG_EXT_DEFINES=` reproduces the base configuration. Current extension
+  validation and pending gates are tracked in [dbg/README.md](dbg/README.md).
+- Autoexec caches every accepted explicit command, including unsupported or
+  not-ready commands, while ignoring command writes during busy/sticky error.
+  The 958-check DM regression and counted-MMIO OpenOCD test prevent stale
+  command replay; baseline DM coverage remains 947 checks.
+- Register each 64-bit vector watch address before its trigger comparison,
+  adding one cycle per armed field query while preserving the disabled path.
+  The full-debug CPU replay passes 2872/2872 preserved ACT4 reference ELFs;
+  all 16 ordinary subjects pass with zero idle cycle delta. Focused SBA
+  four-state testing passes 30,740 checks and rejects eight coherence/ordering
+  mutations, including lost or premature external-cache acknowledgements.
+  The review follow-up passes the combined gate with 274 unchanged input hashes.
+  Current validation and mapped comparison records are in [dbg/README.md](dbg/README.md) and
+  [dbg/MEASUREMENTS.md](dbg/MEASUREMENTS.md). The separate full-extension
+  FPGA image passes 75 MHz routed acceptance; board testing remains open.
+
 ### Fixed — debug metadata, exceptions and reset timing
 
 - `hartinfo` advertises two scratch CSRs without a data-register memory shadow;
@@ -16,7 +67,7 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 - Synchronous reset paths remain timed in the core and debug synthesis flows.
   External-reset exceptions are restricted to TCK asynchronous reset pins.
   Directed tests cover the exception cases and BSCAN resets during scans.
-  The committed fixes completed Vivado implementation on 2026-10-27 at
+  The historical base-debug checkpoint completed Vivado implementation on 2026-10-27 at
   75 MHz: whole-design setup/hold +0.005/+0.011 ns, CPU setup +0.482 ns,
   16/16 bus-skew constraints met and zero bitstream DRC errors. Board
   acceptance remains pending.
@@ -26,8 +77,9 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 - `KARU_DBG` enables precise execution-based debug entry, resume and stepping,
   debug CSRs, counter freeze and command-exception containment. The separate
   `dbg/` integration supplies a single-hart Debug 1.0-targeted DM, eight-word
-  Program Buffer, generated two-scratch ROM and conventional JTAG DTM. SBA,
-  hardware triggers and authentication are absent. The private debug page is
+  Program Buffer, generated two-scratch ROM and conventional JTAG DTM. The base
+  configuration omits SBA and hardware triggers; optional extensions are above.
+  Authentication is outside the current scope. The private debug page is
   accessible only in Debug Mode through the core's ports.
 - The optional VCU118 debug target connects the DM through a USER4 nested-TAP
   BSCAN tunnel compatible with mainline OpenOCD. Transport reset release is

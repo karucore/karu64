@@ -40,6 +40,10 @@
 `ifndef KARU_EXT_VH
 `define KARU_EXT_VH
 
+`ifdef KARU_DBG
+`include "karudbg_cfg.vh"
+`endif
+
 //  ======================================================================
 //  System / board configuration
 //  ======================================================================

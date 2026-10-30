@@ -3,6 +3,7 @@ rtl/karu64.v
 rtl/karu_alu.v
 rtl/karu_bitmanip.v
 rtl/karu_csr.v
+rtl/karu_trigger.v
 rtl/karu_dec.v
 rtl/karu_fadd.v
 rtl/karu_fadd_d.v
@@ -54,6 +55,8 @@ rtl/zvk/sm3_msg_expansion.v
 rtl/zvk/sm4_encdec.v
 rtl/zvk/sm4_key_expansion.v
 dbg/karudbg.v
+dbg/karudbg_sba.v
+dbg/karudbg_bus.v
 dbg/karudbg_rom.v
 dbg/karudbg_axi.v
 dbg/karudbg_core.v

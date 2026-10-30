@@ -4,7 +4,7 @@
 `include "karu_axi_defs.vh"
 module karudbg_top #(
     parameter [63:0] RESET_PC=64'h8000_0000,
-    parameter EXT_TIME=0, parameter NONSECURE=1,
+    parameter EXT_TIME=0, parameter NONSECURE=1, parameter SBA_ENABLE=1,
     parameter [31:0] IDCODE=32'h0000_0db3
 ) (
     input wire  clk,
@@ -92,7 +92,7 @@ module karudbg_top #(
         .req_valid_o(req_valid),.req_ready_i(req_ready),.req_addr_o(req_addr),
         .req_op_o(req_op),.req_data_o(req_data),.resp_valid_i(resp_valid),
         .resp_ready_o(resp_ready),.resp_data_i(resp_data),.resp_op_i(resp_op));
-    karudbg_core #(.RESET_PC(RESET_PC),.EXT_TIME(EXT_TIME),.NONSECURE(NONSECURE)) system (
+    karudbg_core #(.RESET_PC(RESET_PC),.EXT_TIME(EXT_TIME),.NONSECURE(NONSECURE),.SBA_ENABLE(SBA_ENABLE)) system (
         .clk(clk),
         .rst(rst),
         .debug_mode_o(debug_mode_o),

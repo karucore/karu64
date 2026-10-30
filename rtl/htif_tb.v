@@ -696,6 +696,15 @@ module htif_tb (input wire clk);
     ) cpu (
         .clk        (clk),
         .rst        (rst),
+`ifdef KARU_DBG
+        // Architectural replay uses the real debug-capable core with its
+        // external debugger idle; debug-directed tests use karudbg_core.
+        .debug_halt_req_i(1'b0),.debug_resume_req_i(1'b0),
+        .debug_mode_o(),.debug_resume_ack_o(),
+`ifdef KARU_DBG_SBA
+        .debug_sba_pause_i(1'b0),.debug_sba_flush_i(1'b0),.debug_sba_quiet_o(),
+`endif
+`endif
         .trap       (trap),
         //  HTIF tohost lives in this 4 KiB page -> uncacheable to the L1
         //  (device polled by the TB; a cached copy would deadlock HTIF).
@@ -758,6 +767,57 @@ module htif_tb (input wire clk);
     //  +no_assert_stop. See rtl/karu_assert.sv.
 `ifndef KARU_NO_ASSERT
     karu_assert u_kassert (
+`ifdef KARU_DBG
+        .dbg_mode(cpu.debug_mode),
+        .dbg_enter(cpu.dbg_enter),
+        .dbg_trigger_entry(cpu.dbg_trigger_entry),
+        .dbg_exit(cpu.dbg_exit),
+        .dbg_resume_ack(cpu.debug_resume_ack_o),
+        .dbg_halt_priority((cpu.debug_halt_req_i || cpu.dbg_halt_pending)),
+        .dbg_entry_pc(cpu.dbg_entry_pc),
+        .dbg_dpc(cpu.dbg_dpc),
+        .dbg_ex_pc(cpu.ex_pc),
+        .dbg_cause(cpu.csr.csr_dcsr[8:6]),
+`ifdef KARU_DBG_TRIGGERS
+        .trigger_exec_valid(cpu.trigger_exec_valid),
+        .trigger_exec_hit(cpu.trigger_exec_hit),
+        .trigger_scalar_valid(cpu.trigger_scalar_valid),
+        .trigger_data_valid(cpu.trigger_data_valid),
+        .trigger_data_hit(cpu.trigger_data_hit),
+        .trigger_v_valid(cpu.trigger_v_valid),
+        .trigger_v_abort(cpu.trigger_v_abort),
+        .trigger_data_load(cpu.trigger_data_load),
+        .trigger_data_store(cpu.trigger_data_store),
+        .trigger_data_armed(cpu.trigger_data_armed),
+        .trigger_fetch_fault(cpu.ifu_fault_valid),
+        .trigger_io_pending(cpu.immu_pte_io_pending),
+        .trigger_fs_off(cpu.fs_off_ill),
+        .trigger_cbo_exc(cpu.cbo_exc),
+        .trigger_hmem(cpu.ex_hmem),
+        .trigger_hu(cpu.csr_hu),
+        .trigger_exec_slots(cpu.csr.triggers.exec_hit),
+        .trigger_data_slots(cpu.csr.triggers.data_hit),
+        .trigger_controls(cpu.csr.triggers.debug_controls),
+`endif
+`ifdef KARU_DBG_SBA
+        .dbg_sba_pause(cpu.debug_sba_pause_i),
+        .dbg_sba_flush_i(cpu.debug_sba_flush_i),
+        .dbg_sba_flush(cpu.dbg_sba_flush),
+        .dbg_sba_idle(cpu.dbg_sba_idle),
+        .dbg_sba_sent(cpu.dbg_sba_cache_sent),
+        .dbg_sba_done(cpu.dbg_sba_cache_done),
+        .dbg_sba_quiet(cpu.debug_sba_quiet_o),
+        .dbg_cache_req(cpu.cache_flush_req),
+        .dbg_cache_invalidate(cpu.cache_flush_invalidate),
+        .dbg_cache_done(cpu.cache_flush_done),
+        .dbg_sba_next_pc(cpu.dbg_sba_next_pc), .dbg_sba_iflush(cpu.icache_flush),
+`ifdef KARU_EN_MEM
+        .dbg_sba_dflush(cpu.dmem_l1.flush),
+`else
+        .dbg_sba_dflush(1'b1),
+`endif
+`endif
+`endif
         .clk            (clk),
         .rst            (rst),
         .trap           (trap),

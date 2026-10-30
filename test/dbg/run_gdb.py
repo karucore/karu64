@@ -32,6 +32,9 @@ def main():
     parser.add_argument("--gdb", default="riscv64-unknown-elf-gdb")
     parser.add_argument("--elf", required=True)
     parser.add_argument("--out", default="_build/dbg/gdb")
+    parser.add_argument("--triggers", action="store_true", help="also test hardware breakpoints/watchpoints")
+    parser.add_argument("--timeout", type=int, default=60, help="simulator wall-clock limit")
+    parser.add_argument("--client-timeout", type=int, default=35, help="per-client wall-clock limit")
     args = parser.parse_args()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -40,7 +43,7 @@ def main():
     processes = []
     started = time.monotonic()
     try:
-        model = subprocess.Popen([args.model, "0", "60"], text=True,
+        model = subprocess.Popen([args.model, "0", str(args.timeout)], text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         processes.append(model)
         selector = selectors.DefaultSelector()
@@ -74,7 +77,7 @@ def main():
                 with (out / (name + ".log")).open("w") as client_log:
                     result = subprocess.run([args.gdb, "--batch", "-nx", "-x", str(script)],
                                             text=True, stdout=client_log,
-                                            stderr=subprocess.STDOUT, timeout=35)
+                                            stderr=subprocess.STDOUT, timeout=args.client_timeout)
                 text = (out / (name + ".log")).read_text()
                 if result.returncode or marker not in text:
                     raise RuntimeError(f"GDB acceptance failed; see {out}/{name}.log")
@@ -127,6 +130,34 @@ def main():
                 read = second_client.split(f"READ_{name}_BEGIN", 1)[1].split(f"READ_{name}_END", 1)[0]
                 if 'received: "OK"' not in written or pattern not in read.lower():
                     raise RuntimeError(f"GDB raw register round trip failed for {name}")
+            if args.triggers:
+                commands = "monitor halt\n"
+                instructions = [0x00100613, 0x00c5a023, 0x0005a683,
+                                0x00160613, 0x00c5a023, 0x0005a683,
+                                0x0000006f]
+                for index, instruction in enumerate(instructions):
+                    commands += f"set {{unsigned int}}{0x80007000+4*index:#x} = {instruction:#x}\n"
+                commands += ("set {unsigned int}0x80006000 = 0\n"
+                             "set $a1 = 0x80006000\nset $a2 = 0\n"
+                             "set $pc = 0x80007000\nhbreak *0x80007000\ncontinue\n")
+                commands += gdb_check("$pc", 0x80007000) + gdb_check("$a2", 0)
+                commands += "delete breakpoints\nstepi\n"
+                commands += gdb_check("$pc", 0x80007004) + gdb_check("$a2", 1)
+                commands += "watch -l *(unsigned int*)0x80006000\ncontinue\n"
+                # GDB may single-step a before-access watchpoint to obtain its
+                # changed value. Check the architectural result, not that policy.
+                commands += gdb_check("*(unsigned int*)0x80006000", 1)
+                commands += "delete breakpoints\nset $pc = 0x80007008\n"
+                commands += "rwatch -l *(unsigned int*)0x80006000\ncontinue\n"
+                commands += "delete breakpoints\nstepi\n"
+                commands += gdb_check("$a3", 1)
+                commands += "set $pc = 0x80007010\nset $a2 = 2\n"
+                commands += "awatch -l *(unsigned int*)0x80006000\ncontinue\n"
+                commands += "delete breakpoints\nstepi\n"
+                commands += gdb_check("*(unsigned int*)0x80006000", 2)
+                commands += "echo PASS GDB hardware breakpoints watchpoints\\n\n"
+                run_client("gdb-triggers", commands,
+                           "PASS GDB hardware breakpoints watchpoints")
             # 'detach' resumes the hart. Shut down the debug server afterwards.
             if server.poll() is None:
                 server.terminate()

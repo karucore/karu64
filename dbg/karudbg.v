@@ -5,7 +5,7 @@
 // src/dm_pkg.sv at 643607e19df3435cfd77cc56143e2637f5900a6e:
 // https://github.com/pulp-platform/riscv-dbg/tree/643607e19df3435cfd77cc56143e2637f5900a6e/src
 // Karu adaptation: Verilog-2001, synchronous active-high reset, one RV64 hart,
-// Debug 1.0 register semantics, no SBA/autoexec, explicit resume confirmation.
+// Debug 1.0 register semantics, optional autoexec, explicit resume confirmation.
 // See LICENSE.Solderpad. Not a source-compatible PULP fork.
 //
 // Memory port: mem_req_i && mem_ready_o commits one request on a rising edge.
@@ -19,7 +19,20 @@
 
 `include "karudbg_defs.vh"
 
-module karudbg (
+module karudbg #(
+`ifdef KARU_DBG_AUTOEXEC
+    parameter AUTOEXEC = 1,
+`else
+    parameter AUTOEXEC = 0,
+`endif
+`ifdef KARU_DBG_SBA
+    parameter SBA = 1,
+`else
+    parameter SBA = 0,
+`endif
+    parameter SBASIZE = 32,
+    parameter SBA_ENABLE = 1
+) (
     input wire clk,
     input wire rst,
     input wire dmi_reset_i,
@@ -47,7 +60,17 @@ module karudbg (
     input wire [7:0] mem_be_i,
     output reg [63:0] mem_rdata_o,
     output wire mem_ready_o,
-    output reg mem_error_o
+    output reg mem_error_o,
+    output wire sba_req_valid_o,
+    input wire sba_req_ready_i,
+    output wire [63:0] sba_req_addr_o,
+    output wire [63:0] sba_req_data_o,
+    output wire [2:0] sba_req_size_o,
+    output wire sba_req_write_o,
+    input wire sba_resp_valid_i,
+    output wire sba_resp_ready_o,
+    input wire [63:0] sba_resp_data_i,
+    input wire [2:0] sba_resp_error_i
 );
     localparam [1:0] CMD_IDLE = 0, CMD_GO = 1, CMD_EXEC = 2;
     reg dmactive_q, halt_q, ndmreset_q;
@@ -56,6 +79,7 @@ module karudbg (
     reg [1:0] cmd_state_q;
     reg [2:0] cmderr_q;
     reg [31:0] command_q;
+    reg [9:0] autoexec_q;
     reg [63:0] data_q;
     reg [31:0] progbuf_q [0:7];
     reg [31:0] abstract_word [0:9];
@@ -63,11 +87,11 @@ module karudbg (
     reg [31:0] dmstatus;
     reg [31:0] abstractcs;
     wire [63:0] rom_data;
+    wire [31:0] sba_read;
     wire dmi_fire, mem_fire, busy, available, acknowledged_halted;
     wire mem_halted, mem_going, mem_resuming, mem_exception;
-    wire command_supported;
-    wire [15:0] command_regno;
-    wire command_is_gpr, command_is_csr;
+    wire autoexec_access, command_launch;
+    wire [31:0] launch_word;
     wire [3:0] mem_abstract_index;
     wire [2:0] mem_prog_index;
     wire [11:0] mem_aligned_addr;
@@ -105,17 +129,29 @@ module karudbg (
     assign mem_prog_index = {mem_addr_i[4:3], 1'b0};
     assign unused_command = &{1'b0, command_q[31:23], command_q[19],
         command_q[15:13], mem_abstract_offset[11:6], mem_abstract_offset[2:0]};
-    assign command_regno = req_data_i[15:0];
-    assign command_is_gpr = command_regno[15:5] == 11'h080;
-    assign command_is_csr = command_regno[15:12] == 0 &&
-        command_regno != 16'h07b2 && command_regno != 16'h07b3;
-    // transfer=0 ignores transfer-only fields, including size/regno/write.
-    // aarpostincrement is optional and deliberately unsupported.
-    assign command_supported = req_data_i[31:24] == 0 &&
-        !req_data_i[23] && !req_data_i[19] &&
-        (!req_data_i[17] ||
-         (((req_data_i[22:20] == 2 && !req_data_i[16]) || req_data_i[22:20] == 3) &&
-          (command_is_gpr || command_is_csr)));
+    assign autoexec_access = AUTOEXEC &&
+        (((req_addr_i == 7'h04 || req_addr_i == 7'h05) && autoexec_q[{3'b0, req_addr_i[0]}]) ||
+         ((req_addr_i >= 7'h20 && req_addr_i <= 7'h27) &&
+          autoexec_q[4'd2 + {1'b0, req_addr_i[2:0]}]));
+    assign command_launch = (req_op_i == 2 && req_addr_i == 7'h17) || autoexec_access;
+    assign launch_word = (req_op_i == 2 && req_addr_i == 7'h17) ? req_data_i : command_q;
+
+    // Explicit writes and autoexec use one validator and one launch path.
+    // transfer=0 ignores transfer-only fields; aarpostincrement is absent.
+    function command_supported;
+        input [31:0] word;
+        reg gpr, csr;
+        reg unused_postexec;
+        begin
+            unused_postexec = word[18]; // both postexec values are legal
+            gpr = word[15:5] == 11'h080;
+            csr = word[15:12] == 0 && word[15:0] != 16'h07b2 &&
+                  word[15:0] != 16'h07b3;
+            command_supported = word[31:24] == 0 && !word[23] && !word[19] &&
+                (!word[17] || (((word[22:20] == 2 && !word[16]) ||
+                   word[22:20] == 3) && (gpr || csr)));
+        end
+    endfunction
 
     function [31:0] insn_csr;
         input [11:0] csr;
@@ -140,6 +176,32 @@ module karudbg (
     endfunction
 
     karudbg_rom rom (.addr_i(mem_addr_i), .data_o(rom_data));
+
+    generate if (SBA && SBA_ENABLE) begin : g_sba
+        karudbg_sba #(.SBASIZE(SBASIZE)) sba (
+            .clk(clk), .rst(rst), .active_i(dmactive_q),
+            .bus_reset_i(hart_reset_i || ndmreset_o),
+            .dmi_valid_i(dmi_fire), .dmi_op_i(req_op_i),
+            .dmi_addr_i(req_addr_i), .dmi_data_i(req_data_i),
+            .dmi_data_o(sba_read), .req_valid_o(sba_req_valid_o),
+            .req_ready_i(sba_req_ready_i), .req_addr_o(sba_req_addr_o),
+            .req_data_o(sba_req_data_o), .req_size_o(sba_req_size_o),
+            .req_write_o(sba_req_write_o), .resp_valid_i(sba_resp_valid_i),
+            .resp_ready_o(sba_resp_ready_o), .resp_data_i(sba_resp_data_i),
+            .resp_error_i(sba_resp_error_i)
+        );
+    end else begin : g_no_sba
+        assign sba_read = 0;
+        assign sba_req_valid_o = 0;
+        assign sba_req_addr_o = 0;
+        assign sba_req_data_o = 0;
+        assign sba_req_size_o = 0;
+        assign sba_req_write_o = 0;
+        assign sba_resp_ready_o = 0;
+        wire unused_sba;
+        assign unused_sba = &{1'b0, sba_req_ready_i, sba_resp_valid_i,
+            sba_resp_data_i, sba_resp_error_i};
+    end endgenerate
 
     // The fixed ten-word sequence falls into the Program Buffer on postexec.
     // x10/a0 addresses the debug page; x8/s0 is the CSR-transfer temporary.
@@ -175,7 +237,7 @@ module karudbg (
     end
 
     // All fields not assigned here are tied off, including stickyunavail,
-    // ndmresetpending, impebreak, SBA, hart arrays and authentication protocol.
+    // ndmresetpending, impebreak, hart arrays and authentication protocol.
     always @* begin
         dmstatus = 32'h00000083; // authenticated=1, version=3
         dmstatus[9:8] = {2{acknowledged_halted && available}};
@@ -199,6 +261,9 @@ module karudbg (
                 7'h12: dmi_read = 32'h00200000;
                 7'h13, 7'h40: dmi_read = {31'b0, acknowledged_halted && available};
                 7'h16: dmi_read = abstractcs;
+                7'h38, 7'h39, 7'h3a, 7'h3b,
+                7'h3c, 7'h3d, 7'h3e, 7'h3f: dmi_read = sba_read;
+                7'h18: dmi_read = AUTOEXEC ? {8'b0, autoexec_q[9:2], 14'b0, autoexec_q[1:0]} : 32'b0;
                 7'h20, 7'h21, 7'h22, 7'h23,
                 7'h24, 7'h25, 7'h26, 7'h27:
                     dmi_read = busy ? 0 : progbuf_q[req_addr_i[2:0]];
@@ -270,6 +335,7 @@ module karudbg (
             cmd_state_q <= CMD_IDLE;
             cmderr_q <= 0;
             command_q <= 0;
+            autoexec_q <= 0;
             data_q <= 0;
             for (i = 0; i < 8; i = i + 1) progbuf_q[i] <= 0;
         end else if (!dmactive_q) begin
@@ -283,6 +349,7 @@ module karudbg (
             cmd_state_q <= CMD_IDLE;
             cmderr_q <= 0;
             command_q <= 0;
+            autoexec_q <= 0;
             data_q <= 0;
             for (i = 0; i < 8; i = i + 1) progbuf_q[i] <= 0;
             if (dmi_fire && req_op_i == 2 && req_addr_i == 7'h10)
@@ -330,7 +397,8 @@ module karudbg (
                      (req_op_i == 2 && (req_addr_i == 7'h16 ||
                       req_addr_i == 7'h17 || req_addr_i == 7'h18)))) begin
                     if (cmderr_q == 0) cmderr_q <= 1;
-                end else if (req_op_i == 2) begin
+                end else begin
+                  if (req_op_i == 2) begin
                     case (req_addr_i)
                         7'h04: data_q[31:0] <= req_data_i;
                         7'h05: data_q[63:32] <= req_data_i;
@@ -349,24 +417,33 @@ module karudbg (
                             end
                         end
                         7'h16: cmderr_q <= cmderr_q & ~req_data_i[10:8];
-                        7'h17: begin
-                            if (cmderr_q == 0) begin
-                                if (!command_supported) cmderr_q <= 2;
-                                else if (!available || !hart_halted_i ||
-                                         !parked_q || resume_pending_q)
-                                    cmderr_q <= 4;
-                                else begin
-                                    command_q <= req_data_i;
-                                    if (req_data_i[17] || req_data_i[18])
-                                        cmd_state_q <= CMD_GO;
-                                end
-                            end
-                        end
+                        7'h18: if (AUTOEXEC) autoexec_q <= {req_data_i[23:16], req_data_i[1:0]};
                         7'h20, 7'h21, 7'h22, 7'h23,
                         7'h24, 7'h25, 7'h26, 7'h27:
                             progbuf_q[req_addr_i[2:0]] <= req_data_i;
                         default: ;
                     endcase
+                  end
+                  // The response captures the pre-execution read data above.
+                  // A same-edge data/progbuf write is visible before the hart
+                  // can observe GO on the following cycle.
+                  if (command_launch && cmderr_q == 0) begin
+                      // Autoexec retries the last accepted command, including
+                      // one rejected for its encoding or the hart's state.
+                      // The base engine only needs a template for execution.
+                      if (AUTOEXEC && req_op_i == 2 && req_addr_i == 7'h17)
+                          command_q <= launch_word;
+                      if (!command_supported(launch_word)) cmderr_q <= 2;
+                      else if (!available || !hart_halted_i ||
+                               !parked_q || resume_pending_q)
+                          cmderr_q <= 4;
+                      else begin
+                          if (req_op_i == 2 && req_addr_i == 7'h17)
+                              command_q <= launch_word;
+                          if (launch_word[17] || launch_word[18])
+                              cmd_state_q <= CMD_GO;
+                      end
+                  end
                 end
             end
             // Reset observation dominates ackhavereset. ndmreset resets the

@@ -27,6 +27,13 @@ module karu_csr (
     output wire [63:0]  debug_dpc_o,
     output wire         debug_step_o,
     output wire         debug_ebreak_o,
+`ifdef KARU_DBG_TRIGGERS
+    input wire trigger_exec_valid_i,
+    input wire [63:0] trigger_exec_addr_i,
+    input wire trigger_data_valid_i, trigger_data_load_i, trigger_data_store_i,
+    input wire [63:0] trigger_data_addr_i,
+    output wire trigger_exec_hit_o, trigger_data_hit_o, trigger_data_armed_o,
+`endif
 `endif
 
     //  -- CSR access (csrrw/s/c[i]) --
@@ -938,9 +945,34 @@ module karu_csr (
     assign hpm_rd_v = 64'b0;
 `endif
 
+`ifdef KARU_DBG_TRIGGERS
+`ifndef KARU_DBG_TRIGGER_COUNT
+`define KARU_DBG_TRIGGER_COUNT 2
+`endif
+    wire [63:0] trigger_rd;
+    wire [63:0] new_v_w;
+    wire trigger_wr;
+    karu_trigger #(.COUNT(`KARU_DBG_TRIGGER_COUNT)) triggers (
+        .clk(clk), .rst(rst), .debug_mode_i(debug_mode_i),
+        .csr_write_i(trigger_wr), .csr_addr_i(op_addr),
+        .csr_data_i(new_v_w), .csr_data_o(trigger_rd),
+        .priv_i(priv), .virt_i(virt_o),
+        .exec_valid_i(trigger_exec_valid_i), .exec_addr_i(trigger_exec_addr_i),
+        .data_valid_i(trigger_data_valid_i), .data_load_i(trigger_data_load_i),
+        .data_store_i(trigger_data_store_i), .data_addr_i(trigger_data_addr_i),
+        .exec_hit_o(trigger_exec_hit_o), .data_hit_o(trigger_data_hit_o),
+        .data_armed_o(trigger_data_armed_o)
+    );
+`endif
     //  -- read value (combinational) --
     wire [63:0] rd_v_w;
+`ifndef KARU_DBG_TRIGGERS
+    wire [63:0] new_v_w;
+`endif
     assign rd_v_w =
+`ifdef KARU_DBG_TRIGGERS
+        (op_addr == 12'h7a0 || op_addr == 12'h7a1 || op_addr == 12'h7a2 || op_addr == 12'h7a4) ? trigger_rd :
+`endif
 `ifdef KARU_DBG
         op_addr == 12'h7b0 ? {32'b0, csr_dcsr} :
         op_addr == 12'h7b1 ? csr_dpc :
@@ -1039,6 +1071,9 @@ module karu_csr (
         input [11:0] a;
         begin
             case (a)
+`ifdef KARU_DBG_TRIGGERS
+                12'h7a0,12'h7a1,12'h7a2,12'h7a4,
+`endif
 `ifdef KARU_DBG
                 12'h7b0,12'h7b1,12'h7b2,12'h7b3,
 `endif
@@ -1093,7 +1128,6 @@ module karu_csr (
     wire [63:0] rmw_v;
     assign rmw_v = (op_addr == 12'h344)
    ? {rd_v_w[63:10], csr_mip[9], rd_v_w[8:0]} : rd_v_w;
-    wire [63:0] new_v_w;
     assign new_v_w =
         op_sub == `CSR_RW || op_sub == `CSR_RWI ? op_src               :
         op_sub == `CSR_RS || op_sub == `CSR_RSI ? rmw_v |  op_src      :
@@ -1251,6 +1285,9 @@ module karu_csr (
     //  the actual write fires only when the access is legal.
     wire csr_w_fire;
     assign csr_w_fire = op_req && wen_w && (csr_exc_o == EXC_NONE);
+`ifdef KARU_DBG_TRIGGERS
+    assign trigger_wr = csr_w_fire;
+`endif
 
     //  Smcntrpmf per-privilege inhibit for the CURRENT privilege: when set, the
     //  matching fixed counter is frozen this cycle (mcycle uses the cycle's priv;

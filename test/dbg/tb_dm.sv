@@ -38,7 +38,11 @@ module tb_dm;
         .hart_unavailable_i(unavailable), .hart_reset_i(hart_reset),
         .mem_req_i(mem_req), .mem_write_i(mem_write), .mem_addr_i(mem_addr),
         .mem_wdata_i(mem_wdata), .mem_be_i(mem_be),
-        .mem_rdata_o(mem_rdata), .mem_ready_o(mem_ready), .mem_error_o(mem_error)
+        .mem_rdata_o(mem_rdata), .mem_ready_o(mem_ready), .mem_error_o(mem_error),
+        .sba_req_valid_o(), .sba_req_ready_i(1'b0), .sba_req_addr_o(),
+        .sba_req_data_o(), .sba_req_size_o(), .sba_req_write_o(),
+        .sba_resp_valid_i(1'b0), .sba_resp_ready_o(),
+        .sba_resp_data_i(64'b0), .sba_resp_error_i(3'b0)
     );
 
     task check(input bit condition, input string description);
@@ -109,7 +113,148 @@ module tb_dm;
         end
     endtask
 
+`ifdef TEST_AUTOEXEC
+    task finish_auto(input [2:0] error);
+        begin
+            mr(12'h400, 1);
+            mw(12'h108, 0, 8'h0f);
+            mr(12'h400, 0);
+            mw(12'h100, 0, 8'h0f);
+            rd(7'h16, 32'h08000002 | (32'(error) << 8));
+        end
+    endtask
+    task autoexec_tests;
+        reg [31:0] mask, pattern, actual;
+        reg [6:0] selected;
+        integer n;
+        reg [31:0] expected_prog [0:7];
+        begin
+            for (n=0;n<8;n=n+1) expected_prog[n]=0;
+            repeat (3) @(posedge clk);
+            @(negedge clk); rst = 0;
+            wr(7'h10, 1);
+            rd(7'h18, 0);
+            wr(7'h18, 32'hffffffff); rd(7'h18, 32'h00ff0003);
+            wr(7'h18, 0);
+            halted = 1; mw(12'h100, 0, 8'h0f);
+            run_empty_command(32'h00040000); // saved postexec-only command
+            for (n = 0; n < 10; n = n + 1) begin
+                mask = 32'b1 << ((n < 2) ? n : n + 14);
+                selected = n < 2 ? 7'h04 + 7'(n) : 7'h20 + 7'(n-2);
+                pattern = 32'h51000100 + 32'(n);
+                wr(7'h18, mask); rd(7'h18, mask);
+                wr(selected, pattern);
+                if (n>=2) expected_prog[n-2]=pattern;
+                rd(7'h16, 32'h08001002);
+                if (n < 2) begin
+                    @(negedge clk); mem_req=1; mem_write=0; mem_addr=12'h380;
+                    #1;
+                    check((n == 0 ? mem_rdata[31:0] : mem_rdata[63:32]) == pattern,
+                          "autoexec write visible to the following command");
+                    @(negedge clk); mem_req=0;
+                end else mr(12'h360 + 12'(4*(n-2) & ~7),
+                           {expected_prog[(n-2) | 1], expected_prog[(n-2) & ~1]});
+                finish_auto(0);
+                rd(selected, pattern); // returns the old value, then launches
+                rd(7'h16, 32'h08001002); finish_auto(0);
+                wr(7'h18, 0);
+                rd(selected, pattern); rd(7'h16, 32'h08000002);
+            end
+            // A selected read's reply stays old even if execution updates DATA
+            // before the host accepts that reply. Memory and DMI are independent.
+            wr(7'h04, 32'h12345678); wr(7'h18, 1);
+            @(negedge clk); req_valid=1; req_addr=7'h04; req_op=1;
+            @(posedge clk); #1;
+            check(resp_valid && resp_data == 32'h12345678, "autoexec read captures old data");
+            repeat (4) begin
+                @(posedge clk); #1;
+                check(!req_ready && resp_valid && resp_data == 32'h12345678,
+                      "held request is accepted only once");
+            end
+            @(negedge clk); req_valid=0;
+            mr(12'h400, 1); mw(12'h108, 0, 8'h0f);
+            mw(12'h380, 64'h11223344deadbeef, 8'hff);
+            mw(12'h100, 0, 8'h0f);
+            @(posedge clk); #1;
+            check(resp_valid && resp_data == 32'h12345678,
+                  "autoexec read response stable through execution");
+            @(negedge clk); resp_ready=1;
+            @(posedge clk); #1;
+            @(negedge clk); resp_ready=0;
+            rd(7'h16, 32'h08000002);
+            rd(7'h04, 32'hdeadbeef); finish_auto(0);
+            // Busy accesses do not change masks or enqueue another command.
+            dmi(1, 7'h04, 0, actual);
+            wr(7'h18, 32'h00ff0003);
+            finish_auto(1); rd(7'h18, 1); clear_error;
+            // Busy data/PB writes cannot alter the executing command's operands.
+            dmi(1, 7'h04, 0, actual);
+            wr(7'h04, 32'hbad0bad0); wr(7'h20, 32'hbad1bad1);
+            finish_auto(1); clear_error;
+            wr(7'h18, 0);
+            rd(7'h04, 32'hdeadbeef); rd(7'h20, expected_prog[0]);
+            wr(7'h18, 1);
+            // A command exception sticks and blocks autoexec until explicitly cleared.
+            dmi(1, 7'h04, 0, actual);
+            mr(12'h400, 1); mw(12'h108, 0, 8'h0f);
+            mw(12'h118, 0, 8'h0f); mw(12'h100, 0, 8'h0f);
+            rd(7'h16, 32'h08000302);
+            rd(7'h04, 32'hdeadbeef); mr(12'h400, 0);
+            clear_error; rd(7'h04, 32'hdeadbeef); finish_auto(0);
+            // An accepted explicit command is cached even when validation fails.
+            // Sticky-error command writes are ignored, so they cannot replace it.
+            wr(7'h17, 32'h01000000);
+            wr(7'h17, 32'h00040000);
+            wr(7'h04, 32'hf00dcafe); rd(7'h04, 32'hf00dcafe);
+            mr(12'h400, 0); rd(7'h16, 32'h08000202); clear_error;
+            rd(7'h04, 32'hf00dcafe);
+            rd(7'h16, 32'h08000202); // retry unsupported word, never stale postexec
+            mr(12'h400, 0); clear_error;
+            // A supported word rejected while running is likewise the latest
+            // command. Once halted, retry must generate the x1 read, not a NOP.
+            halted=0; wr(7'h17, 32'h00321001);
+            rd(7'h16, 32'h08000402); mr(12'h400, 0);
+            halted=1; mw(12'h100, 0, 8'h0f); clear_error;
+            rd(7'h04, 32'hf00dcafe);
+            mr(12'h348, 64'h0000001338153023);
+            finish_auto(0);
+            // A write to COMMAND while busy must not replace that cached x1
+            // read. Clearing busy error and retrying still uses the x1 read.
+            dmi(1, 7'h04, 0, actual);
+            wr(7'h17, 32'h00040000);
+            finish_auto(1); clear_error;
+            rd(7'h04, 32'hf00dcafe);
+            mr(12'h348, 64'h0000001338153023); finish_auto(0);
+            run_empty_command(32'h00040000);
+            // An unavailable/running hart rejects autoexec just like COMMAND.
+            halted=0; dmi(1, 7'h04, 0, actual);
+            rd(7'h16, 32'h08000402); mr(12'h400, 0);
+            halted=1; mw(12'h100, 0, 8'h0f); clear_error;
+            // DMI hard reset cancels the reply, not the accepted command/mask.
+            dmi(1, 7'h04, 0, actual);
+            @(negedge clk); dmi_reset=1;
+            repeat (2) @(posedge clk);
+            @(negedge clk); dmi_reset=0;
+            rd(7'h18, 1); rd(7'h16, 32'h08001002); finish_auto(0);
+            // Platform reset aborts execution but leaves autoexec in the DM.
+            dmi(1, 7'h04, 0, actual); wr(7'h10, 3);
+            rd(7'h16, 32'h08000402); rd(7'h18, 1);
+            wr(7'h10, 1); clear_error; mw(12'h100, 0, 8'h0f);
+            rd(7'h04, 32'hf00dcafe); finish_auto(0);
+            dmi(1, 7'h04, 0, actual); // deactivate during a live command
+            wr(7'h10, 0); wr(7'h10, 1); rd(7'h18, 0);
+            rd(7'h16, 32'h08000002);
+            rd(7'h04, 0); rd(7'h20, 0);
+            $display("karudbg autoexec: PASS (%0d checks)", checks);
+        end
+    endtask
+`endif
+
     initial begin
+`ifdef TEST_AUTOEXEC
+        autoexec_tests;
+        $finish;
+`else
         if ($test$plusargs("negative_resume")) begin
             repeat (3) @(posedge clk);
             @(negedge clk); rst = 0;
@@ -304,6 +449,7 @@ module tb_dm;
         rd(7'h04, 0); rd(7'h05, 0); rd(7'h20, 0); rd(7'h16, 32'h08000002);
         $display("karudbg DM unit: PASS (%0d checks)", checks);
         $finish;
+`endif
     end
     initial begin #1000000; $fatal(1, "DM unit timeout"); end
 endmodule

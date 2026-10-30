@@ -18,7 +18,7 @@ SUFFIXES = {".v", ".vh", ".sv", ".mk", ".py", ".S", ".cc", ".cfg", ".sh",
 
 
 def input_hashes():
-    paths = [ROOT / "Makefile"]
+    paths = [ROOT / "Makefile", ROOT / "flow/asic/karu64.f"]
     for directory in ("rtl", "dbg", "test/dbg", "flow/fpga"):
         paths.extend(path for path in (ROOT / directory).rglob("*")
                      if path.is_file() and path.suffix in SUFFIXES)
@@ -36,6 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="_build/dbg")
     parser.add_argument("--jobs", type=int, default=3)
+    parser.add_argument("--timeout", type=int, default=1800, help="total wall-clock bound, including model compilation")
     args = parser.parse_args()
     out = (ROOT / args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -48,7 +49,7 @@ def main():
         try:
             process = subprocess.Popen(command, cwd=ROOT, stdout=log,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            exit_code = process.wait(timeout=900)
+            exit_code = process.wait(timeout=args.timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
             exit_code = 124
@@ -71,7 +72,7 @@ def main():
                            "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
     record = {"utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "command": command, "seconds": round(time.monotonic()-started, 2),
-              "exit_code": exit_code, "timed_out": timed_out,
+              "exit_code": exit_code, "timed_out": timed_out, "timeout_seconds": args.timeout,
               "inputs_before": before, "inputs_after": after,
               "source_integrity": before == after, "tools": tools,
               "passed": exit_code == 0 and before == after}

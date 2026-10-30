@@ -62,6 +62,9 @@ module karudbg_test_ram #(
     output reg [31:0] fifo_count
 );
     reg [7:0] ram [0:65535];
+    // Count each byte observed by a non-idempotent device, independent of
+    // transfer width; whole-register restart must not read a byte twice.
+    integer debug_read_bytes [0:31];
     integer cycle = 0;
     reg i_active = 0, d_active = 0, w_active = 0;
     reg [31:0] i_addr, d_addr, w_addr;
@@ -69,12 +72,16 @@ module karudbg_test_ram #(
     reg [2:0] i_size, d_size, w_size;
     reg [3:0] i_id, d_id, w_id;
     reg w_error;
+    // Directed maintenance tests hold requests/responses without changing
+    // an already asserted VALID. Defaults preserve every ordinary fixture.
+    reg hold_i_ar = 0, hold_i_r = 0;
     integer b, init_index;
     initial begin
         mmio_reads=0; mmio_writes=0; mmio_value=INITIAL_MMIO; fifo_count=0;
         imem_rid=0; imem_rdata=0; imem_rresp=0; imem_rlast=0; imem_rvalid=0;
         dmem_rid=0; dmem_rdata=0; dmem_rresp=0; dmem_rlast=0; dmem_rvalid=0;
         dmem_bid=0; dmem_bresp=0; dmem_bvalid=0;
+        for(init_index=0;init_index<32;init_index=init_index+1) debug_read_bytes[init_index]=0;
         for(init_index=0;init_index<65536;init_index=init_index+1) ram[init_index]=0;
         if(BOOT_LOOP) begin
             put_insn(0,32'h00128293); // addi t0,t0,1
@@ -85,7 +92,7 @@ module karudbg_test_ram #(
         integer j;
         begin for(j=0;j<65536;j=j+1) ram[j]=0; end
     endtask
-    assign imem_arready = !i_active && !imem_rvalid && cycle[1:0] != 0;
+    assign imem_arready = !hold_i_ar && !i_active && !imem_rvalid && cycle[1:0] != 0;
     assign dmem_arready = !d_active && !dmem_rvalid && cycle[1:0] != 1;
     assign dmem_awready = !w_active && !dmem_bvalid && cycle[2:0] != 2 &&
         (!AW_WAIT_WVALID || dmem_wvalid);
@@ -118,9 +125,10 @@ module karudbg_test_ram #(
                 imem_rvalid <= 0;
                 if (imem_rlast) i_active <= 0;
                 else begin i_addr <= i_addr + (32'd1 << i_size); i_left <= i_left - 1; end
-            end else if (i_active && !imem_rvalid && cycle[2:0] != 3) begin
+            end else if (i_active && !imem_rvalid && !hold_i_r && cycle[2:0] != 3) begin
                 imem_rid <= i_id; imem_rdata <= ram_word(i_addr);
-                imem_rresp <= i_addr[31:16] == 16'h8000 ? 0 : 3;
+                imem_rresp <= (i_addr[31:16] == 16'h8000 ||
+                    (i_addr[31:12]>=20'h00101 && i_addr[31:12]<20'h00111)) ? 0 : 3;
                 imem_rlast <= i_left == 0; imem_rvalid <= 1;
             end
             if (dmem_arvalid && dmem_arready) begin
@@ -134,7 +142,8 @@ module karudbg_test_ram #(
             end else if (d_active && !dmem_rvalid && cycle[2:0] != 4) begin
                 dmem_rid <= d_id;
                 dmem_rdata <= ram_word(d_addr);
-                dmem_rresp <= d_addr[31:16] == 16'h8000 ? 0 : 3;
+                dmem_rresp <= (d_addr[31:16] == 16'h8000 ||
+                    (d_addr[31:12]>=20'h00101 && d_addr[31:12]<20'h00111)) ? 0 : 3;
                 if (d_addr[31:12] == 20'h10000) begin
                     dmem_rdata <= mmio_value;
                     dmem_rresp <= d_addr[11:0] == 0 ? 0 : 2;
@@ -149,6 +158,11 @@ module karudbg_test_ram #(
                     if(ENABLE_FIFO && d_addr[11:0] == 40) begin
                         dmem_rdata <= 64'(mmio_reads); dmem_rresp <= 0;
                     end
+                    if (d_addr[11:5] == 7'h08) begin
+                        dmem_rdata <= 64'h5a5a5a5a5a5a5a5a; dmem_rresp <= 0;
+                        for(b=0;b<8;b=b+1) if(b<(1<<d_size))
+                            debug_read_bytes[d_addr[4:0]+b] <= debug_read_bytes[d_addr[4:0]+b]+1;
+                    end
                     if (d_addr[11:0] == 0) begin
                         mmio_reads <= mmio_reads + 1;
                         mmio_value <= 0; // read-to-clear; every extra read is visible
@@ -161,7 +175,8 @@ module karudbg_test_ram #(
                 w_size <= dmem_awsize; w_id <= dmem_awid; w_error <= 0;
             end
             if (dmem_wvalid && dmem_wready) begin
-                if (w_addr[31:16] == 16'h8000) begin
+                if (w_addr[31:16] == 16'h8000 ||
+                    (w_addr[31:12]>=20'h00101 && w_addr[31:12]<20'h00111)) begin
                     for (b = 0; b < 8; b = b + 1)
                         if (dmem_wstrb[b]) ram[{w_addr[15:3],3'b0}+b] <= dmem_wdata[8*b +: 8];
                 end else if (w_addr[31:12] == 20'h10000 && w_addr[11:0] == 0) begin
@@ -173,6 +188,7 @@ module karudbg_test_ram #(
                 if (w_left == 0) begin
                     w_active <= 0; dmem_bid <= w_id; dmem_bvalid <= 1;
                     dmem_bresp <= w_error || !(w_addr[31:16] == 16'h8000 ||
+                        (w_addr[31:12]>=20'h00101 && w_addr[31:12]<20'h00111) ||
                         (w_addr[31:12] == 20'h10000 && w_addr[11:0] == 0)) ? 2 : 0;
                 end else begin w_addr <= w_addr + (32'd1 << w_size); w_left <= w_left - 1; end
             end

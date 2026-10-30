@@ -75,8 +75,12 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   **2872/2872** tests in both minimal and shipping configurations. The local
   ACT4 dependency patches and exact reproduction flow are documented in
   [test/act4-karu/README.md](test/act4-karu/README.md); configured-suite
-  coverage is not a certification claim.
-- The current image (`28085356…abbd7`, element-group `vkeccak.vi` per Zvknhk
+  coverage is not a certification claim. The latest full-debug shipping-geometry
+  CPU replay also passes 2872/2872 preserved reference ELFs; all 16 ordinary
+  directed subjects pass with zero cycle delta when the extensions are idle.
+  [The debug validation record](dbg/README.md#ordinary-isa-replay-with-debug-idle)
+  distinguishes CPU replay from debug functionality and final combined gates.
+- The latest board-validated profile image (`28085356…abbd7`, element-group `vkeccak.vi` per Zvknhk
   v0.2) runs at 75 MHz, meets routed timing and passes Linux 7.2.6-zvk board
   acceptance (2026-10-07) plus the Zvknhk software checks: OpenSSL 4.0.2
   17/17, riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs 720/720 and 20/20
@@ -364,6 +368,9 @@ privilege, instruction/data traffic and a static trusted security domain,
 including across stalls and queued accesses. The current VCU118 design does
 not enforce access control with these attributes. The core's MMU and physical
 access checks remain active. Opt-in execution-based debug is documented in
-[the karudbg implementation and testing plan](dbg/README.md). Its reviewed
-VCU118 image completed routed timing at 75 MHz on 2026-10-27; board debug and
-boot acceptance remain pending. See [the current FPGA image](doc/fpga.md#current-debug-image--2026-10-27).
+[the karudbg implementation and testing plan](dbg/README.md). Independently
+selectable autoexec, address triggers and SBA extend the base DM. The plan
+records the current source-hashed functional gate, six-configuration mapped
+comparison and remaining acceptance gates. The full two-trigger VCU118 image
+passes routed timing at 75 MHz on 2026-10-29; board debug and boot acceptance
+remain pending. See [FPGA programming and acceptance](doc/fpga.md).

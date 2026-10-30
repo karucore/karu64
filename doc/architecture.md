@@ -512,8 +512,63 @@ optional VCU118 integration uses a USER4 nested-TAP tunnel and keeps the DM
 alive across `ndmreset`, holding the hart until both sides of the DDR AXI path
 have completed reset cancellation. See the [debug guide](../dbg/README.md)
 for the reset contract, tool configuration and current acceptance gates.
-SBA, hardware triggers, authentication and board acceptance are outside the
-initial implemented/tested scope; consult the plan for current gate results.
+The base `KARU_DBG` configuration keeps SBA and triggers absent. Optional
+`KARU_DBG_SBA`, `KARU_DBG_AUTOEXEC` and `KARU_DBG_TRIGGERS` select the extensions
+individually; `KARU_DBG_FULL` enables all three. The SBA engine advertises a
+32-bit physical address interface and native 8/16/32/64-bit transfers. It sits
+after the caches, uses privileged data `AxPROT` plus the static `NONSECURE`
+policy, and cannot reach the private debug page. A static `SBA_ENABLE` gate
+can disable its downstream traffic. Autoexec retains every accepted explicit
+command, including one that fails validation or finds the hart unavailable;
+command writes during busy or sticky error are ignored. After error clearing,
+a selected data/Program Buffer access retries that command, without replaying
+an older command's device effects.
+
+Address triggers compare the architectural instruction PC or post-pointer-masking,
+pre-translation data address. Armed vector accesses register each 64-bit field
+address before comparison, adding one cycle per field query. With no armed
+data trigger, the ordinary vector memory path is unchanged. Whole-register
+probes use the encoded EEW element boundaries so debug restart does not repeat
+partially completed device accesses. See the [trigger contract](../dbg/TRIGGERS.md).
+
+SBA writes to DRAM and executable scratch SRAM register an issue hold and drain older execution, posted writes and
+outstanding instruction reads before either write channel starts. Acceptance
+requires both the registered hold and the quiet acknowledgement: work admitted
+on the hold's assertion edge also drains. Reset-gated request VALID has no
+combinational path through the hold into issue. The hold
+clears LR/SC reservations. After the bus response, the existing whole-cache
+flush/refill-poison logic and IFU redirect synchronize data and instructions.
+The platform cache-maintenance request/acknowledgement must complete before
+SBA reports completion or releases the issue hold. The acknowledgement is
+retained if it arrives while a prefetch is active; completion still waits for
+that read to drain. The tracked architectural next PC covers normal
+execution and the Debug ROM; maintenance does not execute a Program Buffer
+command or change halted/running state. MMIO retains exact native widths and
+has no RAM flush. Page-table changes still need translation fences. Custom PMA
+maps permitting non-idempotent executable devices must define their refetch
+policy during this synchronization.
+
+An accepted SBA operation survives DMI reset. DM deactivation cancels only an
+unaccepted request; accepted bus/coherence ownership drains before reuse.
+Hart/fabric reset cancels both adapter and responders together. An active SBA
+operation started before reset reports error 7 when canceled. While `ndmreset`
+or any external reset is asserted, Debug 1.0 supports only `dmcontrol`
+reads/writes and `dmstatus.ndmresetpending` reads; this optional field reads zero,
+and other DMI accesses are undefined. No reset-time SBA error/replay guarantee
+is implied. A nonresponding older core access, SBA device or platform cache
+controller can retain bus ownership or block maintenance indefinitely. See the
+[SBA contract and focused simulator evidence](../dbg/README.md#implemented-sba-contract).
+The latest full-debug CPU replay passes 2872/2872 preserved ACT4 reference
+ELFs, and all 16 ordinary subjects match base-debug cycle counts with the
+extensions idle. The focused four-state SBA probe passes 30,740 checks and
+rejects eight coherence/ordering mutations. The final combined functional gate
+passes with 274 unchanged input hashes. All twelve mapped comparisons are
+complete, and the full two-trigger FPGA image passes routed acceptance at
+75 MHz at its October 29 checkpoint. The October 30 registered-pause follow-up
+is newer RTL; its full-row timing is recorded separately in the debug
+measurements. The 200 MHz ASIC timing goal and board testing remain open.
+Authentication and technology-specific ASIC signoff remain integration work;
+consult the plan for current results.
 
 ## Build-time configuration
 

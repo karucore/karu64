@@ -22,6 +22,7 @@
 //  span vd..vd+n-1 contiguously. Single multi-cycle op at a time
 //  (standard req/busy/done handshake).
 
+`include "karu_ext.vh"
 `include "karu_vcfg.vh"
 
 module karu_vlsu #(
@@ -31,6 +32,16 @@ module karu_vlsu #(
     input  wire         clk,
     input  wire         rst,
 
+`ifdef KARU_DBG_TRIGGERS
+    // Enabled watchpoints serialize active elements. No normal-path cycles
+    // or memory ports are added when there is no armed data trigger.
+    input wire debug_watch_enable_i, debug_watch_hit_i,
+    output wire debug_watch_valid_o,
+    output wire [63:0] debug_watch_addr_o,
+    output reg debug_watch_abort_o,
+    output wire [31:0] debug_watch_index_o,
+    output wire debug_watch_progress_o,
+`endif
     input  wire         req,
     output wire         busy,
     input  wire         is_store,
@@ -119,6 +130,15 @@ module karu_vlsu #(
     reg [4:0]   vd_q;
     reg         st_q, vta_q, vm_q, vma_q;
     reg         pelem_q, fault_pending;
+`ifdef KARU_DBG_TRIGGERS
+    reg watch_q, watch_checked, watch_pending;
+    reg [63:0] watch_addr_q;
+    wire use_pelem;
+    assign use_pelem = pelem || debug_watch_enable_i;
+`else
+    wire use_pelem;
+    assign use_pelem = pelem;
+`endif
     assign vmem_allow_post = !pelem_q;
     reg [1:0]   eew_q;
     reg [`KARU_VLEN-1:0] v0_q;
@@ -350,6 +370,13 @@ module karu_vlsu #(
                S_PE_XLA=6'd31, S_PE_XLAW=6'd32, S_PE_XLB=6'd33, S_PE_XLBW=6'd34,
                S_DRAIN=6'd35;
     reg [5:0] state;
+`ifdef KARU_DBG_TRIGGERS
+    localparam [5:0] S_WATCH=6'd36, S_WATCH_ADDR=6'd37;
+    assign debug_watch_valid_o = state == S_WATCH;
+    assign debug_watch_addr_o = watch_addr_q;
+    assign debug_watch_index_o = pe_i;
+    assign debug_watch_progress_o = watch_q;
+`endif
     assign busy = (state != S_IDLE);
 
     // First active element intersecting a failed contiguous granule. Only
@@ -412,25 +439,38 @@ module karu_vlsu #(
             state<=S_IDLE; done<=0; vmem_req<=0; vg_we<=0; vg_wbe<=16'hffff;
             xlate_req<=0; fault_abort<=0; trim_req<=0;
             fault_bus<=0; fault_pending<=0;
+`ifdef KARU_DBG_TRIGGERS
+            watch_q<=0; watch_checked<=0; watch_pending<=0; debug_watch_abort_o<=0;
+`endif
         end else begin
             done<=0; vmem_req<=0; vg_we<=0; vg_wbe<=16'hffff;
             xlate_req<=0; fault_abort<=0; trim_req<=0;
+`ifdef KARU_DBG_TRIGGERS
+            debug_watch_abort_o<=0;
+`endif
             case (state)
                 S_IDLE: if (req) begin
                     base_q<=base; vd_q<=vd; st_q<=is_store; vta_q<=vta;
                     dpmlen_q<=dpmlen; pm_virtual_q<=pm_virtual;
                     vm_q<=vm; vma_q<=vma; v0_q<=v0mask; eew_q<=eew;
                     ff_q<=ff; xc_v<=0;
-                    pelem_q<=pelem; fault_bus<=0; fault_pending<=0;
-                    pe_pass1<=pelem && is_store;    //  stores: check-only pass first
+                    pelem_q<=use_pelem; fault_bus<=0; fault_pending<=0;
+`ifdef KARU_DBG_TRIGGERS
+                    watch_q<=debug_watch_enable_i; watch_checked<=0; watch_pending<=0;
+                    pe_pass1<=pelem && is_store && !debug_watch_enable_i;
+`else
+                    pe_pass1<=pelem && is_store;
+`endif    //  stores: check-only pass first
                     rg<=0;
-                    if (pelem) begin
-                        idx_mode_q<=indexed; stride_q<=stride; nf_q<=nf; nregf_q<=nreg;
+                    if (use_pelem) begin
+                        idx_mode_q<=pelem && indexed;
+                        stride_q<=pelem ? stride : (64'd1 << eew);
+                        nf_q<=pelem ? nf : 4'd1; nregf_q<=nreg;
                         idx_vs_q<=idx_vs; idx_eew_q<=idx_eew; idx_nreg_q<=idx_nreg;
                         pe_vl<=vl[31:0]; pe_vst<=vstart; pe_i<=0; pe_f<=0;
-                        pe_nrg  <= ({2'b0, nf} * {2'b0, nreg}) << GW;   //  nf*nreg*GRAN
+                        pe_nrg  <= ({2'b0, pelem ? nf : 4'd1} * {2'b0, nreg}) << GW;   //  nf*nreg*GRAN
                         idx_nrg <= {2'b0, idx_nreg} << GW;
-                        state <= indexed ? S_PE_IDX : S_PE_RD;
+                        state <= (pelem && indexed) ? S_PE_IDX : S_PE_RD;
                     end else begin
                         //  byte bounds = the ACTIVE element range (act_lo/act_hi
                         //  scan above): bytes outside it are prestart, tail or
@@ -617,6 +657,9 @@ module karu_vlsu #(
                     //  access, no fault (RVV: inactive elements never except).
                     //  Active: translate the element's page(s) first (S_PE_XL*).
                     if (!pe_act) state <= S_PE_NEXT;
+`ifdef KARU_DBG_TRIGGERS
+                    else if (watch_q && !watch_checked) state <= S_WATCH_ADDR;
+`endif
                     else state <= S_PE_XLA;
                 end
 
@@ -628,6 +671,29 @@ module karu_vlsu #(
                 //  only, so no byte is stored before all addresses prove good.
                 //  Loads are single-pass: nothing architectural happens until
                 //  S_PE_WB, so an inline fault aborts (or ff-trims) cleanly. ----
+`ifdef KARU_DBG_TRIGGERS
+                S_WATCH_ADDR: begin
+                    // Separate indexed/strided address generation and pointer
+                    // masking from the trigger comparator and global entry
+                    // control. Payload need not reset: only S_WATCH is valid.
+                    watch_addr_q<=eaddr;
+                    state<=S_WATCH;
+                end
+                S_WATCH: begin
+                    if (debug_watch_hit_i) begin
+                        // Previous elements are committed; no field in this
+                        // segment has been accessed. Loads drain their saved
+                        // prefix into the VRF before reporting the stop.
+                        pe_f<=0; watch_pending<=1;
+                        if (st_q) begin debug_watch_abort_o<=1; state<=S_IDLE; end
+                        else begin rg<=0; state<=S_PE_WB; end
+                    end else if (pe_f == nf_q - 4'd1) begin
+                        pe_f<=0; watch_checked<=1; state<=S_PE_XLA;
+                    end else begin
+                        pe_f<=pe_f+4'd1; state<=S_WATCH_ADDR;
+                    end
+                end
+`endif
                 S_PE_XLA: begin
                     if (xc_v && xc_vp == pgA) begin
                         pe_pp0 <= xc_pp;    pe_pp1 <= xc_pp;
@@ -640,13 +706,22 @@ module karu_vlsu #(
                 end
                 S_PE_XLAW: if (xlate_done) begin
                     if (xlate_fault) begin
+`ifdef KARU_DBG_TRIGGERS
+                        if (watch_q) fault_index<=pe_i;
+`endif
                         //  ff LOAD past element 0: trim vl to the faulting element
                         //  and write back what loaded so far (peb holds < pe_i;
                         //  a partially-loaded first-faulting segment is allowed).
                         if (ff_q && !st_q && pe_i != 32'd0) begin
                             trim_req<=1; trim_vl<=pe_i; pe_vl<=pe_i;
                             rg<=0; state<=S_PE_WB;
-                        end else begin fault_abort<=1; state<=S_IDLE; end
+                        end else begin
+`ifdef KARU_DBG_TRIGGERS
+                            if (watch_q && !st_q) begin fault_pending<=1; rg<=0; state<=S_PE_WB; end
+                            else
+`endif
+                            begin fault_abort<=1; state<=S_IDLE; end
+                        end
                     end else begin
                         pe_pp0 <= xlate_pa[63:12];  pe_pp1 <= xlate_pa[63:12];
                         pe_pbmt0<=xlate_pbmt; pe_pbmt1<=xlate_pbmt;
@@ -661,10 +736,19 @@ module karu_vlsu #(
                 end
                 S_PE_XLBW: if (xlate_done) begin
                     if (xlate_fault) begin
+`ifdef KARU_DBG_TRIGGERS
+                        if (watch_q) fault_index<=pe_i;
+`endif
                         if (ff_q && !st_q && pe_i != 32'd0) begin
                             trim_req<=1; trim_vl<=pe_i; pe_vl<=pe_i;
                             rg<=0; state<=S_PE_WB;
-                        end else begin fault_abort<=1; state<=S_IDLE; end
+                        end else begin
+`ifdef KARU_DBG_TRIGGERS
+                            if (watch_q && !st_q) begin fault_pending<=1; rg<=0; state<=S_PE_WB; end
+                            else
+`endif
+                            begin fault_abort<=1; state<=S_IDLE; end
+                        end
                     end else begin
                         pe_pp1 <= xlate_pa[63:12];
                         pe_pbmt1<=xlate_pbmt; xc_pbmt<=xlate_pbmt;
@@ -713,6 +797,9 @@ module karu_vlsu #(
                 S_PE_NEXT: begin
                     if (pe_f == nf_q - 4'd1) begin
                         pe_f <= 4'd0;
+`ifdef KARU_DBG_TRIGGERS
+                        watch_checked<=0;
+`endif
                         if (pe_i == pe_vl - 32'd1) begin
                             if (pe_pass1) begin
                                 //  store check-pass done, every address proved
@@ -727,7 +814,15 @@ module karu_vlsu #(
                 //  ---- load writeback: flat bytes -> dest register granules ----
                 S_PE_WB: begin
                     vg_we<=1; vg_wd<=rg_reg; vg_wg<=rg_off; vg_wdata<=pe_wbgran;
-                    if (rg == pe_nrg-1) begin done<=!fault_pending; fault_abort<=fault_pending; state<=S_IDLE; end
+                    if (rg == pe_nrg-1) begin
+`ifdef KARU_DBG_TRIGGERS
+                        done<=!fault_pending && !watch_pending;
+                        debug_watch_abort_o<=watch_pending;
+`else
+                        done<=!fault_pending;
+`endif
+                        fault_abort<=fault_pending; state<=S_IDLE;
+                    end
                     else rg<=rg+1;
                 end
                 S_DRAIN: if (!store_pending) begin done<=1; state<=S_IDLE; end
@@ -751,4 +846,21 @@ module karu_vlsu #(
             end
         end
     end
+`ifdef KARU_DBG_TRIGGERS
+// synthesis translate_off
+    reg watch_capture_q;
+    reg [63:0] watch_expected_q;
+    always @(posedge clk) begin
+        if (rst) watch_capture_q<=0;
+        else begin
+            watch_capture_q<=state==S_WATCH_ADDR;
+            if (state==S_WATCH_ADDR) watch_expected_q<=eaddr;
+            if (state==S_WATCH && (!watch_capture_q || watch_addr_q!==watch_expected_q))
+                $fatal(1,"registered watch address was not captured before query");
+            if (state==S_WATCH && (vmem_req || xlate_req))
+                $fatal(1,"watch query overlapped an architectural memory request");
+        end
+    end
+// synthesis translate_on
+`endif
 endmodule

@@ -9,7 +9,9 @@
 `include "karudbg_defs.vh"
 module karudbg_core #(
     parameter [63:0] RESET_PC=64'h8000_0000,
-    parameter EXT_TIME=0, parameter NONSECURE=1
+    parameter EXT_TIME=0, parameter NONSECURE=1,
+    // Trusted integration lock: tied from the SoC lifecycle policy at reset.
+    parameter SBA_ENABLE=1
 ) (
     input wire  clk,
     input wire  rst,
@@ -131,6 +133,124 @@ module karudbg_core #(
     wire [`AXI_RESP_W-1:0] c_dmem_bresp;
     wire  c_dmem_bvalid;
     wire  c_dmem_bready;
+    wire [3:0] x_dmem_arid;
+    wire [31:0] x_dmem_araddr;
+    wire [7:0] x_dmem_arlen;
+    wire [2:0] x_dmem_arsize;
+    wire [1:0] x_dmem_arburst;
+    wire [2:0] x_dmem_arprot;
+    wire x_dmem_arvalid;
+    wire x_dmem_rready;
+    wire [3:0] x_dmem_awid;
+    wire [31:0] x_dmem_awaddr;
+    wire [7:0] x_dmem_awlen;
+    wire [2:0] x_dmem_awsize;
+    wire [1:0] x_dmem_awburst;
+    wire [2:0] x_dmem_awprot;
+    wire x_dmem_awvalid;
+    wire [63:0] x_dmem_wdata;
+    wire [7:0] x_dmem_wstrb;
+    wire x_dmem_wlast;
+    wire x_dmem_wvalid;
+    wire x_dmem_bready;
+    wire x_dmem_arready;
+    wire [3:0] x_dmem_rid;
+    wire [63:0] x_dmem_rdata;
+    wire [1:0] x_dmem_rresp;
+    wire x_dmem_rlast;
+    wire x_dmem_rvalid;
+    wire x_dmem_awready;
+    wire x_dmem_wready;
+    wire [3:0] x_dmem_bid;
+    wire [1:0] x_dmem_bresp;
+    wire x_dmem_bvalid;
+    wire sba_req_valid, sba_req_ready, sba_req_write;
+    wire [63:0] sba_req_addr, sba_req_data;
+    wire [2:0] sba_req_size;
+    wire sba_resp_valid, sba_resp_ready;
+    wire [63:0] sba_resp_data;
+    wire [2:0] sba_resp_error;
+`ifdef KARU_DBG_SBA
+    wire sba_pause, sba_quiet, sba_flush;
+    karudbg_bus #(.NONSECURE(NONSECURE),.ENABLE(SBA_ENABLE)) system_bus (
+        .clk(clk),.rst(core_rst),
+        .req_valid_i(sba_req_valid),.req_ready_o(sba_req_ready),
+        .req_addr_i(sba_req_addr),.req_data_i(sba_req_data),
+        .req_size_i(sba_req_size),.req_write_i(sba_req_write),
+        .resp_valid_o(sba_resp_valid),.resp_ready_i(sba_resp_ready),
+        .resp_data_o(sba_resp_data),.resp_error_o(sba_resp_error),
+        .pause_o(sba_pause),.quiet_i(sba_quiet),.flush_o(sba_flush),
+        .c_arid(x_dmem_arid),.m_arid(dmem_arid),
+        .c_araddr(x_dmem_araddr),.m_araddr(dmem_araddr),
+        .c_arlen(x_dmem_arlen),.m_arlen(dmem_arlen),
+        .c_arsize(x_dmem_arsize),.m_arsize(dmem_arsize),
+        .c_arburst(x_dmem_arburst),.m_arburst(dmem_arburst),
+        .c_arprot(x_dmem_arprot),.m_arprot(dmem_arprot),
+        .c_arvalid(x_dmem_arvalid),.m_arvalid(dmem_arvalid),
+        .c_rready(x_dmem_rready),.m_rready(dmem_rready),
+        .c_awid(x_dmem_awid),.m_awid(dmem_awid),
+        .c_awaddr(x_dmem_awaddr),.m_awaddr(dmem_awaddr),
+        .c_awlen(x_dmem_awlen),.m_awlen(dmem_awlen),
+        .c_awsize(x_dmem_awsize),.m_awsize(dmem_awsize),
+        .c_awburst(x_dmem_awburst),.m_awburst(dmem_awburst),
+        .c_awprot(x_dmem_awprot),.m_awprot(dmem_awprot),
+        .c_awvalid(x_dmem_awvalid),.m_awvalid(dmem_awvalid),
+        .c_wdata(x_dmem_wdata),.m_wdata(dmem_wdata),
+        .c_wstrb(x_dmem_wstrb),.m_wstrb(dmem_wstrb),
+        .c_wlast(x_dmem_wlast),.m_wlast(dmem_wlast),
+        .c_wvalid(x_dmem_wvalid),.m_wvalid(dmem_wvalid),
+        .c_bready(x_dmem_bready),.m_bready(dmem_bready),
+        .c_arready(x_dmem_arready),.m_arready(dmem_arready),
+        .c_rid(x_dmem_rid),.m_rid(dmem_rid),
+        .c_rdata(x_dmem_rdata),.m_rdata(dmem_rdata),
+        .c_rresp(x_dmem_rresp),.m_rresp(dmem_rresp),
+        .c_rlast(x_dmem_rlast),.m_rlast(dmem_rlast),
+        .c_rvalid(x_dmem_rvalid),.m_rvalid(dmem_rvalid),
+        .c_awready(x_dmem_awready),.m_awready(dmem_awready),
+        .c_wready(x_dmem_wready),.m_wready(dmem_wready),
+        .c_bid(x_dmem_bid),.m_bid(dmem_bid),
+        .c_bresp(x_dmem_bresp),.m_bresp(dmem_bresp),
+        .c_bvalid(x_dmem_bvalid),.m_bvalid(dmem_bvalid));
+`else
+    assign dmem_arid=x_dmem_arid;
+    assign dmem_araddr=x_dmem_araddr;
+    assign dmem_arlen=x_dmem_arlen;
+    assign dmem_arsize=x_dmem_arsize;
+    assign dmem_arburst=x_dmem_arburst;
+    assign dmem_arprot=x_dmem_arprot;
+    assign dmem_arvalid=x_dmem_arvalid;
+    assign dmem_rready=x_dmem_rready;
+    assign dmem_awid=x_dmem_awid;
+    assign dmem_awaddr=x_dmem_awaddr;
+    assign dmem_awlen=x_dmem_awlen;
+    assign dmem_awsize=x_dmem_awsize;
+    assign dmem_awburst=x_dmem_awburst;
+    assign dmem_awprot=x_dmem_awprot;
+    assign dmem_awvalid=x_dmem_awvalid;
+    assign dmem_wdata=x_dmem_wdata;
+    assign dmem_wstrb=x_dmem_wstrb;
+    assign dmem_wlast=x_dmem_wlast;
+    assign dmem_wvalid=x_dmem_wvalid;
+    assign dmem_bready=x_dmem_bready;
+    assign x_dmem_arready=dmem_arready;
+    assign x_dmem_rid=dmem_rid;
+    assign x_dmem_rdata=dmem_rdata;
+    assign x_dmem_rresp=dmem_rresp;
+    assign x_dmem_rlast=dmem_rlast;
+    assign x_dmem_rvalid=dmem_rvalid;
+    assign x_dmem_awready=dmem_awready;
+    assign x_dmem_wready=dmem_wready;
+    assign x_dmem_bid=dmem_bid;
+    assign x_dmem_bresp=dmem_bresp;
+    assign x_dmem_bvalid=dmem_bvalid;
+    assign sba_req_ready=0;
+    assign sba_resp_valid=0;
+    assign sba_resp_data=0;
+    assign sba_resp_error=0;
+    wire unused_sba;
+    assign unused_sba = &{sba_req_valid,sba_req_write,sba_req_addr,sba_req_data,
+                        sba_req_size,sba_resp_ready,SBA_ENABLE!=0,1'b0};
+`endif
     reg im_owner, dr_owner, dw_owner, dw_active;
     wire im_select, dr_select, dw_select, dw_route, dw_route_valid;
     assign im_select = (c_imem_araddr & 32'hffff_f000) == `KARUDBG_BASE;
@@ -175,38 +295,38 @@ module karudbg_core #(
     wire [`AXI_RESP_W-1:0] d_bresp;
     wire  d_bvalid;
     wire  d_bready;
-    assign dmem_arid=c_dmem_arid;
-    assign dmem_araddr=c_dmem_araddr;
-    assign dmem_arlen=c_dmem_arlen;
-    assign dmem_arsize=c_dmem_arsize;
-    assign dmem_arburst=c_dmem_arburst;
-    assign dmem_arprot=c_dmem_arprot;
-    assign dmem_arvalid=c_dmem_arvalid && !dr_select;
-    assign c_dmem_arready=c_dmem_arvalid && (dr_select ? d_arready : dmem_arready);
-    assign c_dmem_rid=dr_owner ? d_rid : dmem_rid;
-    assign c_dmem_rdata=dr_owner ? d_rdata : dmem_rdata;
-    assign c_dmem_rresp=dr_owner ? d_rresp : dmem_rresp;
-    assign c_dmem_rlast=dr_owner ? d_rlast : dmem_rlast;
-    assign c_dmem_rvalid=dr_owner ? d_rvalid : dmem_rvalid;
-    assign dmem_rready=c_dmem_rready && !dr_owner;
+    assign x_dmem_arid=c_dmem_arid;
+    assign x_dmem_araddr=c_dmem_araddr;
+    assign x_dmem_arlen=c_dmem_arlen;
+    assign x_dmem_arsize=c_dmem_arsize;
+    assign x_dmem_arburst=c_dmem_arburst;
+    assign x_dmem_arprot=c_dmem_arprot;
+    assign x_dmem_arvalid=c_dmem_arvalid && !dr_select;
+    assign c_dmem_arready=c_dmem_arvalid && (dr_select ? d_arready : x_dmem_arready);
+    assign c_dmem_rid=dr_owner ? d_rid : x_dmem_rid;
+    assign c_dmem_rdata=dr_owner ? d_rdata : x_dmem_rdata;
+    assign c_dmem_rresp=dr_owner ? d_rresp : x_dmem_rresp;
+    assign c_dmem_rlast=dr_owner ? d_rlast : x_dmem_rlast;
+    assign c_dmem_rvalid=dr_owner ? d_rvalid : x_dmem_rvalid;
+    assign x_dmem_rready=c_dmem_rready && !dr_owner;
     assign d_rready=c_dmem_rready && dr_owner;
-    assign dmem_awid=c_dmem_awid;
-    assign dmem_awaddr=c_dmem_awaddr;
-    assign dmem_awlen=c_dmem_awlen;
-    assign dmem_awsize=c_dmem_awsize;
-    assign dmem_awburst=c_dmem_awburst;
-    assign dmem_awprot=c_dmem_awprot;
-    assign dmem_wdata=c_dmem_wdata;
-    assign dmem_wstrb=c_dmem_wstrb;
-    assign dmem_wlast=c_dmem_wlast;
-    assign dmem_awvalid=c_dmem_awvalid && !dw_active && !dw_select;
-    assign c_dmem_awready=c_dmem_awvalid && !dw_active && (dw_select ? d_awready : dmem_awready);
-    assign dmem_wvalid=c_dmem_wvalid && dw_route_valid && !dw_route;
-    assign c_dmem_wready=dw_route_valid && (dw_route ? d_wready : dmem_wready);
-    assign c_dmem_bid=dw_owner ? d_bid : dmem_bid;
-    assign c_dmem_bresp=dw_owner ? d_bresp : dmem_bresp;
-    assign c_dmem_bvalid=dw_owner ? d_bvalid : dmem_bvalid;
-    assign dmem_bready=c_dmem_bready && !dw_owner;
+    assign x_dmem_awid=c_dmem_awid;
+    assign x_dmem_awaddr=c_dmem_awaddr;
+    assign x_dmem_awlen=c_dmem_awlen;
+    assign x_dmem_awsize=c_dmem_awsize;
+    assign x_dmem_awburst=c_dmem_awburst;
+    assign x_dmem_awprot=c_dmem_awprot;
+    assign x_dmem_wdata=c_dmem_wdata;
+    assign x_dmem_wstrb=c_dmem_wstrb;
+    assign x_dmem_wlast=c_dmem_wlast;
+    assign x_dmem_awvalid=c_dmem_awvalid && !dw_active && !dw_select;
+    assign c_dmem_awready=c_dmem_awvalid && !dw_active && (dw_select ? d_awready : x_dmem_awready);
+    assign x_dmem_wvalid=c_dmem_wvalid && dw_route_valid && !dw_route;
+    assign c_dmem_wready=dw_route_valid && (dw_route ? d_wready : x_dmem_wready);
+    assign c_dmem_bid=dw_owner ? d_bid : x_dmem_bid;
+    assign c_dmem_bresp=dw_owner ? d_bresp : x_dmem_bresp;
+    assign c_dmem_bvalid=dw_owner ? d_bvalid : x_dmem_bvalid;
+    assign x_dmem_bready=c_dmem_bready && !dw_owner;
     assign d_bready=c_dmem_bready && dw_owner;
     always @(posedge clk) begin
         if(core_rst) begin im_owner<=0; dr_owner<=0; dw_owner<=0; dw_active<=0; end
@@ -220,6 +340,10 @@ module karudbg_core #(
     karu64 #(.RESET_PC(RESET_PC),.EXT_TIME(EXT_TIME),.NONSECURE(NONSECURE)) core (
         .clk(clk),
         .rst(core_rst),
+`ifdef KARU_DBG_SBA
+        .debug_sba_pause_i(sba_pause),.debug_sba_quiet_o(sba_quiet),
+        .debug_sba_flush_i(sba_flush),
+`endif
         .debug_halt_req_i(halt_req),
         .debug_resume_req_i(resume_authorized),
         .debug_mode_o(debug_mode_o),
@@ -291,11 +415,16 @@ module karudbg_core #(
     wire [7:0] d_be;
     wire [63:0] mem_rdata;
     wire mem_ready, mem_error;
-    karudbg dm (.clk(clk),.rst(rst),.dmi_reset_i(dmi_reset_i),
+    karudbg #(.SBA_ENABLE(SBA_ENABLE)) dm (.clk(clk),.rst(rst),.dmi_reset_i(dmi_reset_i),
         .req_valid_i(dmi_req_valid_i),.req_ready_o(dmi_req_ready_o),
         .req_addr_i(dmi_req_addr_i),.req_op_i(dmi_req_op_i),.req_data_i(dmi_req_data_i),
         .resp_valid_o(dmi_resp_valid_o),.resp_ready_i(dmi_resp_ready_i),
         .resp_data_o(dmi_resp_data_o),.resp_op_o(dmi_resp_op_o),
+        .sba_req_valid_o(sba_req_valid),.sba_req_ready_i(sba_req_ready),
+        .sba_req_addr_o(sba_req_addr),.sba_req_data_o(sba_req_data),
+        .sba_req_size_o(sba_req_size),.sba_req_write_o(sba_req_write),
+        .sba_resp_valid_i(sba_resp_valid),.sba_resp_ready_o(sba_resp_ready),
+        .sba_resp_data_i(sba_resp_data),.sba_resp_error_i(sba_resp_error),
         .halt_req_o(halt_req),.resume_req_o(resume_req),
         .resume_authorized_o(resume_authorized),.ndmreset_o(ndmreset_o),
         .hart_halted_i(debug_mode_o),.hart_resume_ack_i(debug_resume_ack_o),

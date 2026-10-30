@@ -1,3 +1,5 @@
+`ifndef KARU_ASSERT_SV
+`define KARU_ASSERT_SV
 //  karu_assert.sv
 //  Architectural invariant / hang-guard checker for karu64.
 //
@@ -23,9 +25,16 @@
 //  All invariants are checked on the rising clock edge, sampling the
 //  pre-edge (current-cycle) values -- standard assertion sampling.
 
+`include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 `include "karu_uop_defs.vh"
 `include "karu_vcfg.vh"
+`ifdef KARU_DBG
+`include "karudbg_defs.vh"
+`endif
+`ifndef KARU_DBG_TRIGGER_COUNT
+`define KARU_DBG_TRIGGER_COUNT 2
+`endif
 
 module karu_assert #(
     //  Per-FU completion deadline: a multi-cycle unit that stays active
@@ -69,6 +78,54 @@ module karu_assert #(
     input  wire         clk,
     input  wire         rst,
     input  wire         trap,
+
+`ifdef KARU_DBG
+    input wire dbg_mode,
+    input wire dbg_enter,
+    input wire dbg_trigger_entry,
+    input wire dbg_exit,
+    input wire dbg_resume_ack,
+    input wire dbg_halt_priority,
+    input wire [64-1:0] dbg_entry_pc,
+    input wire [64-1:0] dbg_dpc,
+    input wire [64-1:0] dbg_ex_pc,
+    input wire [3-1:0] dbg_cause,
+`ifdef KARU_DBG_TRIGGERS
+    input wire trigger_exec_valid,
+    input wire trigger_exec_hit,
+    input wire trigger_scalar_valid,
+    input wire trigger_data_valid,
+    input wire trigger_data_hit,
+    input wire trigger_v_valid,
+    input wire trigger_v_abort,
+    input wire trigger_data_load,
+    input wire trigger_data_store,
+    input wire trigger_data_armed,
+    input wire trigger_fetch_fault,
+    input wire trigger_io_pending,
+    input wire trigger_fs_off,
+    input wire [2-1:0] trigger_cbo_exc,
+    input wire trigger_hmem,
+    input wire trigger_hu,
+    input wire [`KARU_DBG_TRIGGER_COUNT-1:0] trigger_exec_slots,
+    input wire [`KARU_DBG_TRIGGER_COUNT-1:0] trigger_data_slots,
+    input wire [64*`KARU_DBG_TRIGGER_COUNT-1:0] trigger_controls,
+`endif
+`ifdef KARU_DBG_SBA
+    input wire dbg_sba_pause,
+    input wire dbg_sba_flush_i,
+    input wire dbg_sba_flush,
+    input wire dbg_sba_idle,
+    input wire dbg_sba_sent,
+    input wire dbg_sba_done,
+    input wire dbg_sba_quiet,
+    input wire dbg_cache_req,
+    input wire dbg_cache_invalidate,
+    input wire dbg_cache_done,
+    input wire [63:0] dbg_sba_next_pc,
+    input wire dbg_sba_iflush, dbg_sba_dflush,
+`endif
+`endif
 
     //  ---- issue / FU-active state ----
     input  wire         issuing,
@@ -278,6 +335,74 @@ module karu_assert #(
     input  wire         vkeccak_kreq,   //  Keccak core start pulse (0 without KARU_KECCAK)
     input  wire         vkeccak_kbusy   //  Keccak core running
 );
+`ifdef KARU_DBG
+    karu_debug_assert u_debug_assert (
+        .clk(clk),
+        .rst(rst),
+        .issuing(issuing),
+        .perf_retire(perf_retire),
+        .trap_req(trap_req),
+        .wb_we(wb_we),
+        .fwb_we(fwb_we),
+        .ex_valid(ex_valid),
+        .exec_busy(exec_busy),
+        .id_accept(id_accept),
+        .lsu_req(lsu_req),
+        .vlsu_req(vlsu_req),
+        .varith_req(varith_req),
+        .csr_priv(csr_priv),
+        .csr_virt(csr_virt),
+        .ex_unit(ex_unit),
+        .ifu_pc(ifu_pc),
+        .ifu_redir(ifu_redir), .ifu_redir_pc(ifu_redir_pc),
+        .dbg_mode(dbg_mode),
+        .dbg_enter(dbg_enter),
+        .dbg_trigger_entry(dbg_trigger_entry),
+        .dbg_exit(dbg_exit),
+        .dbg_resume_ack(dbg_resume_ack),
+        .dbg_halt_priority(dbg_halt_priority),
+        .dbg_entry_pc(dbg_entry_pc),
+        .dbg_dpc(dbg_dpc),
+        .dbg_ex_pc(dbg_ex_pc),
+        .dbg_cause(dbg_cause),
+`ifdef KARU_DBG_TRIGGERS
+        .trigger_exec_valid(trigger_exec_valid),
+        .trigger_exec_hit(trigger_exec_hit),
+        .trigger_scalar_valid(trigger_scalar_valid),
+        .trigger_data_valid(trigger_data_valid),
+        .trigger_data_hit(trigger_data_hit),
+        .trigger_v_valid(trigger_v_valid),
+        .trigger_v_abort(trigger_v_abort),
+        .trigger_data_load(trigger_data_load),
+        .trigger_data_store(trigger_data_store),
+        .trigger_data_armed(trigger_data_armed),
+        .trigger_fetch_fault(trigger_fetch_fault),
+        .trigger_io_pending(trigger_io_pending),
+        .trigger_fs_off(trigger_fs_off),
+        .trigger_cbo_exc(trigger_cbo_exc),
+        .trigger_hmem(trigger_hmem),
+        .trigger_hu(trigger_hu),
+        .trigger_exec_slots(trigger_exec_slots),
+        .trigger_data_slots(trigger_data_slots),
+        .trigger_controls(trigger_controls),
+`endif
+`ifdef KARU_DBG_SBA
+        .dbg_sba_pause(dbg_sba_pause),
+        .dbg_sba_flush_i(dbg_sba_flush_i),
+        .dbg_sba_flush(dbg_sba_flush),
+        .dbg_sba_idle(dbg_sba_idle),
+        .dbg_sba_sent(dbg_sba_sent),
+        .dbg_sba_done(dbg_sba_done),
+        .dbg_sba_quiet(dbg_sba_quiet),
+        .dbg_cache_req(dbg_cache_req),
+        .dbg_cache_invalidate(dbg_cache_invalidate),
+        .dbg_cache_done(dbg_cache_done),
+        .dbg_sba_next_pc(dbg_sba_next_pc), .dbg_sba_iflush(dbg_sba_iflush),
+        .dbg_sba_dflush(dbg_sba_dflush),
+`endif
+        .unused_o()
+    );
+`endif
     // Recompute complete permissions rather than exempting guests from the
     // checker. Machine and guest controls have different exception classes.
     function automatic cbo_allowed(input m, input h, input s);
@@ -1120,6 +1245,57 @@ endmodule
 //  ---------------------------------------------------------------------
 `ifdef KARU_ASSERT_BIND
 bind karu64 karu_assert u_karu_assert (
+`ifdef KARU_DBG
+        .dbg_mode(debug_mode),
+        .dbg_enter(dbg_enter),
+        .dbg_trigger_entry(dbg_trigger_entry),
+        .dbg_exit(dbg_exit),
+        .dbg_resume_ack(debug_resume_ack_o),
+        .dbg_halt_priority((debug_halt_req_i || dbg_halt_pending)),
+        .dbg_entry_pc(dbg_entry_pc),
+        .dbg_dpc(dbg_dpc),
+        .dbg_ex_pc(ex_pc),
+        .dbg_cause(csr.csr_dcsr[8:6]),
+`ifdef KARU_DBG_TRIGGERS
+        .trigger_exec_valid(trigger_exec_valid),
+        .trigger_exec_hit(trigger_exec_hit),
+        .trigger_scalar_valid(trigger_scalar_valid),
+        .trigger_data_valid(trigger_data_valid),
+        .trigger_data_hit(trigger_data_hit),
+        .trigger_v_valid(trigger_v_valid),
+        .trigger_v_abort(trigger_v_abort),
+        .trigger_data_load(trigger_data_load),
+        .trigger_data_store(trigger_data_store),
+        .trigger_data_armed(trigger_data_armed),
+        .trigger_fetch_fault(ifu_fault_valid),
+        .trigger_io_pending(immu_pte_io_pending),
+        .trigger_fs_off(fs_off_ill),
+        .trigger_cbo_exc(cbo_exc),
+        .trigger_hmem(ex_hmem),
+        .trigger_hu(csr_hu),
+        .trigger_exec_slots(csr.triggers.exec_hit),
+        .trigger_data_slots(csr.triggers.data_hit),
+        .trigger_controls(csr.triggers.debug_controls),
+`endif
+`ifdef KARU_DBG_SBA
+        .dbg_sba_pause(debug_sba_pause_i),
+        .dbg_sba_flush_i(debug_sba_flush_i),
+        .dbg_sba_flush(dbg_sba_flush),
+        .dbg_sba_idle(dbg_sba_idle),
+        .dbg_sba_sent(dbg_sba_cache_sent),
+        .dbg_sba_done(dbg_sba_cache_done),
+        .dbg_sba_quiet(debug_sba_quiet_o),
+        .dbg_cache_req(cache_flush_req),
+        .dbg_cache_invalidate(cache_flush_invalidate),
+        .dbg_cache_done(cache_flush_done),
+        .dbg_sba_next_pc(dbg_sba_next_pc), .dbg_sba_iflush(icache_flush),
+`ifdef KARU_EN_MEM
+        .dbg_sba_dflush(dmem_l1.flush),
+`else
+        .dbg_sba_dflush(1'b1),
+`endif
+`endif
+`endif
     .clk(clk), .rst(rst), .trap(trap),
     .issuing(issuing),
     .lsu_active(lsu_active), .m_active(m_active), .fpu_active(fpu_active),
@@ -1242,3 +1418,220 @@ bind karu64 karu_assert u_karu_assert (
 `endif
 );
 `endif
+
+// INV40: independently observed debug-entry and SBA-maintenance contracts.
+// Kept in this file for the main checker, bind path and portable debug benches.
+`ifdef KARU_DBG
+module karu_debug_assert (
+    input wire clk,
+    input wire rst,
+    input wire issuing,
+    input wire perf_retire,
+    input wire trap_req,
+    input wire wb_we,
+    input wire fwb_we,
+    input wire ex_valid,
+    input wire exec_busy,
+    input wire id_accept,
+    input wire lsu_req,
+    input wire vlsu_req,
+    input wire varith_req,
+    input wire [2-1:0] csr_priv,
+    input wire csr_virt,
+    input wire [4-1:0] ex_unit,
+    input wire [64-1:0] ifu_pc,
+    input wire dbg_mode,
+    input wire dbg_enter,
+    input wire dbg_trigger_entry,
+    input wire dbg_exit,
+    input wire dbg_resume_ack,
+    input wire dbg_halt_priority,
+    input wire [64-1:0] dbg_entry_pc,
+    input wire [64-1:0] dbg_dpc,
+    input wire [64-1:0] dbg_ex_pc,
+    input wire [3-1:0] dbg_cause,
+`ifdef KARU_DBG_TRIGGERS
+    input wire trigger_exec_valid,
+    input wire trigger_exec_hit,
+    input wire trigger_scalar_valid,
+    input wire trigger_data_valid,
+    input wire trigger_data_hit,
+    input wire trigger_v_valid,
+    input wire trigger_v_abort,
+    input wire trigger_data_load,
+    input wire trigger_data_store,
+    input wire trigger_data_armed,
+    input wire trigger_fetch_fault,
+    input wire trigger_io_pending,
+    input wire trigger_fs_off,
+    input wire [2-1:0] trigger_cbo_exc,
+    input wire trigger_hmem,
+    input wire trigger_hu,
+    input wire [`KARU_DBG_TRIGGER_COUNT-1:0] trigger_exec_slots,
+    input wire [`KARU_DBG_TRIGGER_COUNT-1:0] trigger_data_slots,
+    input wire [64*`KARU_DBG_TRIGGER_COUNT-1:0] trigger_controls,
+`endif
+`ifdef KARU_DBG_SBA
+    input wire dbg_sba_pause,
+    input wire dbg_sba_flush_i,
+    input wire dbg_sba_flush,
+    input wire dbg_sba_idle,
+    input wire dbg_sba_sent,
+    input wire dbg_sba_done,
+    input wire dbg_sba_quiet,
+    input wire dbg_cache_req,
+    input wire dbg_cache_invalidate,
+    input wire dbg_cache_done,
+    input wire [63:0] dbg_sba_next_pc,
+    input wire dbg_sba_iflush, dbg_sba_dflush,
+`endif
+    input wire ifu_redir,
+    input wire [63:0] ifu_redir_pc,
+    output wire unused_o
+);
+    assign unused_o=1'b0;
+    reg enabled, do_stop;
+    integer failures;
+    reg [63:0] cycles;
+    initial begin
+        enabled=!$test$plusargs("no_assert") || $test$plusargs("no_assert_stop");
+        do_stop=!$test$plusargs("no_assert_stop"); failures=0; cycles=0;
+    end
+    task fail;
+        input [8*112-1:0] tag;
+        begin
+            failures=failures+1;
+            $display("[KARU-ASSERT] FAIL INV40 cyc=%0d pc=%h: %0s",cycles,ifu_pc,tag);
+            if(do_stop)$fatal(1,"INV40 debug contract violation");
+        end
+    endtask
+    `define KDCHK(cond,tag) if(enabled && !rst && ((cond)!==1'b1)) fail(tag);
+`ifdef KARU_DBG_TRIGGERS
+    wire trigger_event;
+    assign trigger_event=trigger_exec_hit || (trigger_data_hit && trigger_scalar_valid) || trigger_v_abort;
+    reg trigger_enter_q;
+    reg [63:0] trigger_pc_q;
+    reg [2:0] trigger_cause_q;
+    reg qualifiers_ok, armed_expected;
+    integer slot;
+    reg [63:0] cfg;
+    reg mode_allowed, slot_active, operation_allowed;
+    always @(*)begin
+        qualifiers_ok=1; armed_expected=0; cfg=0; mode_allowed=0;
+        slot_active=0; operation_allowed=0;
+        for(slot=0;slot<`KARU_DBG_TRIGGER_COUNT;slot=slot+1)begin
+            cfg=trigger_controls[slot*64+:64];
+            // Match the executing privilege, never effective MPRV/SPVP.
+            case({csr_virt,csr_priv})
+                3'b011: mode_allowed=cfg[6];
+                3'b001: mode_allowed=cfg[4];
+                3'b000: mode_allowed=cfg[3];
+                3'b101: mode_allowed=cfg[24];
+                3'b100: mode_allowed=cfg[23];
+                default: mode_allowed=0;
+            endcase
+            slot_active=!dbg_mode && mode_allowed && cfg[63:60]==6 && cfg[59] && cfg[15:12]==1;
+            operation_allowed=(trigger_data_load&&cfg[0])||(trigger_data_store&&cfg[1]);
+            armed_expected=armed_expected||(slot_active&&operation_allowed);
+            if(trigger_exec_slots[slot])
+                qualifiers_ok=qualifiers_ok&&slot_active&&cfg[2]&&trigger_exec_valid;
+            if(trigger_data_slots[slot])
+                qualifiers_ok=qualifiers_ok&&slot_active&&operation_allowed&&trigger_data_valid;
+        end
+    end
+`endif
+`ifdef KARU_DBG_SBA
+    reg maintenance_request_q, maintenance_ack_q;
+    wire [63:0] expected_maintenance_pc;
+    assign expected_maintenance_pc=dbg_enter ? ({32'b0,`KARUDBG_BASE}+{52'b0,`KARUDBG_ENTRY}) : dbg_sba_next_pc;
+`endif
+    always @(posedge clk)begin
+        cycles<=cycles+1;
+`ifdef KARU_DBG_TRIGGERS
+        if(rst)begin trigger_enter_q<=0; trigger_pc_q<=0; trigger_cause_q<=0;end
+        else begin
+            trigger_enter_q<=trigger_event&&dbg_enter;
+            if(trigger_event&&dbg_enter)begin
+                trigger_pc_q<=dbg_entry_pc&~64'd1;
+                trigger_cause_q<=dbg_halt_priority?3'd3:3'd2;
+            end
+        end
+        `KDCHK(dbg_trigger_entry==trigger_event,"INV40u trigger entry must have a qualified source")
+        `KDCHK(!trigger_event || (dbg_enter&&!dbg_mode),"INV40a trigger event must enter Debug Mode precisely")
+        `KDCHK(!trigger_event || (!issuing&&!perf_retire&&!trap_req&&!wb_we&&!fwb_we&&!lsu_req&&!vlsu_req&&!varith_req),
+               "INV40b trigger entry must not issue, retire or update application trap state")
+        `KDCHK(!trigger_event || dbg_entry_pc==((ex_valid||trigger_v_abort)?dbg_ex_pc:ifu_pc),
+               "INV40c trigger entry PC is the architectural instruction start")
+        `KDCHK(!trigger_enter_q || (dbg_mode&&dbg_dpc==trigger_pc_q&&dbg_cause==trigger_cause_q),
+               "INV40d trigger entry must publish precise DPC and priority cause")
+        `KDCHK(!trigger_exec_hit || trigger_exec_valid,"INV40e execute hit requires a valid architectural probe")
+        `KDCHK(!trigger_data_hit || trigger_data_valid,"INV40f data hit requires an active architectural probe")
+        `KDCHK(qualifiers_ok,"INV40g trigger hit violates slot privilege, dmode, action or direction")
+        `KDCHK(trigger_data_armed==armed_expected,"INV40h armed direction must match the current instruction")
+        `KDCHK(!trigger_scalar_valid || (ex_valid&&!exec_busy&&!dbg_mode&&ex_unit==`UNIT_LSU&&
+               !trigger_fs_off&&trigger_cbo_exc==0&&!(trigger_hmem&&(csr_virt||(csr_priv==0&&!trigger_hu)))),
+               "INV40i scalar trigger probe bypassed instruction legality")
+        `KDCHK(!trigger_exec_valid || (!dbg_mode&&!exec_busy&&(ex_valid||(trigger_fetch_fault&&!trigger_io_pending))),
+               "INV40j execute probe bypassed architectural boundary qualification")
+`ifdef KARU_DBG_SBA
+        `KDCHK(!(dbg_sba_pause&&!ex_valid) || !trigger_exec_valid,
+               "INV40k SBA pause must block fetch-fault trigger admission")
+`endif
+`endif
+`ifdef KARU_DBG_SBA
+        if(rst||!dbg_sba_flush_i)begin maintenance_request_q<=0;maintenance_ack_q<=0;end
+        else begin
+            if(dbg_sba_flush)maintenance_request_q<=1;
+            if(maintenance_request_q&&dbg_cache_done)maintenance_ack_q<=1;
+        end
+        `KDCHK(!dbg_sba_flush || (dbg_sba_idle&&dbg_sba_pause&&dbg_sba_flush_i&&dbg_cache_req&&dbg_cache_invalidate),
+               "INV40l SBA flush requires idle, pause and external cache request")
+        `KDCHK(!dbg_sba_flush || (!maintenance_request_q),"INV40m SBA maintenance must issue exactly one flush")
+        `KDCHK(dbg_sba_sent==maintenance_request_q,"INV40n SBA sent flag must follow independently observed request")
+        `KDCHK(dbg_sba_done==maintenance_ack_q,"INV40o SBA done flag must follow independently observed acknowledgement")
+        `KDCHK(!dbg_sba_done||dbg_sba_sent,"INV40p SBA maintenance done requires a request")
+        `KDCHK(dbg_sba_quiet==(dbg_sba_idle&&(!dbg_sba_flush_i||maintenance_ack_q)),
+               "INV40q SBA response precedes external cache completion")
+        `KDCHK(!dbg_sba_pause||!id_accept,"INV40r SBA pause admitted a new instruction")
+        `KDCHK(!dbg_sba_flush||(ifu_redir&&ifu_redir_pc==expected_maintenance_pc&&dbg_sba_iflush&&dbg_sba_dflush),
+               "INV40s SBA maintenance must redirect fetch and flush both local caches")
+`endif
+        `KDCHK(dbg_resume_ack==dbg_exit,"INV40t resume acknowledgement is the same-clock DRET acceptance event")
+    end
+    `undef KDCHK
+`ifdef KARU_ASSERT_SVA
+    default clocking cb_debug @(posedge clk);endclocking
+    default disable iff(rst);
+`ifdef KARU_DBG_TRIGGERS
+    a_inv40u_source:assert property(dbg_trigger_entry==trigger_event);
+    a_inv40a_entry:assert property(trigger_event|->(dbg_enter&&!dbg_mode));
+    a_inv40b_precise:assert property(trigger_event|->(!issuing&&!perf_retire&&!trap_req&&!wb_we&&!fwb_we&&!lsu_req&&!vlsu_req&&!varith_req));
+    a_inv40c_pc:assert property(trigger_event|->(dbg_entry_pc==((ex_valid||trigger_v_abort)?dbg_ex_pc:ifu_pc)));
+    a_inv40d_publish:assert property(trigger_enter_q|->(dbg_mode&&dbg_dpc==trigger_pc_q&&dbg_cause==trigger_cause_q));
+    a_inv40e_execvalid:assert property(trigger_exec_hit|->trigger_exec_valid);
+    a_inv40f_datavalid:assert property(trigger_data_hit|->trigger_data_valid);
+    a_inv40g_privilege:assert property(qualifiers_ok);
+    a_inv40h_direction:assert property(trigger_data_armed==armed_expected);
+    a_inv40i_legal:assert property(trigger_scalar_valid|->(ex_valid&&!exec_busy&&!dbg_mode&&ex_unit==`UNIT_LSU&&
+        !trigger_fs_off&&trigger_cbo_exc==0&&!(trigger_hmem&&(csr_virt||(csr_priv==0&&!trigger_hu)))));
+    a_inv40j_boundary:assert property(trigger_exec_valid|->(!dbg_mode&&!exec_busy&&(ex_valid||(trigger_fetch_fault&&!trigger_io_pending))));
+`ifdef KARU_DBG_SBA
+    a_inv40k_pause:assert property((dbg_sba_pause&&!ex_valid)|->!trigger_exec_valid);
+`endif
+`endif
+`ifdef KARU_DBG_SBA
+    a_inv40l_request:assert property(dbg_sba_flush|->(dbg_sba_idle&&dbg_sba_pause&&dbg_sba_flush_i&&dbg_cache_req&&dbg_cache_invalidate));
+    a_inv40m_once:assert property(dbg_sba_flush|->!maintenance_request_q);
+    a_inv40n_sent:assert property(dbg_sba_sent==maintenance_request_q);
+    a_inv40o_ack:assert property(dbg_sba_done==maintenance_ack_q);
+    a_inv40p_order:assert property(dbg_sba_done|->dbg_sba_sent);
+    a_inv40q_completion:assert property(dbg_sba_quiet==(dbg_sba_idle&&(!dbg_sba_flush_i||maintenance_ack_q)));
+    a_inv40r_hold:assert property(dbg_sba_pause|->!id_accept);
+    a_inv40s_fetch:assert property(dbg_sba_flush|->(ifu_redir&&ifu_redir_pc==expected_maintenance_pc&&dbg_sba_iflush&&dbg_sba_dflush));
+`endif
+    a_inv40t_resume:assert property(dbg_resume_ack==dbg_exit);
+`endif
+endmodule
+`endif
+
+`endif // KARU_ASSERT_SV

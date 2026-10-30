@@ -29,7 +29,11 @@ module tb_jtag_remote (
         .hart_unavailable_i(1'b0),.hart_reset_i(rst),
         .mem_req_i(1'b0),.mem_write_i(1'b0),.mem_addr_i(12'b0),
         .mem_wdata_i(64'b0),.mem_be_i(8'b0),
-        .mem_rdata_o(),.mem_ready_o(),.mem_error_o()
+        .mem_rdata_o(),.mem_ready_o(),.mem_error_o(),
+        .sba_req_valid_o(),.sba_req_ready_i(1'b0),.sba_req_addr_o(),
+        .sba_req_data_o(),.sba_req_size_o(),.sba_req_write_o(),
+        .sba_resp_valid_i(1'b0),.sba_resp_ready_o(),
+        .sba_resp_data_i(64'b0),.sba_resp_error_i(3'b0)
     );
     always @(posedge clk)
         if (rst) request_count<=0;

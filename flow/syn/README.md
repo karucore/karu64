@@ -47,6 +47,9 @@ CONFIGS='rv64gcv_default rv64gcv_zvkned rv64gcv_zvksed rv64gcv_zvk rv64gcv_zvk_k
 
 Vector/Zvk rows are memory-intensive. Run one row at a time unless the host has
 enough physical memory for multiple retained Yosys processes and ABC children.
+The Yosys peak printed in its log excludes ABC child processes: in the
+shipping debug rows, a roughly 22 GiB Yosys parent can coexist with a roughly
+12 GiB ABC child. Budget the complete process tree when choosing concurrency.
 Use a cgroup memory limit for unattended work; `ulimit -v` limits address space,
 not resident memory.
 
@@ -57,6 +60,13 @@ processor defines and geometry; the enabled row adds the conventional-JTAG
 `karudbg_top`. See [the measured scope and reproduction commands](../../dbg/MEASUREMENTS.md).
 These targets use default/FPGA initialization semantics and map memories to
 cells; the separate `KARU_ASIC` inventory audit is not a macro-area estimate.
+
+The extension matrix keeps that processor configuration and measures `base`,
+`autoexec`, `triggers`, `sba`, `full` and `full4` independently. Use
+`make DBG_SYN_EXTENSION=full dbg-syn-extension-area` and
+`make DBG_SYN_EXTENSION=full dbg-syn-extension-timing`, substituting the row
+name as needed. `make dbg-measurements-report` validates completed evidence
+and collects the area deltas and 200 MHz OpenSTA paths; it starts no mapping.
 
 ## Main controls
 

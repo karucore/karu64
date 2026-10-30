@@ -32,13 +32,35 @@ dbg-gdb-test: dbg-openocd-build $(DBG_OPENOCD_MODEL) $(BUILD)/dbg/gdb-target.elf
 	  --openocd $(DBG_OPENOCD_PATCHED) --gdb $(DBG_GDB) \
 	  --elf $(BUILD)/dbg/gdb-target.elf --out $(BUILD)/dbg/gdb
 
-dbg-functional-gates: axi-prot-test axi-prot-debug-test dbg-unit-test dbg-rom-test \
+dbg-functional-gates: dbg-trigger-unit-test dbg-trigger-vector-test dbg-trigger-four-state-test \
+ dbg-trigger-core-test dbg-trigger-profile-test dbg-trigger-haccess-test dbg-trigger-negative-test dbg-trigger-spike-test \
+ dbg-core-full-test dbg-core-full-four-state-test dbg-isa-runner-test axi-prot-test axi-prot-debug-test dbg-unit-test dbg-autoexec-test dbg-sba-unit-test \
+ dbg-autoexec-core-test dbg-autoexec-gdb-test dbg-sba-bus-test dbg-sba-core-test dbg-sba-core-negative-test \
+ dbg-full-openocd-test dbg-trigger-openocd-test dbg-trigger-gdb-test dbg-rom-test \
  dbg-memory-test dbg-core-profile-test dbg-core-four-state-test \
  dbg-core-negative-test dbg-transport-negative-test dbg-jtag-test \
  dbg-openocd-negative-test dbg-translation-test dbg-gdb-test dbg-lint \
  dbg-bscan-test dbg-bscan-core-test dbg-bscan-gdb-test dbg-bscan-translation-test \
- dbg-ooc-reset-constraints-test
+ dbg-ooc-reset-constraints-test dbg-runtime-div-audit dbg-config-matrix-test dbg-asic-random-test \
+ dbg-measurements-collector-test dbg-bscan-full-test
+
+dbg-functional-gates: dbg-sba-invariant-test dbg-sba-review-negative-test \
+ dbg-sba-core-locked-test dbg-sba-core-four-state-test \
+ dbg-trigger-invariant-test dbg-trigger-review-test
 
 DBG_GATE_JOBS ?= 3
 dbg-test:
 	python3 test/dbg/run_validation.py --out $(BUILD)/dbg --jobs $(DBG_GATE_JOBS)
+
+.PHONY: dbg-config-matrix-test
+dbg-config-matrix-test:
+	python3 test/dbg/check_config_matrix.py --out $(BUILD)/dbg/config-matrix --jobs 2
+
+.PHONY: dbg-asic-random-test
+dbg-asic-random-test:
+	$(MAKE) DBG_JOBS=6 DBG_CORE_DIR=$(BUILD)/dbg/core-extensions-random \
+	  DBG_CORE_FLAGS='-DKARU_RVA23S64 -DKARU_ZVK -DKARU_KECCAK -DKARU_SMCNTRPMF -DKARU_ICACHE -DKARU_V_LANE_PIPE -DKARU_V_CWB_STAGE -DKARU_V_MUL_CYCLES=16 -DKARU_V_DIV_CYCLES=64 -DKARU_DBG_FULL -DKARU_ASIC -DTEST_TRIGGER_PROBE -DTEST_SBA_PROBE -DTEST_EXTENSION_PROBE' \
+	  DBG_CORE_SIM_FLAGS='--unroll-count 1 --x-initial unique --x-assign unique --output-split 10000' \
+	  $(BUILD)/dbg/core-extensions-random/Vtb_dbg_core
+	python3 test/dbg/run_random_extensions.py \
+	  --model $(BUILD)/dbg/core-extensions-random/Vtb_dbg_core --out $(BUILD)/dbg/asic-random

@@ -17,32 +17,70 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Current debug image — 2026-10-27
+## Latest completed debug image — 2026-10-29
 
-The standard `vcu118-ddr-sgmii-rom-rva23s64-dbg` build completed from RTL
-commit `175b842`, including the reviewed debug fixes and corrected BSCAN
-clock/reset constraints. Vivado 2026.1 meets routed timing at 75 MHz:
-whole-design setup/hold +0.005/+0.011 ns, CPU setup/hold +0.482/+0.011 ns,
-minimum pulse-width slack +0.005 ns, 16/16 bus-skew constraints met, and
-zero bitstream DRC errors. The final design uses 333,645 LUTs, 88,712
-registers, 317.5 BRAM tiles and 29 DSPs.
+The October 30 registered-SBA-pause RTL follow-up has not been rebuilt into
+this image. The bitstream, bundle and their recorded 75 MHz timing remain
+unchanged; their input manifest describes the October 29 source snapshot,
+rather than the newer working tree. See the
+[timing follow-up](../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30).
+
+The standard `vcu118-ddr-sgmii-rom-rva23s64-dbg` build now contains
+`KARU_DBG_FULL`: autoexec, two address triggers and SBA. It completed from the
+review-corrected working tree at HEAD `aa7fbe4`, including uncommitted RTL;
+`_build/vcu118_build_inputs.json` records all 149 production/boot input hashes.
+The companion karudeb commit is `a3e6b70`.
+
+Vivado 2026.1 meets routed timing at 75 MHz: whole-design setup/hold
++0.010/+0.011 ns, CPU setup/hold +0.048/+0.011 ns, minimum pulse-width slack
++0.005 ns, 16/16 bus-skew constraints met and zero bitstream DRC errors.
+The design uses 375,881 LUTs, 89,881 registers, 317.5 BRAM tiles and 29 DSPs.
+The CPU's tightest path is vector arithmetic `vs1_q[3]` to FP-result
+`f_relem_q[23]`. The separate 200 MHz mapped-cell target remains open; see
+[the complete measurements](../dbg/MEASUREMENTS.md).
 
 `_build/vcu118_ddr.bit` has SHA-256
-`bc5e3d3d1639d02c1657c44759d46fa6afd2e833f4811b9621aca66bab97571c`.
-Use `make vcu118-program-bundle` to package it for transfer with its probes,
-ROM manifest and extracted control DTB. The generated
-`_build/vcu118_programming.tgz` is 12,976,720 bytes, with SHA-256
-`4f024b69cae624863c750a2a444c1d8284be6fa684a29734af0e801ac4d82e6a`.
-The ROM inputs match karudeb
-`a3e6b70`, including DTB `d617ba56…bcec9` and the lab netboot command.
-The source/ROM hash record is `_build/vcu118_build_inputs.json`; routed
-reports are under `_build/fpga_rpt/`. See [measurements](../dbg/MEASUREMENTS.md)
-for timing scope and the separate 200 MHz mapped timing shortfall.
+`8c8ea6bd481b782f8c5f69699ca98de3e91e9f6c5fd63806db6a3eb450b14592`.
+The verified `_build/vcu118_programming.tgz` is 14,208,769 bytes, SHA-256
+`279d3319b8b4365481e786e711bf5317f2ff28069c3e66711d9da18216b01137`.
+It contains exactly these paths:
 
-This image has not been programmed or booted on the board. USER4 debug,
-detach and normal karudeb boot remain the hardware acceptance gates; use
-the [karudbg instructions](#optional-karudbg-integration) and patched pinned
-OpenOCD build for those tests.
+- `_build/vcu118_ddr.bit`
+- `_build/vcu118_ddr.ltx`
+- `_build/vcu118_rom_manifest.txt`
+- `_build/vcu118_rom_board.dtb`
+
+`make vcu118-program-bundle` reproduces the package from the current standard
+build outputs. Extract it from the repository root on the programming host so
+the `_build/...` paths remain intact. The ROM manifest is read back from the
+packed image. Its OpenSBI, U-Boot, profile DTB and 644-byte boot command were
+compared byte for byte with the build inputs. The lab settings remain server
+`192.168.42.1`, board `192.168.42.10`, TFTP `Image`/`board.dtb` and NFS root
+`192.168.42.1:/srv/nfs/karudeb,vers=3,tcp,nolock`. Serve the extracted DTB,
+whose SHA-256 is
+`d617ba564798245c27343e16c86e5d76ea65ed534cc1dfcd5044f74ab3b0cec9`.
+Routed reports are under `_build/fpga_rpt/`; final source/ROM/timing/package
+checks are in `_build/vcu118_full_verification.json`.
+
+This image has not been programmed or booted on the board. Use the pinned
+pristine OpenOCD for the full-extension image. Physical USER4 debugging,
+watchpoints, autoexec, SBA RAM/MMIO, detach and normal karudeb boot remain
+the [hardware acceptance steps](#optional-karudbg-integration).
+
+## Previous base-debug image — 2026-10-27
+
+The earlier base-only image is retained as
+`_build/vcu118_ddr.base-2026-10-27.bit`, SHA-256
+`bc5e3d3d1639d02c1657c44759d46fa6afd2e833f4811b9621aca66bab97571c`,
+with its source/timing record in
+`_build/vcu118_build_inputs.base-2026-10-27.json`. It met 75 MHz routed timing
+but had no autoexec, triggers or SBA, and was not board-tested. The new snapshot uses
+12.66% more LUTs than its 333,645. The expanded tool/configuration
+comparison finds the same Vivado build and implementation directives, with
+`KARU_DBG_FULL` added; the RTL checkpoint and rebuilt U-Boot binary also differ.
+The cause of the resource increase has not been isolated. This is not a
+same-RTL FPGA feature comparison, and is separate from the controlled Yosys
+area increments.
 
 ## Last board-validated profile image — 2026-10-07
 
@@ -54,7 +92,7 @@ errors. It was built on a host without the board; the programming bundle
 (bitstream, `.ltx`, ROM manifest and the ROM's DTB) at that checkpoint was
 `_build/vcu118_programming.tgz`, SHA-256 `1ab66159…c178`. The ROM bakes
 the lab netboot command and the karudeb `dev-keccak` (`b3b6abf`) control
-DTB `d617ba56…bcec9`. **Validated on the board 2026-10-07**: programmed over
+DTB `d617ba56…0cec9`. **Validated on the board 2026-10-07**: programmed over
 JTAG from this host (`make prog_vcu118_ddr`, 46 s), hands-off ROM netboot to
 the Linux 7.2.6-zvk NFS-root prompt in 5.5 min from the reset (kernel at +1:04,
 root mounted at +1:18, prompt at +5:28), `board_accept.sh` PASS, and the Zvknhk v0.2 checks
@@ -301,12 +339,15 @@ the existing `_build/vcu118_ddr.bit`; the command does not program the board.
 
 #### Optional karudbg integration
 
-`make vcu118-ddr-sgmii-rom-rva23s64-dbg` adds `KARU_DBG` to the same
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg` adds `KARU_DBG KARU_DBG_FULL` to the same
 75 MHz profile/SGMII/ROM flow, using the same karudeb inputs and standard
 `_build/vcu118_ddr.*` outputs. It substitutes the processor-plus-DM integration
 for the bare core and reserves FPGA **USER4** (`IR=0x23`) for a nested RISC-V
 TAP. The transport uses the existing board JTAG connector; it adds no user
-pin assignments. `KARU_DDR_HOST_DBG` is rejected in this configuration until
+pin assignments. It includes autoexec, two address triggers and SBA; set
+`VCU118_DBG_EXT_DEFINES=` to reproduce the base-DM build above. The combined
+extension image has separate acceptance evidence in the implementation plan.
+`KARU_DDR_HOST_DBG` is rejected in this configuration until
 the separate JTAG-AXI loader's USER-chain coexistence is configured.
 
 ```sh
@@ -318,8 +359,9 @@ The [target configuration](../dbg/vcu118.cfg) uses pinned mainline OpenOCD's
 `riscv use_bscan_tunnel 5 0` and `riscv set_bscan_tunnel_ir 0x23`.
 Load the appropriate cable/adapter configuration before this target file.
 Use the [tested isolated OpenOCD build](../dbg/README.md#initial-contract)
-for Program Buffer block memory access; the installed pristine baseline
-requires the documented optional-autoexec fallback patch. The FPGA TAP's
+for software translation, including its documented walk safeguards. The combined
+image supports native autoexec and SBA with the pinned pristine OpenOCD; the
+base image needs the optional-autoexec fallback patch for Program Buffer blocks. The FPGA TAP's
 IDCODE is distinct from the conventional simulation TAP's placeholder ID.
 Do not run OpenOCD and Vivado Hardware Manager against the same cable at once.
 
@@ -335,14 +377,17 @@ DMI payload paths retain maximum-delay/skew checks; they are not hidden by a
 blanket asynchronous-clock exception.
 
 The non-board gates are `make dbg-bscan-test dbg-bscan-core-test
-dbg-bscan-gdb-test dbg-bscan-translation-test`. They exercise a behavioral
+dbg-bscan-gdb-test dbg-bscan-translation-test dbg-bscan-full-test`. The full
+composition uses its own model/flag record and the pinned pristine OpenOCD:
+Program Buffer blocks, hardware breakpoints/watchpoints, SBA RAM/MMIO while
+halted/running and GDB FP/vector/register context all pass through USER4. They exercise a behavioral
 Xilinx outer TAP, the production tunnel and real DM/DTM/core with actual
 OpenOCD/GDB, plus pause/abort/reset and negative controls. This verifies the
 tunnel protocol and software integration, rather than a physical FPGA cable
 or primitive timing. The synthesis/placement evidence and outstanding timing
 gates are recorded in [karudbg measurements](../dbg/MEASUREMENTS.md). The
-2026-10-27 build completes routed setup, hold, pulse-width and bus-skew
-checks with the corrected constraints and produces the current debug
+2026-10-29 full-extension build passes routed setup, hold, pulse-width and
+bus-skew checks with the corrected constraints and produces the current debug
 bitstream above. Board debug, detach and normal karudeb boot still require
 hardware acceptance. The earlier board-validated images do not contain karudbg.
 

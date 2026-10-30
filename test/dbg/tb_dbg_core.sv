@@ -4,6 +4,7 @@
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 `include "karudbg_defs.vh"
+`include "rtl/karu_assert.sv"
 module tb_dbg_core;
 `ifdef TEST_AW_WAIT_WVALID
     localparam AW_WAIT_WVALID = 1;
@@ -25,6 +26,9 @@ module tb_dbg_core;
     wire  cache_flush_req;
     wire  cache_flush_invalidate;
     reg  cache_flush_done = 0;
+    integer cache_flush_delay = 0, cache_flush_remaining = 0;
+    reg cache_flush_idle_done = 0;
+    reg cache_flush_wait_fetch = 0, cache_flush_waiting = 0;
     wire [`AXI_ID_W-1:0] imem_arid;
     wire [`AXI_ADDR_W-1:0] imem_araddr;
     wire [`AXI_LEN_W-1:0] imem_arlen;
@@ -313,7 +317,7 @@ module tb_dbg_core;
             check_saved;
 
             // Faults in generated transfer code must hide its borrowed GPRs.
-            command(32'h003207a0, 3); check_saved; // absent trigger CSR read
+            command(32'h003207af, 3); check_saved; // unimplemented trigger CSR read
             wr(7'h04, 32'h76543210); wr(7'h05, 32'hfedcba98);
             command(32'h00330f11, 3); check_saved; // read-only mvendorid write
             write_reg(16'h100b, saved_a1); write_reg(16'h100c, saved_a2);
@@ -438,7 +442,24 @@ module tb_dbg_core;
         cycle <= cycle + 1;
         // Completion is registered, as on the real cache-maintenance path.
         // A debug/stepped WRS must retire even while completion stays low.
-        cache_flush_done <= cache_flush_req;
+        cache_flush_done <= cache_flush_idle_done && cache_flush_remaining == 0 && !cache_flush_req;
+        if (rst || hart_reset_i || ndmreset_o) begin
+            cache_flush_remaining <= 0;
+            cache_flush_waiting <= 0;
+        end
+        else if (cache_flush_req) begin
+            if (cache_flush_wait_fetch) cache_flush_waiting <= 1;
+            else if (cache_flush_delay == 0) cache_flush_done <= 1;
+            else cache_flush_remaining <= cache_flush_delay;
+        end else if (cache_flush_waiting) begin
+            if (memory.i_active && dut.core.im_rd_lock) begin
+                cache_flush_done <= 1;
+                cache_flush_waiting <= 0;
+            end
+        end else if (cache_flush_remaining != 0) begin
+            cache_flush_remaining <= cache_flush_remaining - 1;
+            if (cache_flush_remaining == 1) cache_flush_done <= 1;
+        end
         if (!(rst || hart_reset_i || ndmreset_o)) begin
             if (dut.core.dbg_exception)
                 $display("debug exception phase=%s pc=%016x insn=%08x vtype=%016x vl=%0d vstart=%0d cause=%0d",
@@ -1124,7 +1145,7 @@ module tb_dbg_core;
                 @(negedge clk); timeout = timeout + 1;
             end
             if (timeout == 20000)
-                $fatal(1,"park timeout mode=%b pc=%x state=%x",debug_mode_o,dut.core.ifu_pc,dut.dm.cmd_state_q);
+                $fatal(1,"park timeout phase=%s mode=%b pc=%x state=%x",phase,debug_mode_o,dut.core.ifu_pc,dut.dm.cmd_state_q);
             check(debug_mode_o && dut.dm.parked_q, "hart reached ROM parking handshake");
         end
     endtask
@@ -1206,6 +1227,14 @@ module tb_dbg_core;
         end
     endtask
 
+    `include "test/dbg/sba_core_tests.vh"
+    `include "test/dbg/sba_external_cache_tests.vh"
+    `include "test/dbg/trigger_checker.vh"
+    `include "test/dbg/trigger_review_tests.vh"
+
+`ifdef TEST_TRIGGER_PROBE
+    `include "test/dbg/trigger_core_tests.vh"
+`endif
     initial begin
         #1; memory.clear_ram();
         keccak_expected[0]=64'h8374b05252ed8115; keccak_expected[1]=64'h1df7a676b6569400;
@@ -1280,7 +1309,28 @@ module tb_dbg_core;
         read_reg(16'h07b0, got);
         check(got[31:28] == 4 && got[8:6] == 3 && got[10], "DCSR debugver/cause/stopcount");
 
-`ifdef TEST_VECTOR_PROBE
+`ifdef TEST_TRIGGER_REVIEW
+        trigger_review_tests;
+        $display("karudbg trigger review probes: PASS");
+        $finish;
+`elsif TEST_EXTENSION_PROBE
+        trigger_core_tests;
+        sba_core_tests;
+        sba_external_cache_tests;
+        $display("karudbg focused extension probe: PASS");
+        $finish;
+`elsif TEST_TRIGGER_PROBE
+
+        trigger_core_tests;
+        $display("karudbg focused trigger probe: PASS");
+        $finish;
+`elsif TEST_SBA_PROBE
+
+        sba_core_tests;
+        sba_external_cache_tests;
+        $finish;
+`elsif TEST_VECTOR_PROBE
+
         write_reg(16'h0300, 64'h6600);
         masked_vector_context;
         $display("karudbg focused vector probe: PASS");
@@ -1338,7 +1388,7 @@ module tb_dbg_core;
         pb(0, 32'h0005a603); execute_pb(3); check_saved;
         write_reg(16'h100b, 64'h13000000);
         execute_pb(3); check_saved;
-        command(32'h003207a0, 3); check_saved; // absent trigger CSR
+        command(32'h003207af, 3); check_saved; // unimplemented trigger CSR
         pb(0, 32'h00000073); execute_pb(3); check_saved; // ecall
         pb(0, 32'h30200073); execute_pb(3); check_saved; // mret
         pb(0, 32'h10200073); execute_pb(3); check_saved; // sret
@@ -1402,6 +1452,7 @@ module tb_dbg_core;
         $display("karudbg actual core: PASS (%0d checks, %0d cycles, %0d normal retirements)",checks,cycle,normal_retired);
         $finish;
 `endif
+
     end
     initial begin #30000000; $fatal(1,"debug core global timeout"); end
 endmodule
