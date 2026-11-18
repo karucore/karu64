@@ -10,11 +10,14 @@
 #	affect both area and timing estimates; see README.md for measured scope.
 
 set top      "karu64"
+if {[info exists ::env(KARU_TOP)] && $::env(KARU_TOP) ne ""} {
+	set top $::env(KARU_TOP)
+}
 set out_dir  $::env(KARU_OUT_DIR)
 set lib      $::env(KARU_LIB)
 set clk_ps   $::env(KARU_CLK_PS)
 set uprate   $::env(KARU_ABC_UPRATE_PS)
-set abc_sdc  "$out_dir/generated/karu64.abc.sdc"
+set abc_sdc  "$out_dir/generated/${top}.abc.sdc"
 set flatten  [expr {[info exists ::env(KARU_FLATTEN)] && $::env(KARU_FLATTEN) ne "0" && $::env(KARU_FLATTEN) ne ""}]
 #	ABC script selection. The "fast" custom script (strash; dretime; retime;
 #	map) skips ABC's buffer/upsize/dnsize passes -- `map` followed by `buffer`
@@ -93,7 +96,23 @@ foreach file $rtl_files {
 	}
 }
 puts "RTL sources: [llength $rtl_unique]"
-yosys "read_verilog -defer -I../../rtl$defs $rtl_unique"
+if {[info exists ::env(KARU_RTL_MANIFEST)] && $::env(KARU_RTL_MANIFEST) ne ""} {
+	set manifest [open $::env(KARU_RTL_MANIFEST) r]
+	set rtl_unique [list]
+	while {[gets $manifest line] >= 0} {
+		regsub {//.*$} $line "" line
+		regsub {#.*$} $line "" line
+		set line [string trim $line]
+		if {$line eq ""} { continue }
+		if {[file pathtype $line] ne "absolute"} {
+			set line [file normalize [file join ../.. $line]]
+		}
+		lappend rtl_unique $line
+	}
+	close $manifest
+	puts "Using RTL manifest: $::env(KARU_RTL_MANIFEST) ([llength $rtl_unique] sources)"
+}
+yosys "read_verilog -defer -I../../rtl -I../../dbg$defs $rtl_unique"
 
 yosys "hierarchy -check -top $top"
 

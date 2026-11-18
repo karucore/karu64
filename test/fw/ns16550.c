@@ -69,15 +69,15 @@ void sio_puts(const char *s)
 int sio_getc(void)
 {
     if (REG[UART_LSR] & UART_LSR_DR) {
-        int ch = REG[UART_RBR];     //  data byte (lane 0). On spike, reading
-                                    //  RBR also pops the RX FIFO.
-        //  Advance the karu_ns16550 RX. karu64's LSU issues only 8-byte
-        //  ALIGNED reads (it extracts the byte itself), so the read channel
-        //  cannot tell the device which 16550 register was addressed -- a
-        //  read can't be the pop trigger. A write carries its byte lane in
-        //  wstrb, so we pop by writing SCR. This is a no-op scratch write on
-        //  spike (which already popped on the RBR read above), so the same
-        //  binary advances exactly once on both targets.
+        int ch = REG[UART_RBR];     //  data byte (lane 0). Reading RBR takes
+                                    //  the byte, on spike and on karu_ns16550
+                                    //  alike: MMIO reads keep their byte
+                                    //  address, so the device sees an RBR read.
+        //  Left over from an earlier explicit-pop protocol, in which a read
+        //  could not identify the register and an SCR write advanced the
+        //  receiver. Today this is a plain scratch-register write with no
+        //  effect on RX, on either target. It is kept so the binary is
+        //  unchanged.
         REG[UART_SCR] = 0;
         return ch;
     }

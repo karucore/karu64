@@ -18,11 +18,12 @@
 // so it maps to a true-dual-port block RAM; the SRAM is 2R/1W (3 ports), so it stays
 // distributed RAM -- fine at 64 KiB.
 
+`include "karu_bootmap.vh"
 module karu_boot_mem #(
 	parameter		 ROM_HEX    = "vcu118_fuboot.hex",
 	parameter [31:0] ROM_BASE   = 32'h0000_1000,
-	parameter [31:0] ROM_BYTES  = 32'h0010_0000,	// 1 MiB
-	parameter [31:0] SRAM_BASE  = 32'h0010_1000,	// directly above the ROM
+	parameter [31:0] ROM_BYTES  = {`KARU_BOOT_ROM_PAGES, 12'b0},	// 2 MiB by default
+	parameter [31:0] SRAM_BASE  = 32'h0000_1000 + {`KARU_BOOT_ROM_PAGES, 12'b0},	// directly above the ROM
 	parameter [31:0] SRAM_BYTES = 32'h0001_0000		// 64 KiB
 ) (
 	input  wire			clk,

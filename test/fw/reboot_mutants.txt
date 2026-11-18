@@ -1,0 +1,7 @@
+no-privilege|s# && dmem_awprot\[0\] &&# \&\&#|a write that must be ignored reset the system
+any-value|s#(dmem_wdata\[31:0\] == 32'h0000_7777)#1'b1#|a write that must be ignored reset the system
+any-width|s#(dmem_wstrb == 8'h0F) && ##|a write that must be ignored reset the system
+any-register|s#(dmem_awaddr\[10:0\] == 11'b0) && #1'b1 \&\& #|a write that must be ignored reset the system
+no-request|s#assign sys_reset_req_o = mmio_aw_fire#assign sys_reset_req_o = 1'b0 \&\& mmio_aw_fire#|did not reset the system
+uart-alias|s#is_uart = (a\[31:11\] == 21'h020000)#is_uart = (a[31:12] == 20'h10000)#|does not read as zero
+uart-write-alias|s#assign ns_we    = mmio_aw_fire && is_uart(dmem_awaddr);#assign ns_we    = mmio_aw_fire \&\& (dmem_awaddr[31:12] == 20'h10000);#|reached the UART

@@ -61,6 +61,13 @@ module vcu118_ddr_top (
 	input  wire			usb_uart_cts_i,
 	input  wire			btn_rst_i,
 	input  wire	[4:0]	btn_i,
+	//	GPIO DIP switch SW12, positions 1..4 (on = 1). They are straps, read
+	//	at power-on reset, and all off is the plain configuration:
+	//	  [1:0]	debug lifecycle: 00 OPEN (debugger usable as before),
+	//			01 AUTH (authenticate first), 1x DISABLED     (KARU_DBG_AUTH)
+	//	  [2]	hold the hart in reset until a debugger asks   (KARU_DBG_AUTH)
+	//	  [3]	entropy source off: seed stays in BIST         (KARU_ZKR)
+	input  wire	[3:0]	dip_i,
 	output wire [7:0]	led_o
 `ifdef KARU_ETH_PHY
 	//	DP83867 MDIO management front-end (SelectIO/LVCMOS18 pins in
@@ -116,6 +123,18 @@ module vcu118_ddr_top (
 	wire		host_cpu_reset = 1'b0;
 `endif
 	wire		trap;
+`ifdef KARU_DBG
+	wire		debug_ndmreset;
+`else
+	wire		debug_ndmreset = 1'b0;
+`endif
+	//	Boot hold or relock reset from the authentication block (one flop, in
+	//	the board-reset domain like ndmreset). It resets what ndmreset resets.
+`ifdef KARU_DBG_AUTH
+	wire		auth_reset;
+`else
+	wire		auth_reset = 1'b0;
+`endif
 
 	//	Core reset: held while MIG resets or DDR4 is not yet calibrated, then a
 	//	short conditioned release. CPU clock is ui_clk / CPU_CLK_DIV.
@@ -130,16 +149,37 @@ module vcu118_ddr_top (
 	);
 	wire		core_arst = ui_clk_sync_rst | ~init_calib_complete | sys_rst |
 							host_cpu_hold | host_cpu_reset;
+	// Non-debug reset cancels every AXI endpoint/converter together, while the
+	// DM/DTM and calibrated DDR PHY remain alive to complete the reset request.
 	wire		ui_axi_arst = ui_clk_sync_rst | ~init_calib_complete | sys_rst;
 	wire		clk = cpu_clk;
 	wire		rst;
 	reset_ctrl #(.POR_CYCLES(64)) u_rst (
 		.clk(clk), .arst_in(core_arst), .rst_out(rst)
 	);
+	wire		soc_rst;
 	wire		ui_axi_rst;
+	//	Software reset request from the system-control register in the xbar
+	//	(0x1000_0800). It is implemented by the reset sequencer of the debug
+	//	build, which already resets the hart, the peripherals and both sides
+	//	of the DDR AXI path together for ndmreset.
+	wire		soft_reset_req;
+`ifdef KARU_DBG
+	karudbg_fpga_reset u_debug_bus_reset (
+		.cpu_clk(clk), .ui_clk(ui_clk), .board_reset_i(rst),
+		.ui_arst_i(ui_axi_arst), .ndmreset_i(debug_ndmreset | auth_reset),
+		.soft_reset_req_i(soft_reset_req),
+		.soc_reset_o(soc_rst), .ui_reset_o(ui_axi_rst)
+	);
+`else
+	//	Without the debug build's sequencer the request has no effect: the
+	//	register accepts the write and the system keeps running.
+	wire		_unused_soft_reset = &{soft_reset_req, 1'b0};
+	assign soc_rst = rst;
 	reset_ctrl #(.POR_CYCLES(64)) u_ui_axi_rst (
 		.clk(ui_clk), .arst_in(ui_axi_arst), .rst_out(ui_axi_rst)
 	);
+`endif
 	assign c0_ddr4_aresetn = ~ui_axi_rst;
 
 `ifdef KARU_DDR_HOST_DBG
@@ -213,6 +253,7 @@ module vcu118_ddr_top (
 	wire [`AXI_ID_W-1:0]	x_arid;   wire [`AXI_ADDR_W-1:0] x_araddr;
 	wire [`AXI_LEN_W-1:0]	x_arlen;  wire [`AXI_SIZE_W-1:0] x_arsize;
 	wire [`AXI_BURST_W-1:0]	x_arburst; wire x_arvalid, x_arready;
+	wire [`AXI_PROT_W-1:0]	x_arprot, x_awprot;
 	wire [`AXI_ID_W-1:0]	x_rid;    wire [`AXI_DATA_W-1:0] x_rdata;
 	wire [`AXI_RESP_W-1:0]	x_rresp;  wire x_rlast, x_rvalid, x_rready;
 	wire [`AXI_ID_W-1:0]	x_awid;   wire [`AXI_ADDR_W-1:0] x_awaddr;
@@ -305,8 +346,83 @@ module vcu118_ddr_top (
 	wire		irq_timer, irq_software, irq_ext_m, irq_ext_s;
 	wire [63:0]	clint_mtime;		//	CLINT mtime -> CSR rdtime (shared timer domain)
 
+	//	===== Straps: the DIP switches, synchronised. They are static inputs. =====
+	(* ASYNC_REG = "TRUE" *) reg [3:0] dip_meta, dip_q;
+	always @(posedge clk) begin
+		dip_meta <= dip_i;
+		dip_q    <= dip_meta;
+	end
+	wire [1:0]	strap_lc      = dip_q[1:0];
+	wire		strap_hold    = dip_q[2];
+	wire		strap_entropy = !dip_q[3];
+
+	//	===== Zkr: the entropy source behind seed, mnoise and mentropycfg =====
+	//	It resets with the hart, so a reboot runs its start-up test again.
+	wire [1:0]	trng_opst;
+	wire [15:0]	trng_data;
+	wire		trng_ack;
+`ifdef KARU_EN_ZKR
+	wire [63:0]	zkr_rdata, zkr_wdata;
+	wire		zkr_fire, zkr_we;
+	wire [1:0]	zkr_sel;
+	karu_entropy_src #(.SIM(0)) u_entropy (
+		.clk(clk), .rst(soc_rst), .en_i(strap_entropy),
+		.csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
+		.csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
+		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack)
+	);
+`else
+	//	No entropy source: the authentication block's TRNG port reads DEAD,
+	//	so its ROM can never build a challenge and never unlocks.
+	assign trng_opst = 2'd3;
+	assign trng_data = 16'b0;
+	wire		_unused_straps = &{strap_entropy, trng_ack, 1'b0};
+`endif
+`ifndef KARU_DBG_AUTH
+	assign trng_ack = 1'b0;
+	wire		_unused_auth_straps = &{strap_lc, strap_hold, trng_opst, trng_data, 1'b0};
+`endif
+
+`ifdef KARU_DBG
+	wire dbg_dmi_reset, dbg_req_valid, dbg_req_ready, dbg_resp_valid, dbg_resp_ready;
+	wire [6:0] dbg_req_addr;
+	wire [1:0] dbg_req_op, dbg_resp_op;
+	wire [31:0] dbg_req_data, dbg_resp_data;
+	karudbg_bscan u_debug_transport (
+		.clk(clk), .rst(rst), .dmi_reset_o(dbg_dmi_reset),
+		.req_valid_o(dbg_req_valid), .req_ready_i(dbg_req_ready),
+		.req_addr_o(dbg_req_addr), .req_op_o(dbg_req_op), .req_data_o(dbg_req_data),
+		.resp_valid_i(dbg_resp_valid), .resp_ready_o(dbg_resp_ready),
+		.resp_data_i(dbg_resp_data), .resp_op_i(dbg_resp_op)
+	);
+`ifdef KARU_DBG_AUTH
+	//	The hart starts in the authentication island ROM (0x1_0000), which
+	//	hands over to the boot ROM at 0x1000. The island shadows
+	//	0x1_0000..0x2_3fff of the boot memory; the boot ROM layout keeps
+	//	that range empty (Makefile, "U-Boot-in-ROM").
+	karudbg_core #(.RESET_PC(64'h0001_0000), .EXT_TIME(1),
+				   .ISLAND_ROM_HEX("vcu118_auth_rom.hex")) cpu (
+		.lc_i(strap_lc), .hold_strap_i(strap_hold), .revoke_i(1'b0),
+		.trng_opst_i(trng_opst), .trng_data_i(trng_data), .trng_ack_o(trng_ack),
+		.auth_reset_o(auth_reset),
+`else
+	karudbg_core #(.RESET_PC(64'h0000_1000), .EXT_TIME(1)) cpu (
+`endif
+		.hart_reset_i(soc_rst), .ndmreset_o(debug_ndmreset),
+		.debug_mode_o(), .debug_resume_ack_o(),
+		.dmi_reset_i(dbg_dmi_reset), .dmi_req_valid_i(dbg_req_valid),
+		.dmi_req_ready_o(dbg_req_ready), .dmi_req_addr_i(dbg_req_addr),
+		.dmi_req_op_i(dbg_req_op), .dmi_req_data_i(dbg_req_data),
+		.dmi_resp_valid_o(dbg_resp_valid), .dmi_resp_ready_i(dbg_resp_ready),
+		.dmi_resp_data_o(dbg_resp_data), .dmi_resp_op_o(dbg_resp_op),
+`else
 	karu64 #(.RESET_PC(32'h0000_1000), .EXT_TIME(1)) cpu (
+`endif
 		.clk(clk), .rst(rst), .trap(trap),
+`ifdef KARU_EN_ZKR
+		.zkr_rdata_i(zkr_rdata), .zkr_fire_o(zkr_fire), .zkr_sel_o(zkr_sel),
+		.zkr_we_o(zkr_we), .zkr_wdata_o(zkr_wdata),
+`endif
 		.irq(irq_timer), .irq_external_m(irq_ext_m), .irq_external_s(irq_ext_s),
 		.irq_software(irq_software),
 		.time_in(clint_mtime),
@@ -336,7 +452,8 @@ module vcu118_ddr_top (
 		.CPU_CLK_HZ(CPU_CLK_HZ),
 		.ROM_HEX("vcu118_fuboot.hex")
 	) xbar (
-		.clk(clk), .rst(rst),
+		.clk(clk), .rst(soc_rst),
+		.sys_reset_req_o(soft_reset_req),
 		.imem_arid(imem_arid), .imem_araddr(imem_araddr), .imem_arlen(imem_arlen),
 		.imem_arsize(imem_arsize), .imem_arburst(imem_arburst), .imem_arprot(imem_arprot),
 		.imem_arvalid(imem_arvalid), .imem_arready(imem_arready),
@@ -355,12 +472,12 @@ module vcu118_ddr_top (
 		.dmem_bid(dmem_bid), .dmem_bresp(dmem_bresp),
 		.dmem_bvalid(dmem_bvalid), .dmem_bready(dmem_bready),
 		.m_arid(x_arid), .m_araddr(x_araddr), .m_arlen(x_arlen),
-		.m_arsize(x_arsize), .m_arburst(x_arburst),
+		.m_arsize(x_arsize), .m_arburst(x_arburst), .m_arprot(x_arprot),
 		.m_arvalid(x_arvalid), .m_arready(x_arready),
 		.m_rid(x_rid), .m_rdata(x_rdata), .m_rresp(x_rresp),
 		.m_rlast(x_rlast), .m_rvalid(x_rvalid), .m_rready(x_rready),
 		.m_awid(x_awid), .m_awaddr(x_awaddr), .m_awlen(x_awlen),
-		.m_awsize(x_awsize), .m_awburst(x_awburst),
+		.m_awsize(x_awsize), .m_awburst(x_awburst), .m_awprot(x_awprot),
 		.m_awvalid(x_awvalid), .m_awready(x_awready),
 		.m_wdata(x_wdata), .m_wstrb(x_wstrb), .m_wlast(x_wlast),
 		.m_wvalid(x_wvalid), .m_wready(x_wready),
@@ -379,10 +496,10 @@ module vcu118_ddr_top (
 
 	//	===== CPU-clock -> MIG-ui-clock AXI4 clock converter =====
 	axi_clock_converter_0 u_cdc (
-		.s_axi_aclk(clk), .s_axi_aresetn(~rst),
+		.s_axi_aclk(clk), .s_axi_aresetn(~soc_rst),
 		.s_axi_awid(x_awid), .s_axi_awaddr(x_awaddr[30:0]), .s_axi_awlen(x_awlen),
 		.s_axi_awsize(x_awsize), .s_axi_awburst(x_awburst), .s_axi_awlock(1'b0),
-		.s_axi_awcache(4'b0011), .s_axi_awprot(3'b000),
+		.s_axi_awcache(4'b0011), .s_axi_awprot(x_awprot),
 		.s_axi_awregion(4'b0000), .s_axi_awqos(4'b0000),
 		.s_axi_awvalid(x_awvalid), .s_axi_awready(x_awready),
 		.s_axi_wdata(x_wdata), .s_axi_wstrb(x_wstrb), .s_axi_wlast(x_wlast),
@@ -390,7 +507,7 @@ module vcu118_ddr_top (
 		.s_axi_bid(x_bid), .s_axi_bresp(x_bresp), .s_axi_bvalid(x_bvalid), .s_axi_bready(x_bready),
 		.s_axi_arid(x_arid), .s_axi_araddr(x_araddr[30:0]), .s_axi_arlen(x_arlen),
 		.s_axi_arsize(x_arsize), .s_axi_arburst(x_arburst), .s_axi_arlock(1'b0),
-		.s_axi_arcache(4'b0011), .s_axi_arprot(3'b000),
+		.s_axi_arcache(4'b0011), .s_axi_arprot(x_arprot),
 		.s_axi_arregion(4'b0000), .s_axi_arqos(4'b0000),
 		.s_axi_arvalid(x_arvalid), .s_axi_arready(x_arready),
 		.s_axi_rid(x_rid), .s_axi_rdata(x_rdata), .s_axi_rresp(x_rresp),

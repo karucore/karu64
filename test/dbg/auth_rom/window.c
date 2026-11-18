@@ -1,0 +1,179 @@
+// Simulation island ROM: the authentication window of
+// doc/debug-auth-contract.md sections 3-5, with the simulation-only TEST
+// algorithm (0x80). TEST is NOT cryptographic: its "signature" is a keyed
+// XOR fold of the challenge with a public test key. A production ROM accepts
+// only the algorithm chosen under D3 and rejects 0x80.
+// SPDX-License-Identifier: BSD-2-Clause
+#include <stdint.h>
+
+#define CSR_AUTH 0x7c0
+#define CSR_RX   0x7c1
+#define CSR_TX   0x7c2
+/* The nonce source. mdbgrng (0x7c3) is the authentication block's own port;
+   an integration whose core has Zkr builds with -DCSR_RNG=0x015 and reads
+   seed, which has the same format and the same take-on-write rule. */
+#ifndef CSR_RNG
+#define CSR_RNG  0x7c3
+#endif
+/* Polls allowed per nonce word while the source reports BIST or WAIT. It
+   must cover the source's start-up test after reset. */
+#ifndef TRNG_TRIES
+#define TRNG_TRIES 10000
+#endif
+#define CSR_MBST 0xfc0
+
+#define AUTH_UNLOCK   (1u << 0)
+#define AUTH_BOOTDONE (1u << 1)
+#define AUTH_REQ      (1u << 7)
+#define AUTH_SESS_ACK (1u << 25)
+#define MBST_SESS     (1u << 24)
+#define MBST_STARTED  (1u << 25)
+
+#define ALG_TEST      0x80u
+#define TEST_SIG_WORDS 8u
+#define CHALLENGE_WORDS 20u
+#ifndef WINDOW_CYCLES
+#define WINDOW_CYCLES 400000ull     /* simulation bound; production 2^30 */
+#endif
+
+#ifdef AUTH_ROM_HOST
+/* Host model build (test/dbg/auth_rom/host_test.c): CSR accesses go to a
+   mailbox model, so the window logic itself is what is tested. */
+uint64_t mock_read(unsigned csr);
+uint64_t mock_rw(unsigned csr, uint64_t w);
+void mock_set(unsigned csr, uint64_t w);
+void mock_write(unsigned csr, uint64_t w);
+uint64_t mock_cycles(void);
+#define csr_read(c) mock_read(c)
+#define csr_rw(c, w) mock_rw(c, w)
+#define csr_set(c, w) mock_set(c, w)
+#define csr_write(c, w) mock_write(c, w)
+#define read_cycles() mock_cycles()
+#else
+#define STR(x) #x
+#define XSTR(x) STR(x)
+#define csr_read(c) ({ uint64_t v_; __asm__ volatile("csrr %0, " XSTR(c) : "=r"(v_)); v_; })
+#define csr_rw(c, w) ({ uint64_t v_; __asm__ volatile("csrrw %0, " XSTR(c) ", %1" : "=r"(v_) : "r"((uint64_t)(w))); v_; })
+#define csr_set(c, w) __asm__ volatile("csrs " XSTR(c) ", %0" :: "r"((uint64_t)(w)))
+#define csr_write(c, w) __asm__ volatile("csrw " XSTR(c) ", %0" :: "r"((uint64_t)(w)))
+#define read_cycles() csr_read(mcycle)
+#endif
+
+static const uint32_t test_key[TEST_SIG_WORDS] = {
+    0x6b617275u, 0x64626761u, 0x75746821u, 0x54455354u,
+    0x2d6f6e6cu, 0x792d6e6fu, 0x742d6372u, 0x7970746fu };
+static const uint32_t device_digest[8] = {
+    0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u,
+    0x55555555u, 0x66666666u, 0x77777777u, 0x88888888u };
+
+static uint32_t challenge[CHALLENGE_WORDS];
+
+/* The window ends WINDOW_CYCLES after it opens (contract 5.3). Expiry is
+   checked before every step that waits on, or takes input from, the host or
+   the TRNG, and once more immediately before the grant. This is a software
+   cutoff: the guarded CSR access commits a few instructions after its
+   check, so a pop or the grant can land that much after the deadline. A
+   hard cutoff needs a worst-case margin subtracted here or a hardware
+   timer. */
+static uint64_t deadline;
+static int expired(void) { return read_cycles() >= deadline; }
+
+/* TEST: sig[i] = key[i] ^ XOR of challenge words j with j % 8 == i,
+   each rotated left by i, then mixed with the granted-mask byte. */
+static uint32_t rotl(uint32_t x, unsigned r) { return r ? (x << r) | (x >> (32 - r)) : x; }
+static void test_signature(uint32_t granted, uint32_t out[TEST_SIG_WORDS]) {
+    for (unsigned i = 0; i < TEST_SIG_WORDS; i++) {
+        uint32_t a = test_key[i] ^ (granted * 0x01010101u);
+        for (unsigned j = i; j < CHALLENGE_WORDS; j += TEST_SIG_WORDS) a ^= rotl(challenge[j], i);
+        out[i] = a;
+    }
+}
+
+/* One RX word within the window; 0 on expiry or once hardware has closed
+   the window. Before the first RESPONSE word (first != 0) a session reset
+   makes the ROM re-push the unchanged challenge; afterwards hardware closes
+   the window on a session reset. */
+static int push_challenge(void);
+static int rx_word(uint32_t *w, int first) {
+    for (;;) {
+        if (expired()) return 0;
+        if (csr_read(CSR_AUTH) & AUTH_BOOTDONE) return 0;
+        if (first) {
+            uint64_t m = csr_read(CSR_MBST);
+            if ((m & MBST_SESS) && !(m & MBST_STARTED)) {
+                if (!push_challenge()) return 0;
+                continue;                          /* re-check expiry first */
+            }
+        }
+        uint64_t v = csr_rw(CSR_RX, 0);            /* read-write form pops */
+        if (v >> 32) { *w = (uint32_t)v; return 1; }
+    }
+}
+
+static int make_nonce(uint32_t *dst) {
+    for (unsigned i = 0; i < 16; i++) {
+        unsigned tries = 0;
+        for (;;) {
+            if (expired()) return 0;
+            uint64_t v = csr_rw(CSR_RNG, 0);
+            unsigned opst = (v >> 30) & 3;
+            if (opst == 2) {                       /* ES16 */
+                if (i & 1) dst[i >> 1] |= (uint32_t)(v & 0xffff) << 16;
+                else dst[i >> 1] = (uint32_t)(v & 0xffff);
+                break;
+            }
+            if (opst == 3 || ++tries > TRNG_TRIES) return 0;   /* DEAD or stalled */
+        }
+    }
+    return 1;
+}
+
+/* Push the whole challenge, restarting from word 0 whenever a session reset
+   (deactivation or ABORT) clears the FIFOs mid-push. 0 on expiry: every
+   iteration, including each restart, checks the deadline first, so repeated
+   ABORTs cannot keep the window open. */
+static int push_challenge(void) {
+    unsigned i = 0;
+    csr_set(CSR_AUTH, AUTH_SESS_ACK);
+    while (i < CHALLENGE_WORDS) {
+        if (expired()) return 0;
+        uint64_t m = csr_read(CSR_MBST);
+        if (m & MBST_SESS) { csr_set(CSR_AUTH, AUTH_SESS_ACK); i = 0; continue; }
+        if ((m >> 5) & 0x1f) csr_write(CSR_TX, challenge[i++]);   /* TX free */
+    }
+    return 1;
+}
+
+void auth_window(void) {
+    uint64_t a = csr_read(CSR_AUTH);
+    if ((a & AUTH_BOOTDONE) || !(a & AUTH_REQ)) return;  /* no window */
+    uint32_t perm_req = (uint32_t)(a >> 16) & 0xff;
+    uint32_t lc = (uint32_t)(a >> 4) & 3;
+    deadline = read_cycles() + WINDOW_CYCLES;
+
+    challenge[0] = (0x01u << 24) | (1u << 16) | (ALG_TEST << 8);
+    challenge[1] = 72u | (perm_req << 16) | (lc << 24);
+    for (unsigned i = 0; i < 8; i++) challenge[2 + i] = device_digest[i];
+    if (!make_nonce(&challenge[10])) return;
+    challenge[18] = 0; challenge[19] = 0;           /* no POR counter */
+
+    if (!push_challenge()) return;
+    uint32_t hdr, lenw, sig[TEST_SIG_WORDS], want[TEST_SIG_WORDS];
+    if (!rx_word(&hdr, 1)) return;
+    if (!rx_word(&lenw, 0)) return;
+    for (unsigned i = 0; i < TEST_SIG_WORDS; i++)
+        if (!rx_word(&sig[i], 0)) return;
+    /* Rejection rules (contract 5.3). */
+    if ((hdr >> 24) != 0x02u || ((hdr >> 16) & 0xff) != 1u || (hdr & 0xff) != 0) return;
+    if (((hdr >> 8) & 0xff) != ALG_TEST) return;
+    if ((lenw & 0xffff) != TEST_SIG_WORDS * 4u) return;
+    uint32_t granted = (lenw >> 16) & 0xff;
+    if (granted == 0 || (granted & ~perm_req) || (lenw >> 24)) return;
+    if (csr_read(CSR_MBST) & MBST_SESS) return;     /* session reset while parsing */
+    test_signature(granted, want);
+    uint32_t diff = 0;
+    for (unsigned i = 0; i < TEST_SIG_WORDS; i++) diff |= sig[i] ^ want[i];
+    if (diff) return;
+    if (expired()) return;                          /* decision is inside the window */
+    csr_set(CSR_AUTH, AUTH_UNLOCK);                 /* commit predicate: ROM PC, M, window */
+}

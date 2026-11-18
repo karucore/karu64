@@ -14,7 +14,17 @@ module fpga_ddr_top #(
 	parameter		RAM_XADR = 20,				//	behavioral DRAM size (sim)
 	parameter [31:0] RESET_PC = 32'h8000_0000,
 	parameter		RLAT	 = 0,				//	sim DRAM read-latency beats
-	parameter		HEXFILE	 = "firmware.hex"
+	parameter		HEXFILE	 = "firmware.hex",
+	parameter		CPU_CLK_HZ = 100000000,		//	as in karu_ddr_xbar
+	parameter integer SOFT_RESET_CYCLES = 256,	//	software reset pulse length
+	//	Zkr (KARU_ZKR): the entropy source with its behavioural noise model
+	parameter integer ZKR_SAMPLE_DIV = 256,		//	clk cycles per raw symbol
+	parameter [15:0]  ZKR_INTERVAL = 16'd15,	//	reset decimation k, less one
+	parameter		ZKR_EN = 1,					//	the platform strap (board: DIP switch 4, inverted)
+	//	Debug authentication (KARU_DBG with KARU_DBG_AUTH): the board's straps
+	parameter [1:0]	AUTH_LC = 2'd0,				//	0 OPEN, 1 AUTH, 2/3 DISABLED
+	parameter		AUTH_HOLD = 0,				//	boot-hold strap
+	parameter		AUTH_ROM_HEX = ""			//	island ROM image
 ) (
 	input  wire			clk,
 	input  wire			rst,
@@ -25,6 +35,72 @@ module fpga_ddr_top #(
 	output wire			trap
 );
 	wire	irq_timer, irq_software, irq_ext_m, irq_ext_s;
+
+	//	Software reset (system-control register in the xbar): the stretched
+	//	request resets the core, the xbar and the DRAM port logic. The DRAM
+	//	contents survive, as on the board. rst is the board reset.
+	wire	soft_reset_req, soft_reset;
+	karu_soft_reset #(.HOLD_CYCLES(SOFT_RESET_CYCLES)) u_soft_reset (
+		.clk(clk), .por_i(rst), .req_i(soft_reset_req), .reset_o(soft_reset)
+	);
+	//	With the Debug Module (KARU_DBG) the core is karudbg_core with an idle
+	//	debugger, as on the board without its JTAG transport: rst is then the
+	//	power-on reset of the Debug Module and the authentication block, and
+	//	ndmreset and the authentication reset join the system reset.
+	wire	dbg_ndmreset, auth_reset;
+	wire	soc_rst = rst | soft_reset | dbg_ndmreset | auth_reset;
+
+	//	The board's straps. The parameters give their values; a simulation
+	//	may override them with +zkr_en=, +auth_lc= and +auth_hold=.
+	reg [1:0]	strap_lc = AUTH_LC;
+	reg			strap_hold = (AUTH_HOLD != 0);
+	reg			strap_zkr_en = (ZKR_EN != 0);
+	// synthesis translate_off
+	integer		strap_arg;
+	initial begin
+		if ($value$plusargs("auth_lc=%d", strap_arg)) strap_lc = strap_arg[1:0];
+		if ($value$plusargs("auth_hold=%d", strap_arg)) strap_hold = strap_arg[0];
+		if ($value$plusargs("zkr_en=%d", strap_arg)) strap_zkr_en = strap_arg[0];
+	end
+	//	Say once, after power-on reset, what the straps are and what the
+	//	authentication block took from them.
+	reg			strap_shown = 1'b0;
+	always @(posedge clk) if (!rst && !strap_shown) begin
+		strap_shown <= 1'b1;
+`ifdef KARU_DBG_AUTH
+		$display("[straps] lifecycle %0d (sampled %0d), hold %0d, entropy %0d",
+				 strap_lc, cpu.auth.lc_q, strap_hold, strap_zkr_en);
+`else
+		$display("[straps] entropy %0d", strap_zkr_en);
+`endif
+	end
+	// synthesis translate_on
+
+	//	Zkr: the entropy source behind seed, mnoise and mentropycfg.
+	wire [1:0]	trng_opst;
+	wire [15:0]	trng_data;
+	wire		trng_ack;
+`ifdef KARU_EN_ZKR
+	wire [63:0]	zkr_rdata, zkr_wdata;
+	wire		zkr_fire, zkr_we;
+	wire [1:0]	zkr_sel;
+	karu_entropy_src #(.SIM(1), .SAMPLE_DIV(ZKR_SAMPLE_DIV), .INTERVAL_RESET(ZKR_INTERVAL)) u_entropy (
+		.clk(clk), .rst(soc_rst), .en_i(strap_zkr_en),
+		.csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
+		.csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
+		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack)
+	);
+`else
+	assign trng_opst = 2'd3;
+	assign trng_data = 16'b0;
+`endif
+`ifndef KARU_DBG
+	assign dbg_ndmreset = 1'b0;
+`endif
+`ifndef KARU_DBG_AUTH
+	assign auth_reset = 1'b0;
+	assign trng_ack = 1'b0;
+`endif
 
 	//	== imem / dmem AXI4 (core <-> xbar) ==
 	wire [`AXI_ID_W-1:0]	imem_arid;   wire [`AXI_ADDR_W-1:0] imem_araddr;
@@ -53,6 +129,7 @@ module fpga_ddr_top #(
 	wire [`AXI_ID_W-1:0]	m_arid;   wire [`AXI_ADDR_W-1:0] m_araddr;
 	wire [`AXI_LEN_W-1:0]	m_arlen;  wire [`AXI_SIZE_W-1:0] m_arsize;
 	wire [`AXI_BURST_W-1:0]	m_arburst; wire m_arvalid, m_arready;
+	wire [`AXI_PROT_W-1:0]	m_arprot, m_awprot;
 	wire [`AXI_ID_W-1:0]	m_rid;    wire [`AXI_DATA_W-1:0] m_rdata;
 	wire [`AXI_RESP_W-1:0]	m_rresp;  wire m_rlast, m_rvalid, m_rready;
 	wire [`AXI_ID_W-1:0]	m_awid;   wire [`AXI_ADDR_W-1:0] m_awaddr;
@@ -64,8 +141,31 @@ module fpga_ddr_top #(
 	wire					m_bvalid, m_bready;
 
 	wire [63:0]	clint_mtime;		//	CLINT mtime -> CSR rdtime (shared timer domain)
+`ifdef KARU_DBG
+	karudbg_core #(.RESET_PC({32'b0, RESET_PC}), .EXT_TIME(1)
+`ifdef KARU_DBG_AUTH
+		, .ISLAND_ROM_HEX(AUTH_ROM_HEX)
+`endif
+	) cpu (
+		.clk(clk), .rst(rst), .hart_reset_i(soc_rst), .ndmreset_o(dbg_ndmreset),
+		.debug_mode_o(), .debug_resume_ack_o(),
+		.dmi_reset_i(1'b0), .dmi_req_valid_i(1'b0), .dmi_req_ready_o(),
+		.dmi_req_addr_i(7'b0), .dmi_req_op_i(2'b0), .dmi_req_data_i(32'b0),
+		.dmi_resp_valid_o(), .dmi_resp_ready_i(1'b1), .dmi_resp_data_o(), .dmi_resp_op_o(),
+`ifdef KARU_DBG_AUTH
+		.lc_i(strap_lc), .hold_strap_i(strap_hold), .revoke_i(1'b0),
+		.trng_opst_i(trng_opst), .trng_data_i(trng_data), .trng_ack_o(trng_ack),
+		.auth_reset_o(auth_reset),
+`endif
+		.trap(trap),
+`else
 	karu64 #(.RESET_PC(RESET_PC), .EXT_TIME(1)) cpu (
-		.clk(clk), .rst(rst), .trap(trap),
+		.clk(clk), .rst(soc_rst), .trap(trap),
+`endif
+`ifdef KARU_EN_ZKR
+		.zkr_rdata_i(zkr_rdata), .zkr_fire_o(zkr_fire), .zkr_sel_o(zkr_sel),
+		.zkr_we_o(zkr_we), .zkr_wdata_o(zkr_wdata),
+`endif
 		.irq(irq_timer), .irq_external_m(irq_ext_m), .irq_external_s(irq_ext_s),
 		.irq_software(irq_software),
 		.time_in(clint_mtime),
@@ -96,8 +196,9 @@ module fpga_ddr_top #(
 		.dmem_bvalid(dmem_bvalid), .dmem_bready(dmem_bready)
 	);
 
-	karu_ddr_xbar xbar (
-		.clk(clk), .rst(rst),
+	karu_ddr_xbar #(.CPU_CLK_HZ(CPU_CLK_HZ)) xbar (
+		.clk(clk), .rst(soc_rst),
+		.sys_reset_req_o(soft_reset_req),
 		.imem_arid(imem_arid), .imem_araddr(imem_araddr),
 		.imem_arlen(imem_arlen), .imem_arsize(imem_arsize),
 		.imem_arburst(imem_arburst), .imem_arprot(imem_arprot),
@@ -121,12 +222,12 @@ module fpga_ddr_top #(
 		.dmem_bid(dmem_bid), .dmem_bresp(dmem_bresp),
 		.dmem_bvalid(dmem_bvalid), .dmem_bready(dmem_bready),
 		.m_arid(m_arid), .m_araddr(m_araddr), .m_arlen(m_arlen),
-		.m_arsize(m_arsize), .m_arburst(m_arburst),
+		.m_arsize(m_arsize), .m_arburst(m_arburst), .m_arprot(m_arprot),
 		.m_arvalid(m_arvalid), .m_arready(m_arready),
 		.m_rid(m_rid), .m_rdata(m_rdata), .m_rresp(m_rresp),
 		.m_rlast(m_rlast), .m_rvalid(m_rvalid), .m_rready(m_rready),
 		.m_awid(m_awid), .m_awaddr(m_awaddr), .m_awlen(m_awlen),
-		.m_awsize(m_awsize), .m_awburst(m_awburst),
+		.m_awsize(m_awsize), .m_awburst(m_awburst), .m_awprot(m_awprot),
 		.m_awvalid(m_awvalid), .m_awready(m_awready),
 		.m_wdata(m_wdata), .m_wstrb(m_wstrb), .m_wlast(m_wlast),
 		.m_wvalid(m_wvalid), .m_wready(m_wready),
@@ -142,7 +243,7 @@ module fpga_ddr_top #(
 		.RAM_XADR(RAM_XADR), .MEM_BASE(32'h8000_0000),
 		.RLAT(RLAT), .HEXFILE(HEXFILE)
 	) dram (
-		.clk(clk), .rst(rst),
+		.clk(clk), .rst(soc_rst),
 		.s_arid(m_arid), .s_araddr(m_araddr), .s_arlen(m_arlen),
 		.s_arsize(m_arsize), .s_arburst(m_arburst),
 		.s_arvalid(m_arvalid), .s_arready(m_arready),
@@ -156,4 +257,5 @@ module fpga_ddr_top #(
 		.s_bid(m_bid), .s_bresp(m_bresp), .s_bvalid(m_bvalid), .s_bready(m_bready)
 	);
 
+	wire _unused_prot = &{m_arprot, m_awprot, 1'b0};
 endmodule

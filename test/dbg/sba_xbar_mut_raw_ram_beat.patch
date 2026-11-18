@@ -1,0 +1,36 @@
+Negative control for dbg-sba-xbar-test (finding S13): restore the pre-fix SBA
+address/size path, so RAM-class SBA requests reach the xbar DRAM master with
+their raw address and narrow AxSIZE. The second hunk turns the local SBAB9
+checks into no-ops, so detection must come from the xbar DRAM-port contract
+assertions (X38/X39/X44/X45) or the bench scoreboard, independent of karudbg_bus.
+
+--- a/dbg/karudbg_bus.v
++++ b/dbg/karudbg_bus.v
+@@ -137,9 +137,9 @@
+     // 64-bit beat whose WSTRB carries the requested bytes, with read lanes
+     // extracted below. Device accesses keep their exact size and address.
+     wire [31:0] sba_axaddr;
+-    assign sba_axaddr = ram_q ? {addr_q[31:3],3'b000} : addr_q[31:0];
++    assign sba_axaddr = addr_q[31:0];
+     wire [2:0] sba_axsize;
+-    assign sba_axsize = ram_q ? 3'd3 : size_q;
++    assign sba_axsize = size_q;
+     wire [63:0] aligned_data;
+     assign aligned_data = data_q << {addr_q[2:0],3'b000};
+     wire [7:0] byte_mask;
+@@ -309,12 +309,12 @@
+     always @(posedge clk) begin
+         if(!rst && state==SW && m_awvalid && (ram_q ? (m_awaddr[2:0]!=0 || m_awsize!=3)
+                                                      : (m_awaddr!=addr_q || m_awsize!=size_q)))
+-            $fatal(1,"SBAB9 SBA AW does not follow the RAM/device beat form");
++            ; // SBAB9 neutralised by mutant
+         if(!rst && state==SR && m_arvalid && (ram_q ? (m_araddr[2:0]!=0 || m_arsize!=3)
+                                                      : (m_araddr!=addr_q || m_arsize!=size_q)))
+-            $fatal(1,"SBAB9 SBA AR does not follow the RAM/device beat form");
++            ; // SBAB9 neutralised by mutant
+         if(!rst && state==SW && m_wvalid && m_wstrb!=byte_mask)
+-            $fatal(1,"SBAB9 SBA WSTRB differs from the requested bytes");
++            ; // SBAB9 neutralised by mutant
+     end
+     // synthesis translate_on
+     wire unused_ids;

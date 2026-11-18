@@ -75,8 +75,12 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   **2872/2872** tests in both minimal and shipping configurations. The local
   ACT4 dependency patches and exact reproduction flow are documented in
   [test/act4-karu/README.md](test/act4-karu/README.md); configured-suite
-  coverage is not a certification claim.
-- The current image (`28085356…abbd7`, element-group `vkeccak.vi` per Zvknhk
+  coverage is not a certification claim. The latest full-debug shipping-geometry
+  CPU replay also passes 2872/2872 preserved reference ELFs; all 16 ordinary
+  directed subjects pass with zero cycle delta when the extensions are idle.
+  [The debug validation record](dbg/README.md#ordinary-isa-replay-with-debug-idle)
+  distinguishes CPU replay from debug functionality and final combined gates.
+- The latest board-validated non-debug profile image (`28085356…abbd7`, element-group `vkeccak.vi` per Zvknhk
   v0.2) runs at 75 MHz, meets routed timing and passes Linux 7.2.6-zvk board
   acceptance (2026-10-07) plus the Zvknhk software checks: OpenSSL 4.0.2
   17/17, riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs 720/720 and 20/20
@@ -234,7 +238,9 @@ The top-level core wires together:
   with operand latching (the IFU has already advanced by the time the
   add stage runs).
 - `karu_csr`: M/S/U CSRs, Sstc timer and fcsr/frm/fflags. FPU op completions
-  sticky-OR into fflags.
+  sticky-OR into fflags. With the opt-in `KARU_ZKR` it also has `seed`,
+  `mseccfg` and the two custom entropy CSRs, served by `karu_entropy`
+  outside the core.
 - `karu_regfile` / `karu_fregfile`: integer and FP register files
   (separate 1W2R files; FP port B also reads FMA's third source at issue).
 
@@ -352,12 +358,54 @@ reference generation and replay.
 
 ## TODO — ASIC integration
 
-- Supply requester-correct AXI protection metadata when integrating an
-  interconnect or firewall that enforces it.
+- Validate the platform's use of the implemented requester-correct AXI
+  protection metadata against the static-domain and cacheability contract in
+  [dbg/README.md](dbg/README.md#2-milestone-a-axi-protection-metadata).
 - Provide the required platform protections: physical isolation (PMP), an
   immutable boot path, register-state scrubbing and memory fault protection.
 
 The [security review](doc/security-review-2026-09-14.md) records these open
-integration items and their scope. The current VCU118 design does not use
-AXI `ARPROT`/`AWPROT` for access control, so the metadata issue does not affect
-its FPGA operation. The core's MMU and physical access checks remain active.
+integration items and their scope. AXI attributes now describe effective
+privilege, instruction/data traffic and a static trusted security domain,
+including across stalls and queued accesses. The current VCU118 design does
+not enforce access control with these attributes. The core's MMU and physical
+access checks remain active. Opt-in execution-based debug is documented in
+[the karudbg implementation and testing plan](dbg/README.md). Independently
+selectable autoexec, address triggers and SBA extend the base DM. The plan
+records the current source-hashed functional gate, six-configuration mapped
+comparison and remaining acceptance gates. The full two-trigger VCU118 image
+was rebuilt on 2026-11-15 with the fixes of the
+[2026-11-15 security review](doc/security-review-2026-11-15.md) and passes
+routed timing at 75 MHz. The November 16
+[physical debug campaign](dbg/BOARD_ACCEPTANCE.md) passes run control,
+FP/vector state, triggers, SBA/coherence, GDB, a ten-minute soak and
+post-detach Linux/KVM acceptance, with OpenOCD software-translation and
+boot/detach policy findings documented separately. The
+[November 18 campaign](dbg/BOARD_ACCEPTANCE-2026-11-18.md) repeats it on the
+image with Zkr, authentication, the 2 MiB boot ROM and software reboot. See also
+[FPGA programming and acceptance](doc/fpga.md).
+
+Debug has no authentication by default: whoever can drive JTAG has M-mode
+control (review finding S6, open). The opt-in `KARU_DBG_AUTH` build adds a
+lifecycle gate and a boot-ROM challenge–response path. It is work in
+progress: the RTL and its tests exist, but there is no production signature
+verifier and the formal work is partial. Since 2026-11-17 the VCU118 debug
+image is built with it, with the lifecycle on DIP switches. Every
+authentication case passed on the board on 2026-11-18 with the image built
+that day, but its ROM still verifies with a non-cryptographic test
+algorithm, so it validates the mechanism and protects nothing. See
+the [plan](doc/debug-auth-plan.md), the
+[contract](doc/debug-auth-contract.md) and the
+[ASIC obligations](flow/asic/README.md#debug-authentication-obligations-karu_dbg_auth).
+
+The opt-in `KARU_ZKR` build adds the Zkr `seed` CSR and an entropy source:
+one sampled ring oscillator per raw bit on the FPGA, health tests, and a
+GetNoise test interface for raw samples. Bits are never combined, so that
+the source can be assessed against a stochastic model of ring-oscillator
+jitter. It is in the VCU118 debug image built on 2026-11-18, which runs on
+the board: Linux uses `seed` without crediting it (`random.trust_cpu=off`).
+The first raw-noise captures are in the
+[acceptance record](dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture); no
+entropy figure has been established, and the parameters are provisional.
+See [the FPGA guide](doc/fpga.md) and the
+[Zkr follow-up plan](doc/zkr-followup-plan.md).

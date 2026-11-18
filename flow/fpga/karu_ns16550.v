@@ -133,17 +133,18 @@ module karu_ns16550 #(
 	//	==================== receive ====================
 	wire [7:0]	rx_data;
 	wire		rx_rdy;					//	uart_rx has a byte
-	reg			rx_ack;					//	pulse to consume it
 
 	//	RX consume trigger: normal NS16550 semantics. The memory system
 	//	preserves MMIO read byte offsets, so RBR reads can be distinguished
 	//	from LSR/IIR polls.
-	always @(posedge clk) begin
-		if (rst)
-			rx_ack <= 1'b0;
-		else
-			rx_ack <= rbr_read & rx_rdy;
-	end
+	//
+	//	The pop is in the cycle of the accepted RBR read: the bus snapshots
+	//	rdata on that same edge (karu_ddr_xbar, karu_axi_mem), so the byte
+	//	popped is the byte returned. A byte whose stop bit completes on that
+	//	edge is a new one; uart_rx gives its completion priority over ack,
+	//	so it stays ready. The pop used to be registered, one cycle later,
+	//	and then cleared the ready flag of such a byte: the byte was lost.
+	wire		rx_ack = rbr_read & rx_rdy;	//	pulse to consume the byte
 
 	wire		_unused_rd = &{wr7, 1'b0};
 
@@ -206,6 +207,22 @@ module karu_ns16550 #(
 `endif
 
 	wire [7:0]	lsr = lsr_tx | (rx_rdy ? LSR_DR : 8'h00);
+
+	// synthesis translate_off
+`ifndef KARU_NO_ASSERT
+	//	Local invariant: a received byte stays ready until an RBR read takes
+	//	it. LSR.DR may fall only on the edge of an accepted RBR read.
+	reg			chk_rdy_q, chk_read_q;
+	always @(posedge clk) begin
+		chk_rdy_q  <= !rst && rx_rdy;
+		chk_read_q <= !rst && rbr_read;
+		if (!rst && chk_rdy_q === 1'b1 && !rx_rdy && chk_read_q !== 1'b1) begin
+			$display("[ASSERT] ns16550 received byte dropped without an RBR read");
+			$finish;
+		end
+	end
+`endif
+	// synthesis translate_on
 
 	//	==================== interrupt (16550 IIR/IER) ====================
 	//	Level-triggered sources: received-data-available (IER[0] & LSR.DR) and

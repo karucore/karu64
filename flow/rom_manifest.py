@@ -2,7 +2,7 @@
 """Describe what a VCU118 boot ROM image contains.
 
 The ROM bitstreams bake OpenSBI, U-Boot (with its boot command) and the
-control DTB into a 1 MiB image. When the bitstream is built on one host and
+control DTB into a 2 MiB image. When the bitstream is built on one host and
 the board is served by another, the second host has to provide exactly what
 that image expects. This tool reads the packed ROM image back, so everything
 it reports is what the bitstream really contains, not what the source files
@@ -33,7 +33,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROM_BYTES = 0x100000
+ROM_BYTES = 0x200000
 FDT_MAGIC = 0xD00DFEED
 
 

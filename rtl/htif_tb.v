@@ -395,9 +395,48 @@ module htif_tb (input wire clk);
     end
 `endif
 
+    //  ==== optional AW/W acceptance order skew ====
+    //  OFF by default. +ddr_w_lag=N (N>=1) accepts W only N cycles after its
+    //  AW. +ddr_aw_lag=N accepts the first W beat before its AW (once AWVALID
+    //  shows the address) and the AW N cycles later; further beats of a burst
+    //  and B wait for the AW. Both are legal AXI4 subordinate orders.
+    reg [31:0] ddr_aw_lag, ddr_w_lag, skew_cnt;
+    reg        ddr_skew;
+    reg        aw_owed;        //  first W beat accepted, its AW not yet
+    reg        aw_owed_more;   //  that early beat was not WLAST
+    integer    skew_aw_first, skew_w_first, skew_joint;
+    initial begin
+        if (!$value$plusargs("ddr_aw_lag=%d", ddr_aw_lag)) ddr_aw_lag = 32'd0;
+        if (!$value$plusargs("ddr_w_lag=%d", ddr_w_lag)) ddr_w_lag = 32'd0;
+        if (ddr_aw_lag != 0 && ddr_w_lag != 0)
+            $fatal(1, "+ddr_aw_lag and +ddr_w_lag select opposite orders; give one");
+        ddr_skew = (ddr_aw_lag != 0) || (ddr_w_lag != 0);
+        skew_cnt = 0; aw_owed = 1'b0; aw_owed_more = 1'b0;
+        skew_aw_first = 0; skew_w_first = 0; skew_joint = 0;
+    end
+    wire aw_skew_block = (ddr_aw_lag != 0) && (!aw_owed || skew_cnt != 0);
+    wire w_skew_block  = aw_owed ||
+                         ((ddr_w_lag != 0) && (!dmem_w_active || skew_cnt != 0));
+    wire early_w = (ddr_aw_lag != 0) && dmem_wvalid && dmem_wready && !dmem_w_active;
+    always @(posedge clk) begin
+        if (rst) skew_cnt <= 0;
+        else if (ddr_skew) begin
+            if (skew_cnt != 0) skew_cnt <= skew_cnt - 1'b1;
+            if (ddr_w_lag != 0 && dmem_awvalid && dmem_awready) skew_cnt <= ddr_w_lag - 1'b1;
+            if (early_w) skew_cnt <= ddr_aw_lag - 1'b1;
+            //  AW acceptance relative to the first W beat of its burst
+            if (dmem_awvalid && dmem_awready) begin
+                if (aw_owed) skew_w_first <= skew_w_first + 1;
+                else if (dmem_wvalid && dmem_wready) skew_joint <= skew_joint + 1;
+                else skew_aw_first <= skew_aw_first + 1;
+            end
+        end
+    end
+
     always @(*) begin
-        dmem_awready = !dmem_w_active && !dmem_b_pending && !aw_block;
-        dmem_wready  = !dmem_b_pending && !aw_block && !w_block && (dmem_w_active || dmem_awvalid);
+        dmem_awready = !dmem_w_active && !dmem_b_pending && !aw_block && !aw_skew_block;
+        dmem_wready  = !dmem_b_pending && !aw_block && !w_block && (dmem_w_active || dmem_awvalid) &&
+                       !w_skew_block;
         dmem_bvalid  = dmem_b_pending && !b_block;
         dmem_bid     = dmem_b_id;
         dmem_bresp   = dmem_write_error ? `AXI_RESP_SLVERR : `AXI_RESP_OKAY;
@@ -409,6 +448,7 @@ module htif_tb (input wire clk);
             dmem_b_pending <= 1'b0;
             dmem_w_active <= 1'b0;
             dmem_write_error <= 0;
+            aw_owed <= 1'b0;
 `ifdef HTIF_TB_MMIO
             dmem_w_len <= 0;
 `endif
@@ -454,6 +494,20 @@ module htif_tb (input wire clk);
                 dmem_w_addr <= wr_addr + 32'd8;
                 dmem_w_active <= !dmem_wlast;
                 dmem_b_pending <= dmem_wlast;
+            end
+            //  +ddr_aw_lag: the first W beat came before its AW. Hold the
+            //  burst and B state until the AW handshake.
+            if (early_w) begin
+                dmem_w_active <= 1'b0;
+                dmem_b_pending <= 1'b0;
+                aw_owed <= 1'b1;
+                aw_owed_more <= !dmem_wlast;
+            end
+            if (aw_owed && dmem_awvalid && dmem_awready) begin
+                dmem_w_addr <= dmem_w_addr;
+                dmem_w_active <= aw_owed_more;
+                dmem_b_pending <= !aw_owed_more;
+                aw_owed <= 1'b0;
             end
         end
     end
@@ -620,6 +674,9 @@ module htif_tb (input wire clk);
                         $display("[ddr_contention] cont_aw_cyc=%0d immu_aw=%0d dmmu_aw=%0d km_aw=%0d",
                             cont_aw_cyc, n_immu_aw, n_dmmu_aw, n_km_aw);
                     end
+                    if (ddr_skew)
+                        $display("[ddr_skew] aw_first=%0d w_first=%0d joint=%0d aw_lag=%0d w_lag=%0d",
+                            skew_aw_first, skew_w_first, skew_joint, ddr_aw_lag, ddr_w_lag);
                     if (imem_stats) begin
                         $display("[imem_stall] win_ar_cyc=%0d", win_imem_ar_cyc);
                         $display("[imem_contention] cont_imem_ar=%0d immu_ar=%0d ifm_ar=%0d",
@@ -687,6 +744,22 @@ module htif_tb (input wire clk);
     wire [31:0] tb_hpm_events = 32'b0;
 `endif
 
+`ifdef KARU_EN_ZKR
+    //  Zkr: the entropy source with its behavioural noise model. Small
+    //  parameters keep the start-up test short; +zkr_en=0 pulls the platform
+    //  strap low.
+    wire [63:0] zkr_rdata, zkr_wdata;
+    wire        zkr_fire, zkr_we;
+    wire [1:0]  zkr_sel;
+    reg         zkr_en;
+    initial if (!$value$plusargs("zkr_en=%d", zkr_en)) zkr_en = 1'b1;
+    karu_entropy_src #(.SIM(1), .SAMPLE_DIV(8), .INTERVAL_RESET(16'd1)) zkr_src (
+        .clk(clk), .rst(rst), .en_i(zkr_en),
+        .csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
+        .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
+        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0));
+`endif
+
     //  The actual core under test.
     karu64 #(
         .RESET_PC (32'h8000_0000)
@@ -696,6 +769,25 @@ module htif_tb (input wire clk);
     ) cpu (
         .clk        (clk),
         .rst        (rst),
+`ifdef KARU_EN_ZKR
+        .zkr_rdata_i(zkr_rdata), .zkr_fire_o(zkr_fire), .zkr_sel_o(zkr_sel),
+        .zkr_we_o(zkr_we), .zkr_wdata_o(zkr_wdata),
+`endif
+`ifdef KARU_DBG
+        // Architectural replay uses the real debug-capable core with its
+        // external debugger idle; debug-directed tests use karudbg_core.
+        .debug_halt_req_i(1'b0),.debug_resume_req_i(1'b0),
+        .debug_mode_o(),.debug_resume_ack_o(),
+`ifdef KARU_DBG_AUTH
+        // No authentication block here: the gate is tied open (lc=OPEN).
+        .debug_enable_i(1'b1),.auth_rdata_i(64'b0),.auth_fire_o(),.auth_sel_o(),
+        .auth_we_o(),.auth_wdata_o(),.auth_ex_pc_o(),.auth_issuing_o(),
+        .auth_trap_o(),.auth_dbg_enter_o(),.auth_priv_o(),.auth_virt_o(),
+`endif
+`ifdef KARU_DBG_SBA
+        .debug_sba_pause_i(1'b0),.debug_sba_flush_i(1'b0),.debug_sba_quiet_o(),
+`endif
+`endif
         .trap       (trap),
         //  HTIF tohost lives in this 4 KiB page -> uncacheable to the L1
         //  (device polled by the TB; a cached copy would deadlock HTIF).
@@ -758,6 +850,64 @@ module htif_tb (input wire clk);
     //  +no_assert_stop. See rtl/karu_assert.sv.
 `ifndef KARU_NO_ASSERT
     karu_assert u_kassert (
+`ifdef KARU_DBG
+        .dbg_mode(cpu.debug_mode),
+        .dbg_enter(cpu.dbg_enter),
+        .dbg_trigger_entry(cpu.dbg_trigger_entry),
+        .dbg_exit(cpu.dbg_exit),
+        .dbg_resume_ack(cpu.debug_resume_ack_o),
+        .dbg_halt_priority((cpu.debug_halt_req_i || cpu.dbg_halt_pending)),
+        .dbg_entry_pc(cpu.dbg_entry_pc),
+        .dbg_dpc(cpu.dbg_dpc),
+        .dbg_ex_pc(cpu.ex_pc),
+        .dbg_cause(cpu.csr.csr_dcsr[8:6]),
+        .dbg_step(cpu.dbg_step_active),
+        .dbg_sys_issue(cpu.issue_sys),
+        .dbg_ex_ins(cpu.ex_ins),
+        .dbg_csr_tw(cpu.csr_tw),
+        .dbg_csr_vtw(cpu.csr_vtw),
+        .dbg_cacheop(cpu.issue_cacheop),
+        .dbg_enable(cpu.dbg_en),
+`ifdef KARU_DBG_TRIGGERS
+        .trigger_exec_valid(cpu.trigger_exec_valid),
+        .trigger_exec_hit(cpu.trigger_exec_hit),
+        .trigger_scalar_valid(cpu.trigger_scalar_valid),
+        .trigger_data_valid(cpu.trigger_data_valid),
+        .trigger_data_hit(cpu.trigger_data_hit),
+        .trigger_v_valid(cpu.trigger_v_valid),
+        .trigger_v_abort(cpu.trigger_v_abort),
+        .trigger_data_load(cpu.trigger_data_load),
+        .trigger_data_store(cpu.trigger_data_store),
+        .trigger_data_armed(cpu.trigger_data_armed),
+        .trigger_fetch_fault(cpu.ifu_fault_valid),
+        .trigger_io_pending(cpu.immu_pte_io_pending),
+        .trigger_fs_off(cpu.fs_off_ill),
+        .trigger_cbo_exc(cpu.cbo_exc),
+        .trigger_hmem(cpu.ex_hmem),
+        .trigger_hu(cpu.csr_hu),
+        .trigger_exec_slots(cpu.csr.triggers.exec_hit),
+        .trigger_data_slots(cpu.csr.triggers.data_hit),
+        .trigger_controls(cpu.csr.triggers.debug_controls),
+`endif
+`ifdef KARU_DBG_SBA
+        .dbg_sba_pause(cpu.debug_sba_pause_i),
+        .dbg_sba_flush_i(cpu.debug_sba_flush_i),
+        .dbg_sba_flush(cpu.dbg_sba_flush),
+        .dbg_sba_idle(cpu.dbg_sba_idle),
+        .dbg_sba_sent(cpu.dbg_sba_cache_sent),
+        .dbg_sba_done(cpu.dbg_sba_cache_done),
+        .dbg_sba_quiet(cpu.debug_sba_quiet_o),
+        .dbg_cache_req(cpu.cache_flush_req),
+        .dbg_cache_invalidate(cpu.cache_flush_invalidate),
+        .dbg_cache_done(cpu.cache_flush_done),
+        .dbg_sba_next_pc(cpu.dbg_sba_next_pc), .dbg_sba_iflush(cpu.icache_flush),
+`ifdef KARU_EN_MEM
+        .dbg_sba_dflush(cpu.dmem_l1.flush),
+`else
+        .dbg_sba_dflush(1'b1),
+`endif
+`endif
+`endif
         .clk            (clk),
         .rst            (rst),
         .trap           (trap),

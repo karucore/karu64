@@ -7,10 +7,15 @@
 `include "karu_axi_defs.vh"
 `include "karu_uop_defs.vh"
 
-module tb_lsu_atomic;
+module tb_lsu_atomic #(parameter NONSECURE=1);
     reg clk=0, rst=1;
     always #5 clk=~clk;
     reg req=0, is_store=0;
+    reg [1:0] access_priv=3;
+    reg [2:0] active_prot;
+`ifdef KARU_DBG
+    wire debug_mode_i=0, debug_clear_reservation_i=0;
+`endif
     reg [4:0] sub_in=`LSU_LOAD;
     reg [63:0] addr=0, addr2=0, wdata=0;
     reg [1:0] pbmt=0, pbmt2=0, size=`LS_D;
@@ -32,7 +37,7 @@ module tb_lsu_atomic;
     reg [63:0] rdata=0;
     reg [1:0] rresp=0, bresp=0;
     reg rlast=1, rvalid=0, bvalid=0;
-    karu_lsu dut(.*);
+    karu_lsu #(.NONSECURE(NONSECURE)) dut(.*);
 
     localparam [63:0] RAM=64'h80000120, RESERVE=64'h80000300;
     localparam integer RAM_BYTES=1024;
@@ -73,6 +78,7 @@ module tb_lsu_atomic;
             $fatal(1,"ATOMIC_REJECT_BUS check=%0d op=%0d size=%0d addr=%h pbmt=%0d",
                 checks,active_op,active_size,active_addr,active_pbmt);
         if (arvalid && arready) begin
+            if (arprot !== active_prot) $fatal(1,"LSU AR protection lost issue context");
             if (!active || araddr !== active_addr[31:0] || ar_pbmt !== active_pbmt ||
                 arlen !== 0 || arsize !== (active_pbmt==2 ? {1'b0,active_size} : 3'd3) ||
                 arburst !== `AXI_BURST_INCR)
@@ -94,6 +100,7 @@ module tb_lsu_atomic;
         end
         if (rvalid && rready) rvalid <= 0;
         if (awvalid && awready && wvalid && wready) begin
+            if (awprot !== active_prot) $fatal(1,"LSU AW protection lost issue context");
             if (!active || awaddr !== (active_pbmt==2 ? active_addr[31:0] :
                     {active_addr[31:3],3'b0}) || aw_pbmt !== active_pbmt ||
                 awlen !== 0 || awsize !== (active_pbmt==2 ? {1'b0,active_size} : 3'd3) ||
@@ -159,6 +166,8 @@ module tb_lsu_atomic;
             @(negedge clk);
             if (busy || done || fault || active) $fatal(1,"overlapping test requests");
             checks=checks+1;
+            access_priv = checks%3 == 0 ? 2'd0 : (checks%3 == 1 ? 2'd1 : 2'd3);
+            active_prot = {1'b0, (NONSECURE != 0), (access_priv != 0)};
             bytes=1<<width;
             index=int'(address[9:0]);
             old_value=0;
@@ -192,7 +201,7 @@ module tb_lsu_atomic;
             if (reject_access && (arvalid || awvalid || wvalid))
                 $fatal(1,"ATOMIC_REJECT_BUS check=%0d op=%0d size=%0d addr=%h pbmt=%0d",
                     checks,op,width,address,attr);
-            @(negedge clk); req=0;
+            @(negedge clk); req=0; access_priv=~access_priv;
             waits=0;
             while (!have_completion && waits<200) begin
                 @(posedge clk); #1;

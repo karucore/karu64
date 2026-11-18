@@ -1,0 +1,294 @@
+# karudbg authentication (plan A1). Included by the root Makefile.
+DBG_AUTH_DIR ?= $(BUILD)/dbg/auth
+
+# $(call dbg_auth_mutant,name,sed expression,expected failure text)
+define dbg_auth_mutant
+	mkdir -p $(DBG_AUTH_DIR)/mut-$(1)
+	sed '$(2)' dbg/karudbg_auth.v > $(DBG_AUTH_DIR)/mut-$(1)/karudbg_auth.v
+	! cmp -s dbg/karudbg_auth.v $(DBG_AUTH_DIR)/mut-$(1)/karudbg_auth.v
+	iverilog -g2012 -s tb_auth -o $(DBG_AUTH_DIR)/mut-$(1)/tb.vvp test/dbg/tb_auth.sv $(DBG_AUTH_DIR)/mut-$(1)/karudbg_auth.v
+	@if timeout 60 vvp -n $(DBG_AUTH_DIR)/mut-$(1)/tb.vvp > $(DBG_AUTH_DIR)/mut-$(1)/run.log 2>&1; then \
+	  echo 'mutant $(1) NOT detected'; exit 1; fi
+	grep -q '$(3)' $(DBG_AUTH_DIR)/mut-$(1)/run.log
+	@echo 'detected mutant $(1): $(3)'
+endef
+
+.PHONY: dbg-auth-unit-test
+dbg-auth-unit-test:
+	mkdir -p $(DBG_AUTH_DIR)
+	verilator --lint-only -Wall -Idbg --top-module karudbg_auth dbg/karudbg_auth.v
+	python3 flow/asic/lint_decl.py dbg/karudbg_auth.v
+	iverilog -g2001 -s karudbg_auth -o $(DBG_AUTH_DIR)/parse.vvp dbg/karudbg_auth.v
+	iverilog -g2012 -s tb_auth -o $(DBG_AUTH_DIR)/tb_auth.vvp test/dbg/tb_auth.sv dbg/karudbg_auth.v
+	timeout 60 vvp -n $(DBG_AUTH_DIR)/tb_auth.vvp > $(DBG_AUTH_DIR)/unit.log 2>&1 || { cat $(DBG_AUTH_DIR)/unit.log; exit 1; }
+	grep 'karudbg_auth unit: PASS' $(DBG_AUTH_DIR)/unit.log
+	$(call dbg_auth_mutant,no_request_needed,s/lc_auth \&\& auth_req_q \&\& !boot_done_q/lc_auth \&\& !boot_done_q/,no unlock without REQUEST\|auth_unlock rose outside)
+	$(call dbg_auth_mutant,unlock_beats_trap,s/ \&\& !boot_exit_now \&\& !sess_close_now;/ \&\& !sess_close_now;/; s/ \&\& !core_in_reset_i \&\& !trap_i \&\& !dbg_enter_i;/ \&\& !core_in_reset_i;/,trap in the unlock cycle wins)
+	$(call dbg_auth_mutant,no_relock_reset,s/assign relock_d = .*/assign relock_d = 1'"'"'b0;/,relock resets a Debug-Mode hart)
+	$(call dbg_auth_mutant,no_session_close,s/assign boot_done_set = boot_exit_now || sess_close_now ||/assign boot_done_set = boot_exit_now ||/,deactivation after consumption closes\|left the window open)
+	$(call dbg_auth_mutant,unlock_beats_session_reset,s/ \&\& !boot_exit_now \&\& !sess_close_now;/ \&\& !boot_exit_now;/,session reset dominates a same-cycle unlock)
+	$(call dbg_auth_mutant,hold_in_open,s/hold_q <= hold_strap_i \&\& lc_i == LC_AUTH;/hold_q <= hold_strap_i;/,OPEN boots normally\|in OPEN without revocation)
+	$(call dbg_auth_mutant,no_reset_close,s/sess_close_now || reset_close ||/sess_close_now ||/,system reset in the window\|system reset after boot left)
+	$(call dbg_auth_mutant,csr_live_in_reset,s/assign csr_live = csr_fire_i \&\& !core_in_reset_i \&\& !trap_i \&\& !dbg_enter_i;/assign csr_live = csr_fire_i \&\& !trap_i \&\& !dbg_enter_i;/,in a reset cycle\|unlock committed outside)
+	$(call dbg_auth_mutant,unlock_from_debug_mode,s/!virt_i \&\& !debug_mode_i \&\&$$/!virt_i \&\&/,no unlock from Debug Mode\|unlock committed outside)
+
+# DM + authentication block together (KARU_DBG_AUTH).
+DBG_AUTH_DM_SRCS = dbg/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v dbg/karudbg_auth.v
+# $(call dbg_auth_dm_mutant,name,sed expression on karudbg.v,expected failure text)
+define dbg_auth_dm_mutant
+	mkdir -p $(DBG_AUTH_DIR)/dm-mut-$(1)
+	sed '$(2)' dbg/karudbg.v > $(DBG_AUTH_DIR)/dm-mut-$(1)/karudbg.v
+	! cmp -s dbg/karudbg.v $(DBG_AUTH_DIR)/dm-mut-$(1)/karudbg.v
+	iverilog -g2012 -Idbg -DKARU_DBG_AUTH -s tb_dm_auth -o $(DBG_AUTH_DIR)/dm-mut-$(1)/tb.vvp \
+	  test/dbg/tb_dm_auth.sv $(DBG_AUTH_DIR)/dm-mut-$(1)/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v dbg/karudbg_auth.v
+	@if timeout 60 vvp -n $(DBG_AUTH_DIR)/dm-mut-$(1)/tb.vvp > $(DBG_AUTH_DIR)/dm-mut-$(1)/run.log 2>&1; then \
+	  echo 'DM mutant $(1) NOT detected'; exit 1; fi
+	grep -q '$(3)' $(DBG_AUTH_DIR)/dm-mut-$(1)/run.log
+	@echo 'detected DM mutant $(1): $(3)'
+endef
+
+# Island hostile-response tests (lemma C9, cut K3). The mutant restores the
+# pre-fix owner-only response mux on the dmem read channel.
+DBG_AUTH_ISLAND_MUT = $(DBG_AUTH_DIR)/island-mut
+.PHONY: dbg-auth-island-test
+dbg-auth-island-test:
+	mkdir -p $(DBG_AUTH_ISLAND_MUT)
+	verilator --lint-only $(LINT_W) -Irtl -Idbg --top-module karudbg_island dbg/karudbg_island.v dbg/karudbg_axi.v
+	iverilog -g2012 -Irtl -Idbg -s tb_island -o $(DBG_AUTH_DIR)/tb_island.vvp test/dbg/tb_island.sv dbg/karudbg_island.v dbg/karudbg_axi.v
+	timeout 120 vvp -n $(DBG_AUTH_DIR)/tb_island.vvp > $(DBG_AUTH_DIR)/island.log 2>&1 || { tail $(DBG_AUTH_DIR)/island.log; exit 1; }
+	grep 'karudbg island: PASS' $(DBG_AUTH_DIR)/island.log
+	sed -e 's/assign up_dmem_rvalid = dr_out && (dr_owner ? d_rvalid : dn_dmem_rvalid);/assign up_dmem_rvalid = dr_owner ? d_rvalid : dn_dmem_rvalid;/' \
+	    -e 's/assign dn_dmem_rready = up_dmem_rready && dr_out && !dr_owner;/assign dn_dmem_rready = up_dmem_rready \&\& !dr_owner;/' \
+	    -e 's/[$$]fatal(1, "karudbg_island:/$$display("disabled karudbg_island:/' \
+	    dbg/karudbg_island.v > $(DBG_AUTH_ISLAND_MUT)/karudbg_island.v
+	test "$$(diff dbg/karudbg_island.v $(DBG_AUTH_ISLAND_MUT)/karudbg_island.v | grep -c '^>')" = 5
+	iverilog -g2012 -Irtl -Idbg -s tb_island -o $(DBG_AUTH_ISLAND_MUT)/tb.vvp test/dbg/tb_island.sv \
+	  $(DBG_AUTH_ISLAND_MUT)/karudbg_island.v dbg/karudbg_axi.v
+	@if timeout 120 vvp -n $(DBG_AUTH_ISLAND_MUT)/tb.vvp > $(DBG_AUTH_ISLAND_MUT)/run.log 2>&1; then \
+	  echo 'island owner-only mutant NOT detected'; exit 1; fi
+	# Local island assertions are disabled in the mutant: the bench's own
+	# data and consumption checks must catch it.
+	grep -Eq 'island check [0-9]+: .*(returns island data|response beat|external beat consumed)' $(DBG_AUTH_ISLAND_MUT)/run.log
+	@echo "detected island mutant owner_only_mux: $$(grep -Em1 'island check' $(DBG_AUTH_ISLAND_MUT)/run.log)"
+	# Mutant: outstanding flags survive reset, so an external beat after a
+	# reset can complete a read issued before it.
+	mkdir -p $(DBG_AUTH_ISLAND_MUT)-reset
+	sed -e 's/            im_out <= 0; dr_out <= 0;/            ;/' \
+	    -e 's/[$$]fatal(1, "karudbg_island:/$$display("disabled karudbg_island:/' \
+	    dbg/karudbg_island.v > $(DBG_AUTH_ISLAND_MUT)-reset/karudbg_island.v
+	test "$$(diff dbg/karudbg_island.v $(DBG_AUTH_ISLAND_MUT)-reset/karudbg_island.v | grep -c '^>')" = 4
+	iverilog -g2012 -Irtl -Idbg -s tb_island -o $(DBG_AUTH_ISLAND_MUT)-reset/tb.vvp test/dbg/tb_island.sv \
+	  $(DBG_AUTH_ISLAND_MUT)-reset/karudbg_island.v dbg/karudbg_axi.v
+	@if timeout 120 vvp -n $(DBG_AUTH_ISLAND_MUT)-reset/tb.vvp > $(DBG_AUTH_ISLAND_MUT)-reset/run.log 2>&1; then \
+	  echo 'island reset mutant NOT detected'; exit 1; fi
+	grep -Eq 'island check [0-9]+: .*(after a reset|after reset)' $(DBG_AUTH_ISLAND_MUT)-reset/run.log
+	@echo "detected island mutant outstanding_survives_reset: $$(grep -Em1 'island check' $(DBG_AUTH_ISLAND_MUT)-reset/run.log)"
+
+.PHONY: dbg-auth-dm-test dbg-auth-open-equiv-test
+dbg-auth-dm-test:
+	mkdir -p $(DBG_AUTH_DIR)
+	verilator --lint-only -Wall -Idbg -DKARU_DBG_AUTH --top-module karudbg dbg/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v
+	verilator --lint-only -Wall -Idbg -DKARU_DBG_AUTH -DKARU_DBG_SBA -DKARU_DBG_AUTOEXEC --top-module karudbg dbg/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v
+	iverilog -g2001 -Idbg -DKARU_DBG_AUTH -s karudbg -o $(DBG_AUTH_DIR)/dm-parse.vvp dbg/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v
+	iverilog -g2012 -Idbg -DKARU_DBG_AUTH -s tb_dm_auth -o $(DBG_AUTH_DIR)/tb_dm_auth.vvp test/dbg/tb_dm_auth.sv $(DBG_AUTH_DM_SRCS)
+	timeout 60 vvp -n $(DBG_AUTH_DIR)/tb_dm_auth.vvp > $(DBG_AUTH_DIR)/dm.log 2>&1 || { cat $(DBG_AUTH_DIR)/dm.log; exit 1; }
+	grep 'karudbg DM auth: PASS' $(DBG_AUTH_DIR)/dm.log
+	$(call dbg_auth_dm_mutant,ndmreset_old_gate,s/if (!dbg_en_next) ndmreset_q <= 0;/if (!dbg_en) ndmreset_q <= 0;/,clears on the gate.s falling edge\|DM output asserted while locked)
+	$(call dbg_auth_dm_mutant,no_safe_sequence,s/mem_rdata_o = dbg_en ? {abstract_word/mem_rdata_o = 1'"'"'b1 ? {abstract_word/,abstract words are EBREAK\|executing hart sees EBREAK)
+	$(call dbg_auth_dm_mutant,locked_view_leak,s/if (dmactive_q \&\& !dbg_en) begin/if (1'"'"'b0) begin/,locked DMI read disclosed\|AUTH locked: DMI)
+
+# Contract 7: KARU_DBG_AUTH with the gate tied open is sequentially
+# equivalent to today's DM (base and SBA+autoexec), and a gate leak fails.
+dbg-auth-open-equiv-test:
+	timeout 600 python3 test/dbg/check_auth_open_equiv.py --out $(DBG_AUTH_DIR)/equiv-base
+	timeout 900 python3 test/dbg/check_auth_open_equiv.py --out $(DBG_AUTH_DIR)/equiv-full -D KARU_DBG_SBA -D KARU_DBG_AUTOEXEC
+	timeout 600 python3 test/dbg/check_auth_open_equiv.py --out $(DBG_AUTH_DIR)/equiv-mut --mutate
+
+# Real core: boot hold, ROM window, unlock, revocation, OPEN (KARU_DBG_AUTH).
+DBG_AUTH_CORE_DIR ?= $(BUILD)/dbg/auth-core
+DBG_AUTH_CORE_FLAGS ?= -DKARU_NO_V
+$(DBG_AUTH_CORE_DIR)/rom.hex: test/dbg/auth_rom_stub.S
+	mkdir -p $(DBG_AUTH_CORE_DIR)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -static -Wl,-Ttext=0x10000 -o $(DBG_AUTH_CORE_DIR)/rom.elf $<
+	$(XCHAIN)objcopy -O binary $(DBG_AUTH_CORE_DIR)/rom.elf $(DBG_AUTH_CORE_DIR)/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_CORE_DIR)/rom.bin > $@
+$(DBG_AUTH_CORE_DIR)/Vtb_auth_core: test/dbg/tb_auth_core.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_CORE_DIR)/rom.hex
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_CORE_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_CORE_DIR) --top-module tb_auth_core test/dbg/tb_auth_core.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL)
+
+.PHONY: dbg-auth-core-test
+dbg-auth-core-test: $(DBG_AUTH_CORE_DIR)/Vtb_auth_core
+	timeout 300 $< > $(DBG_AUTH_CORE_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_CORE_DIR)/run.log; exit 1; }
+	grep 'karudbg auth actual core: PASS' $(DBG_AUTH_CORE_DIR)/run.log
+	# Mutant: no core-side gate (EBREAK and every entry source ungated).
+	# The DM gate alone cannot stop a dcsr.ebreakm entry after firmware
+	# revocation; the bench or INV42 must catch it.
+	mkdir -p $(DBG_AUTH_CORE_DIR)/mut-core-gate
+	sed -e 's/ex_sub == `SYS_EBREAK \&\& dbg_ebreak \&\& dbg_en;/ex_sub == `SYS_EBREAK \&\& dbg_ebreak;/' \
+	    -e 's/assign dbg_enter = !debug_mode \&\& dbg_en \&\& (/assign dbg_enter = !debug_mode \&\& (/' \
+	    rtl/karu64.v > $(DBG_AUTH_CORE_DIR)/mut-core-gate/karu64.v
+	test "$$(diff rtl/karu64.v $(DBG_AUTH_CORE_DIR)/mut-core-gate/karu64.v | grep -c '^>')" = 2
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_CORE_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_CORE_DIR)/mut-core-gate/obj --top-module tb_auth_core test/dbg/tb_auth_core.sv test/dbg/karudbg_test_ram.sv \
+	  $(filter-out rtl/karu64.v,$(DBG_CORE_RTL)) $(DBG_AUTH_CORE_DIR)/mut-core-gate/karu64.v > $(DBG_AUTH_CORE_DIR)/mut-core-gate/build.log 2>&1
+	@if timeout 300 $(DBG_AUTH_CORE_DIR)/mut-core-gate/obj/Vtb_auth_core > $(DBG_AUTH_CORE_DIR)/mut-core-gate/run.log 2>&1; then \
+	  echo 'core-gate mutant NOT detected'; exit 1; fi
+	grep -Eq 'INV42a|no Debug Mode entry|breakpoint' $(DBG_AUTH_CORE_DIR)/mut-core-gate/run.log
+	@echo "detected core-gate mutant: $$(grep -Em1 'INV42a|no Debug Mode entry|breakpoint' $(DBG_AUTH_CORE_DIR)/mut-core-gate/run.log)"
+	# Mutant: both response layers back to the pre-fix owner-only muxes
+	# (island and debug-page router), with their local assertions disabled.
+	# Either fixed layer alone stops the forged load on the real core
+	# (defence in depth); the island layer alone is covered by
+	# dbg-auth-island-test and the router alone by dbg-run-control-test.
+	mkdir -p $(DBG_AUTH_CORE_DIR)/mut-island
+	sed -e 's/assign up_dmem_rvalid = dr_out && (dr_owner ? d_rvalid : dn_dmem_rvalid);/assign up_dmem_rvalid = dr_owner ? d_rvalid : dn_dmem_rvalid;/' \
+	    -e 's/assign dn_dmem_rready = up_dmem_rready && dr_out && !dr_owner;/assign dn_dmem_rready = up_dmem_rready \&\& !dr_owner;/' \
+	    -e 's/[$$]fatal(1, "karudbg_island:/$$display("disabled karudbg_island:/' \
+	    dbg/karudbg_island.v > $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_island.v
+	test "$$(diff dbg/karudbg_island.v $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_island.v | grep -c '^>')" = 5
+	sed -e 's/assign c_dmem_rvalid=dr_out \&\& (dr_owner ? d_rvalid : x_dmem_rvalid);/assign c_dmem_rvalid=dr_owner ? d_rvalid : x_dmem_rvalid;/' \
+	    -e 's/assign x_dmem_rready=c_dmem_rready \&\& dr_out \&\& !dr_owner;/assign x_dmem_rready=c_dmem_rready \&\& !dr_owner;/' \
+	    -e 's/[$$]fatal(1, "karudbg_core:/$$display("disabled karudbg_core:/' \
+	    dbg/karudbg_core.v > $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_core.v
+	test "$$(diff dbg/karudbg_core.v $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_core.v | grep -c '^>')" = 4
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_CORE_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_CORE_DIR)/mut-island/obj --top-module tb_auth_core test/dbg/tb_auth_core.sv test/dbg/karudbg_test_ram.sv \
+	  $(filter-out dbg/karudbg_island.v dbg/karudbg_core.v,$(DBG_CORE_RTL)) $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_island.v \
+	  $(DBG_AUTH_CORE_DIR)/mut-island/karudbg_core.v > $(DBG_AUTH_CORE_DIR)/mut-island/build.log 2>&1
+	@if timeout 300 $(DBG_AUTH_CORE_DIR)/mut-island/obj/Vtb_auth_core > $(DBG_AUTH_CORE_DIR)/mut-island/run.log 2>&1; then \
+	  echo 'island mutant NOT detected on the real core'; exit 1; fi
+	grep -q 'forged island response cannot unlock' $(DBG_AUTH_CORE_DIR)/mut-island/run.log
+	@echo "detected real-core island+router mutant: forged island response cannot unlock"
+
+# KARU_DBG_AUTH with lc=OPEN on the full real-core debug bench must match the
+# build without authentication cycle for cycle: same checks, cycles and
+# retirements (contract 7).
+.PHONY: dbg-core-auth-open-test dbg-auth-test
+dbg-core-auth-open-test: dbg-core-test
+	$(MAKE) DBG_CORE_DIR=$(BUILD)/dbg/core-auth-open DBG_CORE_FLAGS='-DKARU_NO_V -DKARU_DBG_AUTH' dbg-core-test
+	grep 'karudbg actual core: PASS' $(DBG_CORE_DIR)/run.log > $(BUILD)/dbg/core-auth-open/base-summary.txt
+	grep 'karudbg actual core: PASS' $(BUILD)/dbg/core-auth-open/run.log > $(BUILD)/dbg/core-auth-open/auth-summary.txt
+	cmp $(BUILD)/dbg/core-auth-open/base-summary.txt $(BUILD)/dbg/core-auth-open/auth-summary.txt
+	@echo "PASS lc=OPEN real core identical: $$(cat $(BUILD)/dbg/core-auth-open/auth-summary.txt)"
+
+dbg-auth-test: dbg-auth-unit-test dbg-auth-island-test dbg-auth-dm-test dbg-auth-open-equiv-test dbg-auth-core-test \
+ dbg-auth-openocd-test dbg-auth-window-test dbg-auth-window-seed-test \
+ dbg-core-auth-open-test
+
+# Pristine pinned OpenOCD against a KARU_DBG_AUTH JTAG model (contract 2):
+# examine fails while locked, the authdata mailbox authenticates through the
+# island ROM stub, arp_examine attaches, and a dmactive pulse keeps the grant.
+DBG_AUTH_OCD_DIR ?= $(BUILD)/dbg/auth-openocd
+$(DBG_AUTH_OCD_DIR)/Vtb_jtag_core: test/dbg/tb_jtag_core.v test/dbg/karudbg_test_ram.sv test/dbg/remote_bitbang.cc \
+  dbg/karudbg.f $(filter %.v,$(shell cat dbg/karudbg.f)) $(wildcard rtl/*.vh rtl/*.sv dbg/*.vh) $(DBG_AUTH_CORE_DIR)/rom.hex dbg/auth.mk
+	mkdir -p $(DBG_AUTH_OCD_DIR)
+	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_NO_V \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_CORE_DIR)/rom.hex)"' --top-module tb_jtag_core --Mdir $(DBG_AUTH_OCD_DIR) \
+	  -CFLAGS -DKARUDBG_CORE_TARGET test/dbg/tb_jtag_core.v test/dbg/karudbg_test_ram.sv -f dbg/karudbg.f \
+	  $(abspath test/dbg/remote_bitbang.cc) > $(DBG_AUTH_OCD_DIR)/build.log 2>&1
+
+.PHONY: dbg-auth-openocd-test
+dbg-auth-openocd-test: $(DBG_AUTH_OCD_DIR)/Vtb_jtag_core
+	python3 test/dbg/run_openocd_transport.py --model $< --openocd $(OPENOCD) --out $(DBG_AUTH_OCD_DIR) \
+	  --config test/dbg/openocd_auth.cfg --marker 'PASS OpenOCD debug authentication' --timeout 90
+	grep -q 'Debugger is not authenticated to target Debug Module' $(DBG_AUTH_OCD_DIR)/openocd-jtag.log
+	@echo "PASS pristine OpenOCD: locked examine refused, authenticated attach succeeded"
+	python3 test/dbg/run_openocd_transport.py --model $< --openocd $(OPENOCD) --out $(DBG_AUTH_OCD_DIR)/reject \
+	  --config test/dbg/openocd_auth_reject.cfg --marker 'PASS OpenOCD rejected authentication stays locked' --timeout 90
+
+# A2: simulation island ROM running the contract's frame protocol with the
+# simulation-only TEST algorithm (the production algorithm awaits D3).
+DBG_AUTH_WIN_DIR ?= $(BUILD)/dbg/auth-window
+DBG_AUTH_ROM_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 -Os -ffreestanding -nostdlib -static -mcmodel=medany -fno-pic
+DBG_AUTH_ROM_BYPASS = s/if (expired()) return 0;/if (expired() \&\& !(csr_read(CSR_RX) >> 32)) return 0;/
+DBG_AUTH_ROM_SRCS = test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c test/dbg/auth_rom/rom.ld
+$(DBG_AUTH_WIN_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS)
+	mkdir -p $(DBG_AUTH_WIN_DIR)
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_WIN_DIR)/rom.elf \
+	  test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_WIN_DIR)/rom.elf $(DBG_AUTH_WIN_DIR)/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_WIN_DIR)/rom.bin > $@
+	$(XCHAIN)size $(DBG_AUTH_WIN_DIR)/rom.elf
+$(DBG_AUTH_WIN_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_WIN_DIR)/rom.hex
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_WIN_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_WIN_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL)
+
+# +deadline_addr is the ROM's deadline variable, for the bench's monitor.
+# The mutant ROM has the reviewed defect: an available RX word bypasses the
+# deadline, and nothing checks it before the grant. The boundary sweep must
+# catch it on the real core.
+# The same bench with the nonce from the Zkr seed CSR, as in the FPGA image:
+# the core built with KARU_ZKR, the entropy source with its behavioural noise
+# model, and the ROM built to read seed (CSR_RNG=0x015). Every case of the
+# bench runs again, and it checks that no nonce word came from mdbgrng.
+DBG_AUTH_SEED_DIR ?= $(DBG_AUTH_WIN_DIR)/seed
+$(DBG_AUTH_SEED_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS)
+	mkdir -p $(DBG_AUTH_SEED_DIR)
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -DCSR_RNG=0x015 -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_SEED_DIR)/rom.elf \
+	  test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_SEED_DIR)/rom.elf $(DBG_AUTH_SEED_DIR)/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_SEED_DIR)/rom.bin > $@
+$(DBG_AUTH_SEED_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(ZKR_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_SEED_DIR)/rom.hex
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_SEED_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_SEED_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL) $(ZKR_RTL)
+.PHONY: dbg-auth-window-seed-test
+dbg-auth-window-seed-test: $(DBG_AUTH_SEED_DIR)/Vtb_auth_window
+	timeout 900 $< +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_SEED_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_SEED_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_SEED_DIR)/run.log; exit 1; }
+	grep 'nonce source: seed' $(DBG_AUTH_SEED_DIR)/run.log
+	grep 'karudbg auth window ROM: PASS' $(DBG_AUTH_SEED_DIR)/run.log
+
+.PHONY: dbg-auth-window-test dbg-auth-rom-host-test
+dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test
+	timeout 900 $< +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_WIN_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_WIN_DIR)/run.log; exit 1; }
+	grep 'karudbg auth window ROM: PASS' $(DBG_AUTH_WIN_DIR)/run.log
+	mkdir -p $(DBG_AUTH_WIN_DIR)/mut-rom
+	sed -e '/decision is inside the window/d' \
+	    -e '/^static int rx_word/,/^}/ '"$(DBG_AUTH_ROM_BYPASS)" test/dbg/auth_rom/window.c > $(DBG_AUTH_WIN_DIR)/mut-rom/window.c
+	test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_WIN_DIR)/mut-rom/window.c | grep -c '^>')" = 1
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_WIN_DIR)/mut-rom/rom.elf \
+	  test/dbg/auth_rom/start.S $(DBG_AUTH_WIN_DIR)/mut-rom/window.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_WIN_DIR)/mut-rom/rom.elf $(DBG_AUTH_WIN_DIR)/mut-rom/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_WIN_DIR)/mut-rom/rom.bin > $(DBG_AUTH_WIN_DIR)/mut-rom/rom.hex
+	@if timeout 900 $< +rom=$(abspath $(DBG_AUTH_WIN_DIR)/mut-rom/rom.hex) \
+	  +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/mut-rom/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_WIN_DIR)/mut-rom/run.log 2>&1; then echo 'late-response ROM mutant NOT detected'; exit 1; fi
+	grep -Eq 'no (grant|response word popped) after the deadline' $(DBG_AUTH_WIN_DIR)/mut-rom/run.log
+	@echo "detected ROM mutant: $$(grep -m1 'auth core check' $(DBG_AUTH_WIN_DIR)/mut-rom/run.log)"
+
+# The same window.c on a host mailbox model with one cycle per CSR access:
+# exact deadline boundaries, queued responses, repeated ABORTs, random
+# schedules. Each mutant removes one deadline check and must fail; `bypass`
+# is the reviewed defect (an available RX word skips the deadline).
+DBG_AUTH_ROM_HOST_DIR ?= $(BUILD)/dbg/auth-rom-host
+dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c
+	mkdir -p $(DBG_AUTH_ROM_HOST_DIR)/final $(DBG_AUTH_ROM_HOST_DIR)/rx $(DBG_AUTH_ROM_HOST_DIR)/push $(DBG_AUTH_ROM_HOST_DIR)/bypass
+	$(CC) -O2 -Wall -Wextra -Werror -o $(DBG_AUTH_ROM_HOST_DIR)/host_test test/dbg/auth_rom/host_test.c
+	$(DBG_AUTH_ROM_HOST_DIR)/host_test
+	sed '/decision is inside the window/d' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/final/window.c
+	sed '/^static int rx_word/,/^}/ s/if (expired()) return 0;//' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/rx/window.c
+	sed '/^static int push_challenge(void) {/,/^}/ s/if (expired()) return 0;//' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/push/window.c
+	sed -e '/decision is inside the window/d' -e '/^static int rx_word/,/^}/ '"$(DBG_AUTH_ROM_BYPASS)" \
+	  test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/bypass/window.c
+	@for m in final rx push bypass; do \
+	  test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/window.c | grep -c '^>')" -le 1 || exit 1; \
+	  ! cmp -s test/dbg/auth_rom/window.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/window.c || { echo "mutant $$m did not apply"; exit 1; }; \
+	  cp test/dbg/auth_rom/host_test.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test.c; \
+	  $(CC) -O2 -o $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test.c || exit 1; \
+	  if $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test > $(DBG_AUTH_ROM_HOST_DIR)/$$m/run.log 2>&1; then \
+	    echo "ROM host mutant $$m NOT detected"; exit 1; fi; \
+	  echo "detected ROM host mutant $$m: $$(tail -1 $(DBG_AUTH_ROM_HOST_DIR)/$$m/run.log)"; done
+
+# Formal lemmas (plan 5.2) with Yosys + yosys-smtbmc/z3: BMC, k-induction and
+# mutants per lemma; results in $(BUILD)/dbg/auth-formal/results.json. This
+# is a separate, longer gate (A3); it is not part of dbg-functional-gates.
+.PHONY: dbg-auth-formal-test
+dbg-auth-formal-test:
+	timeout 3600 python3 test/dbg/run_auth_formal.py --out $(BUILD)/dbg/auth-formal
+	timeout 900 python3 test/dbg/check_auth_reset.py --self-test

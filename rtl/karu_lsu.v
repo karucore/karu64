@@ -10,6 +10,11 @@
 module karu_lsu (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    input  wire         debug_mode_i,
+    input  wire         debug_clear_reservation_i,
+`endif
+    input  wire [1:0]   access_priv, // effective MPRV/HLV privilege at req
 
     //  --- request port ---
     input  wire         req,            //  pulse to start
@@ -67,6 +72,7 @@ module karu_lsu (
     input  wire                     bvalid,
     output reg                      bready
 );
+    parameter NONSECURE = 1; // trusted static AXI security domain
     localparam S_IDLE   = 4'd0;
     localparam S_AR     = 4'd1;
     localparam S_R      = 4'd2;
@@ -95,6 +101,7 @@ module karu_lsu (
     reg         cross_q;
     reg [63:0]  rd_lo_q;
     reg [4:0]   sub_q;          //  the originating LSU sub-op (for AMO routing)
+    reg [2:0]   prot_q;
     reg [63:0]  amo_loaded;     //  stashed memory value for the AMO ALU op
 
     //  ---- LR/SC reservation tracking ----
@@ -256,6 +263,11 @@ module karu_lsu (
     assign atomic_bad = (is_lr_in || is_sc_in || is_amo_in) &&
                         (access_misaligned || karu_pma_io(addr));
 
+    //  Both write requests are accepted after this edge: each VALID is either
+    //  already low or handshaking now.
+    wire aw_w_done;
+    assign aw_w_done = (!awvalid || awready) && (!wvalid || wready);
+
     always @(posedge clk) begin
         if (rst) begin
             state   <= S_IDLE;
@@ -281,6 +293,7 @@ module karu_lsu (
                         sign_q  <= sign_l;
                         cross_q <= cross_i;
                         sub_q   <= sub_in;
+                        prot_q  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                         if (atomic_bad || !pma_first || !pma_second || io_bad_first || io_bad_second) begin
                             fault <= 1;
                             fault_second <= !atomic_bad && pma_first && !io_bad_first;
@@ -302,7 +315,7 @@ module karu_lsu (
                             awlen   <= 0;
                             awsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             awburst <= `AXI_BURST_INCR;
-                            awprot  <= 0;
+                            awprot  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                             awvalid <= 1;
                             case (size)
                                 `LS_B:  wstrb <= 8'h01 << addr[2:0];
@@ -331,7 +344,9 @@ module karu_lsu (
                             cbo_cnt <= 4'd0;
                             awaddr  <= { addr[`AXI_ADDR_W-1:6], 6'b0 }; //  64B-aligned
                             awid    <= 0; awlen <= 0; awsize <= `AXI_SIZE_8B;
-                            awburst <= `AXI_BURST_INCR; awprot <= 0; awvalid <= 1;
+                            awburst <= `AXI_BURST_INCR;
+                            awprot <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
+                            awvalid <= 1;
                             wdata_o <= 64'b0; wstrb <= 8'hFF; wlast <= 1; wvalid <= 1;
                             bready  <= 1;
                             reserve_valid <= 1'b0;  //  a store to the block clears LR/SC
@@ -342,7 +357,7 @@ module karu_lsu (
                             arlen   <= 0;
                             arsize  <= io_first ? {1'b0, size} : `AXI_SIZE_8B;
                             arburst <= `AXI_BURST_INCR;
-                            arprot  <= 0;
+                            arprot  <= {1'b0, (NONSECURE != 0), (access_priv != 2'd0)};
                             arvalid <= 1;
                             rready  <= 1;
                             state   <= S_AR;
@@ -410,13 +425,12 @@ module karu_lsu (
                     end
                 end
                 S_AWW: begin
-                    //  Both AW and W must be accepted. The testbench
-                    //  gates both on !b_pending, so they ack together.
-                    if (awvalid && awready && wvalid && wready) begin
-                        awvalid <= 0;
-                        wvalid  <= 0;
-                        state   <= S_B;
-                    end
+                    //  AW and W are accepted independently (AXI4 permits
+                    //  either order or the same cycle). Each VALID drops on
+                    //  its own handshake; wait for B once both are done.
+                    if (awready) awvalid <= 0;
+                    if (wready)  wvalid  <= 0;
+                    if (aw_w_done) state <= S_B;
                 end
                 S_B: begin
                     if (bvalid && bready) begin
@@ -438,11 +452,9 @@ module karu_lsu (
                     end
                 end
                 S_AWW2: begin
-                    if (awvalid && awready && wvalid && wready) begin
-                        awvalid <= 0;
-                        wvalid  <= 0;
-                        state   <= S_B2;
-                    end
+                    if (awready) awvalid <= 0;
+                    if (wready)  wvalid  <= 0;
+                    if (aw_w_done) state <= S_B2;
                 end
                 S_B2: begin
                     if (bvalid && bready) begin
@@ -461,7 +473,7 @@ module karu_lsu (
                     awlen   <= 0;
                     awsize  <= io_q ? {1'b0, size_q} : `AXI_SIZE_8B;
                     awburst <= `AXI_BURST_INCR;
-                    awprot  <= 0;
+                    awprot  <= prot_q;
                     awvalid <= 1;
                     wdata_o <= amo_write_beat;
                     wstrb   <= amo_wstrb;
@@ -473,11 +485,10 @@ module karu_lsu (
                     state   <= S_AMO_B;
                 end
                 S_AMO_B: begin
-                    //  first half: wait for AW+W to be accepted, then for B
-                    if (awvalid && awready && wvalid && wready) begin
-                        awvalid <= 0;
-                        wvalid  <= 0;
-                    end
+                    //  AW and W are accepted independently; B can follow
+                    //  only after both, so it also ends the state.
+                    if (awready) awvalid <= 0;
+                    if (wready)  wvalid  <= 0;
                     if (bvalid && bready) begin
                         bready  <= 0;
                         done    <= 1;
@@ -485,11 +496,9 @@ module karu_lsu (
                     end
                 end
                 S_CBOZ_W: begin
-                    if (awvalid && awready && wvalid && wready) begin
-                        awvalid <= 0;
-                        wvalid  <= 0;
-                        state   <= S_CBOZ_B;
-                    end
+                    if (awready) awvalid <= 0;
+                    if (wready)  wvalid  <= 0;
+                    if (aw_w_done) state <= S_CBOZ_B;
                 end
                 S_CBOZ_B: begin
                     if (bvalid && bready) begin
@@ -517,10 +526,25 @@ module karu_lsu (
                 arvalid <= 0; rready <= 0; awvalid <= 0; wvalid <= 0; bready <= 0;
                 reserve_valid <= 0;
             end
+`ifdef KARU_DBG
+            if (debug_clear_reservation_i) reserve_valid <= 0;
+`endif
         end
     end
 
     assign busy = (state != S_IDLE);
+
+    // synthesis translate_off
+    // Local write-channel invariants: a B-wait state has no request pending,
+    // and the store/AMO issue states are entered with both requests raised.
+    always @(posedge clk) begin
+        if (!rst && (state == S_B || state == S_B2 || state == S_CBOZ_B) &&
+            (awvalid || wvalid))
+            $fatal(1, "karu_lsu: write response wait with AW/W still pending");
+        if (!rst && state == S_AMO_B && bvalid && bready && (awvalid || wvalid))
+            $fatal(1, "karu_lsu: AMO write response before AW and W were accepted");
+    end
+    // synthesis translate_on
 
     //  silence unused
     wire _unused;

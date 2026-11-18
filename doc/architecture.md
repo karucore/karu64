@@ -174,7 +174,9 @@ Instruction fetch is never pointer-masked.
 
 Physical permissions are checked before the 64-bit address is narrowed to AXI.
 `rtl/karu_pma.vh` defines the standard map: 2 GiB RAM at `0x80000000`, read-only
-boot ROM at `0x1000..0x100fff`, scratch SRAM at `0x101000..0x110fff`, and the
+boot ROM at `0x1000..0x200fff` (2 MiB; the size is `KARU_BOOT_ROM_PAGES` in
+`rtl/karu_bootmap.vh`) without the Debug Module's private page at `0x120000`,
+scratch SRAM directly above the ROM at `0x201000..0x210fff`, and the
 CLINT, PLIC, UART, Ethernet and SPI-controller windows. Holes, addresses above
 32 bits, writes to ROM and instruction fetches from devices raise access
 faults. Other integrations supply `KARU_PMA_CUSTOM_HEADER`, defining the same
@@ -214,6 +216,14 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
   CSR read-modify-write operations; undelegated supervisor interrupts can
   target M-mode. FIOM is writable, with its stronger ordering already supplied
   by the in-order memory drain.
+  With the opt-in `KARU_ZKR` the CSR file also decodes `seed` (`0x015`),
+  `mseccfg` (`0x747`, `SSEED` and `USEED` only) and the custom M-mode
+  `mnoise` (`0x7C8`) and `mentropycfg` (`0x7C9`). It applies the access
+  rules and holds `mseccfg`; the three entropy CSRs themselves live in
+  `rtl/karu_entropy.v`, outside the core, behind the `zkr_*` ports. The
+  value that block returns must not depend combinationally on the value
+  being written, because a CSR set or clear instruction computes one from
+  the other (`make zkr-loop-test`).
 - **`karu_sv39`** — Sv39 MMU with a small TLB and PTE-line cache, instantiated
   for fetch and data. It uses **Svade only**: A=0, or a store with D=0, raises
   page-fault cause 12/13/15 with the original VA. A load-filled D=0 TLB entry
@@ -472,6 +482,109 @@ merges imem+dmem onto one AXI master toward the MIG. The PC is **64-bit**
 internally; platforms place RAM in the low 4 GiB (the DDR4 build widens the DRAM
 window to the full 2 GiB).
 
+`ARPROT`/`AWPROT` carry the effective privilege at request acceptance, a static
+trusted `NONSECURE` parameter (default 1), and instruction/data classification.
+Only actual fetches set bit 2; PTE reads and HLVX loads are data transactions.
+The attributes remain attached to split, queued and stalled requests. External
+privilege-based read denial is supported only for physically non-cacheable
+peripheral regions; cacheable RAM fill privilege is advisory because later
+cache hits do not reach the interconnect. See the
+[AXI protection contract](../dbg/README.md#2-milestone-a-axi-protection-metadata).
+
+### Optional external debug
+
+`KARU_DBG` adds execution-based Sdext debug state and ports; the RVA23S64 switch
+does not enable it. [karudbg](../dbg/README.md) supplies the single-hart DM,
+Program Buffer, ROM and conventional JTAG transport. The combined top is
+`karudbg_top`; its separate [manifest](../dbg/karudbg.f) includes the ordinary
+processor sources and needs `-Irtl -Idbg -DKARU_DBG`. The processor-only ASIC
+manifest retains its existing scope.
+
+The debug page is `0x00120000..0x00120fff`. Since the boot ROM grew to 2 MiB
+it lies inside the ROM's span, as a hole: the ROM image leaves it empty and
+the access permissions do not count it as ROM.
+The core permits it only in Debug Mode; the combined integration routes it
+privately from the core's instruction/data ports. Debug commands use physical
+M-mode accesses (`mprven=0`), mask interrupts and freeze hart-local counters.
+Application trap CSRs are preserved on command exceptions. Resume requires
+the ROM's RESUMING handshake and DRET at the designated immutable ROM site.
+Completed Program Buffer register effects survive a later command exception;
+vector load/store faults may preserve a partial destination and update
+`vstart`, as Debug 1.0 explicitly permits. Generated abstract-transfer faults
+restore the ROM's borrowed GPRs instead.
+With `KARU_PMA_CUSTOM_HEADER`, the integration must provide its own Debug Mode
+permission for this page in `karu_pma_ok`, alongside the private routing and
+cache-bypass contract. The default debug-page clause is not added around a
+custom PMA implementation. If the custom map excludes this page, the ROM
+remains inaccessible and debug entry cannot complete. The custom PMA must
+enforce the Debug Mode restriction itself.
+The conventional transport top synchronizes reset release over two TCK edges,
+including when TCK has been stopped; core/DM reset remains synchronous. The
+optional VCU118 integration uses a USER4 nested-TAP tunnel and keeps the DM
+alive across `ndmreset`, holding the hart until both sides of the DDR AXI path
+have completed reset cancellation. See the [debug guide](../dbg/README.md)
+for the reset contract, tool configuration and current acceptance gates.
+The base `KARU_DBG` configuration keeps SBA and triggers absent. Optional
+`KARU_DBG_SBA`, `KARU_DBG_AUTOEXEC` and `KARU_DBG_TRIGGERS` select the extensions
+individually; `KARU_DBG_FULL` enables all three. The SBA engine advertises a
+32-bit physical address interface and native 8/16/32/64-bit transfers. It sits
+after the caches, uses privileged data `AxPROT` plus the static `NONSECURE`
+policy, and cannot reach the private debug page. A static `SBA_ENABLE` gate
+can disable its downstream traffic. Autoexec retains every accepted explicit
+command, including one that fails validation or finds the hart unavailable;
+command writes during busy or sticky error are ignored. After error clearing,
+a selected data/Program Buffer access retries that command, without replaying
+an older command's device effects.
+
+Address triggers compare the architectural instruction PC or post-pointer-masking,
+pre-translation data address. Armed vector accesses register each 64-bit field
+address before comparison, adding one cycle per field query. With no armed
+data trigger, the ordinary vector memory path is unchanged. Whole-register
+probes use the encoded EEW element boundaries so debug restart does not repeat
+partially completed device accesses. See the [trigger contract](../dbg/TRIGGERS.md).
+
+SBA writes to DRAM and executable scratch SRAM register an issue hold and drain older execution, posted writes and
+outstanding instruction reads before either write channel starts. Acceptance
+requires both the registered hold and the quiet acknowledgement: work admitted
+on the hold's assertion edge also drains. Reset-gated request VALID has no
+combinational path through the hold into issue. The hold
+clears LR/SC reservations. After the bus response, the existing whole-cache
+flush/refill-poison logic and IFU redirect synchronize data and instructions.
+The platform cache-maintenance request/acknowledgement must complete before
+SBA reports completion or releases the issue hold. The acknowledgement is
+retained if it arrives while a prefetch is active; completion still waits for
+that read to drain. The tracked architectural next PC covers normal
+execution and the Debug ROM; maintenance does not execute a Program Buffer
+command or change halted/running state. MMIO retains exact native widths and
+has no RAM flush. Page-table changes still need translation fences. Custom PMA
+maps permitting non-idempotent executable devices must define their refetch
+policy during this synchronization.
+
+An accepted SBA operation survives DMI reset. DM deactivation cancels only an
+unaccepted request; accepted bus/coherence ownership drains before reuse.
+Hart/fabric reset cancels both adapter and responders together. An active SBA
+operation started before reset reports error 7 when canceled. While `ndmreset`
+or any external reset is asserted, Debug 1.0 supports only `dmcontrol`
+reads/writes and `dmstatus.ndmresetpending` reads; this optional field reads zero,
+and other DMI accesses are undefined. No reset-time SBA error/replay guarantee
+is implied. A nonresponding older core access, SBA device or platform cache
+controller can retain bus ownership or block maintenance indefinitely. See the
+[SBA contract and focused simulator evidence](../dbg/README.md#implemented-sba-contract).
+The latest full-debug CPU replay passes 2872/2872 preserved ACT4 reference
+ELFs, and all 16 ordinary subjects match base-debug cycle counts with the
+extensions idle. The focused four-state SBA probe passes 30,740 checks and
+rejects eight coherence/ordering mutations. The final combined functional gate
+passes with 274 unchanged input hashes. All twelve mapped comparisons are
+complete, and the full two-trigger FPGA image passes routed acceptance at
+75 MHz at its October 29 checkpoint. The October 30 registered-pause follow-up
+is newer RTL; its full-row timing is recorded separately in the debug
+measurements. The November 15 full-debug image subsequently passes the
+[physical board campaign](../dbg/BOARD_ACCEPTANCE.md), including GDB, triggers,
+SBA/coherence, a ten-minute soak and post-detach Linux/KVM acceptance.
+The 200 MHz ASIC timing goal remains open.
+Authentication and technology-specific ASIC signoff remain integration work;
+consult the plan for current results.
+
 ## Build-time configuration
 
 ISA extensions are individually pluggable (`rtl/karu_ext.vh`). The base core is
@@ -482,6 +595,11 @@ every normal V build because RVA23U64 requires it; `KARU_NO_ZVBB` is the area
 opt-out, and `KARU_NO_ZVBB KARU_ZVKB` retains the smaller subset. Vector crypto
 (Zvk*) is opt-in via the `KARU_ZVK*` flags and needs V. Disabled instructions raise a vectoring
 cause-2 illegal-instruction exception and their units are not instantiated.
+`KARU_ZKR` is opt-in as well: it adds the Zkr `seed` CSR, `mseccfg` and two
+custom entropy CSRs to the CSR file and a set of `zkr_*` ports, and expects
+`rtl/karu_entropy.v` and a platform noise source behind them
+([FPGA](fpga.md), [ASIC obligations](../flow/asic/README.md#entropy-source-obligations-karu_zkr)).
+Without it none of those CSRs exists.
 
 `KARU_RVA23S64` is an opt-in composition contract: it requires the mandatory
 baseline plus H/Ssstateen and Sscofpmf, rejects conflicting ISA opt-outs,
@@ -525,6 +643,8 @@ Implemented RVA23-mandatory extensions beyond the base ISA: Zba/Zbb/Zbs
 (Smnpm + Ssnpm), Zicntr/Zihpm counters with `mcounteren`/`scounteren` gating,
 the Zvfhmin vector FP16↔FP32 conversions, and full Zvbb. Opt-in, default-off (byte-identical
 when off) counter/state extensions: Smcntrpmf, Sscofpmf, and Smstateen/Ssstateen.
+The Zkr entropy CSR (`KARU_ZKR`) is a further opt-in, separate from the
+profile composition: `KARU_RVA23S64` neither requires nor implies it.
 The RVA23-*optional* vector extensions full Zvfh and Zvbc are
 deliberately not implemented.
 

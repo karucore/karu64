@@ -1,0 +1,84 @@
+--- a/src/target/riscv/riscv-013.c
++++ b/src/target/riscv/riscv-013.c
+@@ -4569,6 +4569,44 @@
+ static struct mem_access_result
+ write_memory_progbuf(struct target *target, const struct riscv_mem_access_args args);
+ 
++/* abstractauto is optional. Probe before executing a memory operation, so a
++ * missing autoexecdata0 cannot silently corrupt the block pipeline. Reuse the
++ * single-element path when absent; in particular, do not issue speculative or
++ * trailing loads to a side-effecting device. */
++static struct mem_access_result
++access_memory_progbuf_autoexec(struct target *target,
++		const struct riscv_mem_access_args args)
++{
++	const bool is_read = riscv_mem_access_is_read(args);
++	uint32_t autoexec = 1;
++	if (args.count > 1) {
++		if (dm_write(target, DM_ABSTRACTAUTO, 1) != ERROR_OK)
++			return mem_access_result(MEM_ACCESS_FAILED_DM_ACCESS_FAILED);
++		int result = dm_read(target, &autoexec, DM_ABSTRACTAUTO);
++		/* Always disable the probe before touching data registers. */
++		if (dm_write(target, DM_ABSTRACTAUTO, 0) != ERROR_OK || result != ERROR_OK)
++			return mem_access_result(MEM_ACCESS_FAILED_DM_ACCESS_FAILED);
++	}
++	if (args.count <= 1 || (autoexec & 1))
++		return is_read ? read_memory_progbuf(target, args) :
++				write_memory_progbuf(target, args);
++
++	for (uint32_t i = 0; i < args.count; ++i) {
++		struct riscv_mem_access_args item = args;
++		item.count = 1;
++		item.address += (target_addr_t)i * args.increment;
++		if (is_read)
++			item.read_buffer += (size_t)i * args.size;
++		else
++			item.write_buffer += (size_t)i * args.size;
++		struct mem_access_result result = is_read ?
++				read_memory_progbuf(target, item) : write_memory_progbuf(target, item);
++		if (!is_mem_access_ok(result))
++			return result;
++	}
++	return mem_access_result(MEM_ACCESS_OK);
++}
++
+ static struct mem_access_result
+ access_memory_progbuf(struct target *target, const struct riscv_mem_access_args args)
+ {
+@@ -4595,9 +4633,7 @@
+ 			&mstatush_old, &dcsr, &dcsr_old, args.mode) != ERROR_OK)
+ 		return mem_access_result(MEM_ACCESS_SKIPPED_PRIV_MOD_FAILED);
+ 
+-	struct mem_access_result result = is_read ?
+-			read_memory_progbuf(target, args) :
+-			write_memory_progbuf(target, args);
++	struct mem_access_result result = access_memory_progbuf_autoexec(target, args);
+ 
+ 	if (restore_privilege_progbuf(target, mstatus, mstatus_old,
+ 			mstatush, mstatush_old, dcsr, dcsr_old) != ERROR_OK)
+--- a/src/target/riscv/riscv.c
++++ b/src/target/riscv/riscv.c
+@@ -3261,8 +3261,22 @@
+ 			return ERROR_FAIL;
+ 		}
+ 
+-		if ((pte & PTE_R) || (pte & PTE_W) || (pte & PTE_X)) /* Found leaf PTE. */
++		/* This software walker does not decode NAPOT leaves. Failing closed
++		 * is preferable to silently substituting the wrong physical page. */
++		if (info->pte_shift == 3 && (pte & (UINT64_C(1) << 63))) {
++			LOG_TARGET_ERROR(target, "NAPOT PTEs are not supported by the software walker");
++			return ERROR_FAIL;
++		}
++		if ((pte & PTE_R) || (pte & PTE_W) || (pte & PTE_X)) {
++			/* Superpage PPN fields below the leaf level must be zero. */
++			unsigned int lower_ppn_bits = info->pa_ppn_shift[i] - RISCV_PGSHIFT;
++			if (lower_ppn_bits && ((pte >> PTE_PPN_SHIFT) &
++					((UINT64_C(1) << lower_ppn_bits) - 1))) {
++				LOG_TARGET_ERROR(target, "Misaligned superpage PTE");
++				return ERROR_FAIL;
++			}
+ 			break;
++		}
+ 
+ 		i--;
+ 		if (i < 0)

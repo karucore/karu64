@@ -2,6 +2,7 @@ rtl/karu64.v
 rtl/karu_alu.v
 rtl/karu_bitmanip.v
 rtl/karu_csr.v
+rtl/karu_trigger.v
 rtl/karu_dec.v
 rtl/karu_fadd.v
 rtl/karu_fadd_d.v

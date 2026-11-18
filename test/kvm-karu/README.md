@@ -29,6 +29,15 @@ The default paths are respectively
 SBI TIME and RFENCE and uses `FW_JUMP_FDT_OFFSET=0x1c00000`.
 Different input contents are rejected rather than silently changing the oracle.
 
+Since 2026-11-17 karudeb builds OpenSBI v1.9 at that default path (the
+boot ROM moved to it for the software reboot), so the default no longer
+matches this pin and the build stops with a fingerprint mismatch. Pass a
+v1.8.1 `fw_jump.bin` with the hash above through `KVM_OPENSBI`. karudeb's
+`scripts/build-karu64-opensbi.sh` takes `OPENSBI_REF=v1.8.1` with a
+separate `SRC_DIR` and `BUILD_DIR`; whether such a rebuild reproduces the
+pinned hash has not been checked. The fixture has not been re-pinned to
+v1.9: that changes the oracle and needs its own validation run.
+
 From the Karu repository root:
 
 ```sh

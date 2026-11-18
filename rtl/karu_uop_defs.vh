@@ -187,6 +187,7 @@
 `define SYS_SFENCEINVAL 5'h08 //  Svinval ordering-only fences: S/M, unaffected by TVM
 `define SYS_HFENCEVVMA 5'h09 //  HFENCE/HINVAL.VVMA: H, unaffected by TVM/VTVM
 `define SYS_HFENCEGVMA 5'h0a //  HFENCE/HINVAL.GVMA: H, TVM gates HS execution
+`define SYS_DRET    5'h0b   // Sdext: debug ROM resume, opt-in KARU_DBG decode
 `define SYS_TRAP    5'h1f   //  decode-time illegal instruction
 
 //  LSU size codes (mirror funct3[1:0])

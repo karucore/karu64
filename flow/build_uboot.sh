@@ -44,6 +44,11 @@ make qemu-riscv64_smode_defconfig >/dev/null
 	--disable CMD_NVEDIT_EFI --disable TOOLS_MKEFICAPSULE --disable EFI_CAPSULE_ON_DISK \
 	--disable EFI_CAPSULE_FIRMWARE --disable EFI_VARIABLE_FILE_STORE \
 	--disable EFI_RT_VOLATILE_STORE --disable BOOTSTD_FULL --disable EFI
+#	- No Zkr random-number driver. It polls the seed CSR until it gets words and
+#	  has no way out of BIST or WAIT, so with the entropy source held off or
+#	  dead it would hang whatever asked it for random numbers. v2025.01 has it
+#	  off already; the QEMU defconfig of v2026.10 turns it on.
+./scripts/config --disable RNG_RISCV_ZKR
 ./scripts/config --disable POSITION_INDEPENDENT
 ./scripts/config --set-val TEXT_BASE 0x80200000
 ./scripts/config --enable LITEETH

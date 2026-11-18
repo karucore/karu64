@@ -77,6 +77,30 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 	puts "KARU_DDR_HOST_DBG: VIO hold + JTAG-AXI host loader included"
 }
 
+set hart_dbg 0
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_DBG] >= 0} {
+	set hart_dbg 1
+	if {$host_dbg} {
+		error "KARU_DBG reserves USER4; KARU_DDR_HOST_DBG JTAG-AXI coexistence is not configured"
+	}
+	puts "KARU_DBG: single-hart DM and USER4 nested-TAP transport enabled"
+}
+#	Debug authentication guards the Debug Module only. A second path into the
+#	system that it does not see, such as the JTAG-AXI host loader, would make
+#	it pointless, and it needs the Debug Module it guards.
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_DBG_AUTH] >= 0} {
+	if {!$hart_dbg} {
+		error "KARU_DBG_AUTH needs KARU_DBG"
+	}
+	if {$host_dbg} {
+		error "KARU_DBG_AUTH excludes KARU_DDR_HOST_DBG: the JTAG-AXI host loader bypasses the authentication gate"
+	}
+	if {![file exists vcu118_auth_rom.hex]} {
+		error "KARU_DBG_AUTH: vcu118_auth_rom.hex is missing from [pwd] (make vcu118-auth-rom-hex)"
+	}
+	puts "KARU_DBG_AUTH: debug authentication enabled; lifecycle and hold on the DIP switches; island ROM vcu118_auth_rom.hex"
+}
+
 set ip_list [list \
 	$ipdir/ddr4_0/ddr4_0.xci \
 	$ipdir/axi_clock_converter_0/axi_clock_converter_0.xci \
@@ -107,6 +131,11 @@ foreach fn [glob -type f [file join $::karu_repo_dir rtl *.v]] {
 }
 foreach fn [glob -nocomplain -type f [file join $::karu_repo_dir rtl zvk *.v]] {
 	read_verilog $fn
+}
+if {$hart_dbg} {
+	foreach fn [glob -type f [file join $::karu_repo_dir dbg *.v]] {
+		read_verilog $fn
+	}
 }
 
 #	FPGA RTL (flow/fpga/) minus simulation-only testbenches.
@@ -164,13 +193,32 @@ if {[info exists ::env(KARU_SYNTH_DIRECTIVE)] && $::env(KARU_SYNTH_DIRECTIVE) ne
 if {[llength $vdefs] > 0} {
 	puts "KARU_DEFINES: $vdefs"
 	synth_design -part $part -top $top \
-		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga]] \
+		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga] [karu_repo_path dbg]] \
 		-verilog_define $vdefs {*}$dargs
 } else {
 	synth_design -part $part -top $top \
-		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga]] \
+		-include_dirs [list [karu_repo_path rtl] [karu_repo_path rtl zvk] [karu_repo_path flow fpga] [karu_repo_path dbg]] \
 		{*}$dargs
 }
+
+if {$hart_dbg} {
+	source [karu_repo_path dbg fpga_constraints.tcl]
+	karudbg_constrain_bscan
+}
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_ZKR] >= 0} {
+	source [karu_repo_path flow fpga rosc_constraints.tcl]
+	karu_constrain_rosc
+}
+#	Combinational loops are refused at bitstream generation, two hours from
+#	here. Look for them now. The ring oscillators are loops by design and are
+#	marked as allowed, so they are not among these violations.
+report_drc -checks {LUTLP-1} -name karu_loops -file [karu_rpt_path vcu118_ddr_loops.rpt]
+set karu_loop_violations [get_drc_violations -quiet -name karu_loops]
+if {[llength $karu_loop_violations] > 0} {
+	foreach v $karu_loop_violations { puts "KARU_LOOP [get_property DESCRIPTION $v]" }
+	error "combinational loop in the synthesised design (not a ring oscillator): see vcu118_ddr_loops.rpt"
+}
+puts "KARU_LOOP_CHECK no combinational loop outside the ring oscillators"
 
 if {$eth_sgmii} {
 	puts "=== SGMII clock check (post-synth): expect the 625 MHz refclk + 125 MHz GMII ==="
@@ -219,6 +267,10 @@ if {[info exists ::env(KARU_FLOORPLAN)] && $::env(KARU_FLOORPLAN) eq "mig"} {
 	source $fp
 }
 place_design {*}$place_args
+#	every ring stage where the constraints put it, and no ring slice shared
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_ZKR] >= 0} {
+	karu_check_rosc_placement
+}
 #	Save the placed checkpoint so a route failure (e.g. the native-LVDS SGMII bitslice)
 #	is diagnosable (report_route_status / report_io) without re-placing.
 write_checkpoint -force [karu_build_path vcu118_ddr_postplace.dcp]

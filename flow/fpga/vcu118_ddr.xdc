@@ -20,6 +20,14 @@ set_property -dict { PACKAGE_PIN BF22 IOSTANDARD LVCMOS18 } [get_ports { btn_i[2
 set_property -dict { PACKAGE_PIN BE22 IOSTANDARD LVCMOS18 } [get_ports { btn_i[3] } ]
 set_property -dict { PACKAGE_PIN BD23 IOSTANDARD LVCMOS18 } [get_ports { btn_i[4] } ]
 
+#	GPIO DIP switch SW12 (GPIO_DIP_SW1..4 in the VCU118 board files): straps,
+#	static after power-on, synchronised in the top.
+set_property -dict { PACKAGE_PIN B17 IOSTANDARD LVCMOS12 } [get_ports { dip_i[0] } ]
+set_property -dict { PACKAGE_PIN G16 IOSTANDARD LVCMOS12 } [get_ports { dip_i[1] } ]
+set_property -dict { PACKAGE_PIN J16 IOSTANDARD LVCMOS12 } [get_ports { dip_i[2] } ]
+set_property -dict { PACKAGE_PIN D21 IOSTANDARD LVCMOS12 } [get_ports { dip_i[3] } ]
+set_false_path -from [get_ports { dip_i[*] } ]
+
 ## CP2105GM USB UART
 set_property -dict { PACKAGE_PIN AW25 IOSTANDARD LVCMOS18 } [get_ports { usb_uart_rxd_i } ]
 set_property -dict { PACKAGE_PIN BB21 IOSTANDARD LVCMOS18 } [get_ports { usb_uart_txd_o } ]

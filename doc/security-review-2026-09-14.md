@@ -14,7 +14,7 @@ That audit supports fixed cycle sequencing for its covered instruction families.
 It deliberately excludes power/EM leakage, physical propagation differences,
 secret-dependent software addresses and branches, and formal noninterference.
 
-## Result
+## Result at the reviewed checkpoint
 
 No new privilege-escalation or two-stage-translation RTL defect was found in the
 reviewed CSR, trap, MMU, cache and atomic paths. The configuration should not yet
@@ -25,6 +25,16 @@ medium-severity fault-integrity gap remain.
 ## Findings
 
 ### S1 — High: AXI protection metadata does not describe the requester
+
+Implementation follow-up, 2026-10-26: requester metadata is now implemented
+and covered by `make axi-prot-test` (15/15 cases, including five deliberate
+propagation failures). The [karudbg plan](../dbg/README.md#2-milestone-a-axi-protection-metadata)
+defines the limited platform contract: effective privilege, true fetch/data
+classification, a trusted static per-hart Secure/non-secure domain, and
+privilege-enforcing peripheral regions that physically bypass caches. Cacheable
+RAM fill privilege is advisory; dynamic domains and external M/HS isolation
+are not supplied. Platform enforcement and board acceptance remain separate
+obligations. The observations below describe the reviewed September checkpoint.
 
 Instruction fetch, data traffic and page-table walks drive `ARPROT`/`AWPROT` to
 zero in `karu_ifu`, `karu_mem`, `karu_lsu`, `karu_icache` and `karu_sv39`.
@@ -128,8 +138,10 @@ contained trap or reset instead of silent use.
 | `make sv39-test` | PASS: 35,155 checks; host/two-stage, flush/cancel and exact PTE reads |
 | `make lsu-atomic-test` | PASS: 27,708 checks, including 8,762 rejected transactions |
 
-These regressions support the reviewed architectural mechanisms. They do not
-close S1–S5 or expand the completed DIEL audit beyond its documented scope.
+These September regressions support the reviewed architectural mechanisms.
+They did not close S1–S5 or expand the completed DIEL audit beyond its documented
+scope. The dated S1 implementation follow-up above records the subsequent
+requester-metadata work; it does not close the other platform obligations.
 
 [axi]: https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/IHI0022H_amba_axi_protocol_spec.pdf
 [pmp]: https://docs.riscv.org/reference/isa/priv/machine.html

@@ -3,6 +3,9 @@
 #	dump per-path-group timing reports.
 
 set top     "karu64"
+if {[info exists ::env(KARU_TOP)] && $::env(KARU_TOP) ne ""} {
+	set top $::env(KARU_TOP)
+}
 set out_dir $::env(KARU_OUT_DIR)
 set lib     $::env(KARU_LIB)
 set sta_v   "$out_dir/generated/${top}_netlist.sta.v"
@@ -34,7 +37,7 @@ set out_ports [list]
 foreach p [get_ports *] {
 	set n [get_property $p full_name]
 	set d [get_property $p direction]
-	if {$d eq "input" && $n ne "clk"} { lappend non_clk_inputs $p }
+	if {$d eq "input" && $n ne "clk" && $n ne "tck"} { lappend non_clk_inputs $p }
 	if {$d eq "output"}                { lappend out_ports     $p }
 }
 

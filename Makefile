@@ -100,7 +100,7 @@ $(VCU118_FUBOOT_HEX):	$(BUILD)/vcu118_fuboot.bin | $(BUILD)
 
 vcu118-fuboot-hex:	$(VCU118_FUBOOT_HEX)
 
-#	---- U-Boot-in-ROM: a self-contained 1 MiB boot ROM image ----
+#	---- U-Boot-in-ROM: a self-contained 2 MiB boot ROM image ----
 #	[ fu-boot | OpenSBI | U-Boot | control-DTB ] baked into the bitstream. fu-boot
 #	(built -DFUBOOT_AUTOBOOT) copies each image to DDR and jumps into OpenSBI, which
 #	chains to U-Boot, whose baked bootcmd TFTP-netboots Linux -- no JTAG/host stage.
@@ -113,13 +113,21 @@ FUBOOT_OPENSBI ?= $(KARUDEB_OPENSBI)
 FUBOOT_UBOOT   ?= ../u-boot/u-boot.bin
 FUBOOT_ROM_DTB ?= $(KARUDEB)/build/karu64/karu64-rv64imac-ddr.dtb
 #	ROM offsets (source of truth -- mirrored into flow/boot/fuboot_blobs.h AND the assembler)
-FUBOOT_OPENSBI_OFF = 0x10000
-FUBOOT_UBOOT_OFF   = 0x60000
-#	U-Boot region is 0x60000..FUBOOT_DTB_OFF. v2025.01 built with riscv64-linux-gnu
-#	gcc-15 lands ~579 KiB, overflowing the old 0xF0000 (576 KiB) limit, so the DTB
-#	offset moves up to 0xFC000: U-Boot gets 624 KiB (~45 KiB slack) and the ~2.8 KiB
-#	DTB still has a 16 KiB region. ROM stays 1 MiB (no karu_boot_mem change).
-FUBOOT_DTB_OFF     = 0xFC000
+#	The ROM is 2 MiB (rtl/karu_bootmap.vh). Layout, as ROM offsets (core address
+#	= offset + 0x1000):
+#	  0x000000..0x00efff   fu-boot (60 KiB)
+#	  0x00f000..0x022fff   empty: core 0x1_0000..0x2_3fff is the debug
+#	                       authentication island, decoded in front of the ROM
+#	  0x030000..0x11efff   OpenSBI (956 KiB; v1.9 is 271 KiB)
+#	  0x11f000..0x11ffff   empty: core 0x12_0000 is the Debug Module's
+#	                       private page
+#	  0x120000..0x1fbfff   U-Boot (880 KiB; v2025.01 is 579 KiB)
+#	  0x1fc000..0x1fffff   control DTB (16 KiB)
+#	build_fuboot_rom.sh checks every region, the empty ones included.
+FUBOOT_ROM_BYTES   = 0x200000
+FUBOOT_OPENSBI_OFF = 0x30000
+FUBOOT_UBOOT_OFF   = 0x120000
+FUBOOT_DTB_OFF     = 0x1FC000
 
 #	FORCE-regenerated every build. The prerequisites are the blob FILES, but a caller
 #	(e.g. vcu118-ddr-sgmii-rom-vec) repoints FUBOOT_* to a different image; if those
@@ -155,7 +163,7 @@ vcu118-fuboot-rom-hex:	$(BUILD)/vcu118_fuboot_rom.bin flow/boot/fuboot_blobs.h f
 		$(FUBOOT_OPENSBI) $(FUBOOT_OPENSBI_OFF) \
 		$(FUBOOT_UBOOT)   $(FUBOOT_UBOOT_OFF) \
 		$(FUBOOT_ROM_DTB) $(FUBOOT_DTB_OFF) \
-		$(VCU118_FUBOOT_HEX)
+		$(VCU118_FUBOOT_HEX) $(FUBOOT_ROM_BYTES)
 
 #	==========================================================
 #	karu64 (the core) -- iverilog HTIF simulation
@@ -165,7 +173,7 @@ HTIF_SRC =	rtl/htif_tb.v rtl/karu_clint.v \
 			rtl/karu_ram_prim.v \
 			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
 			rtl/karu_sv39.v \
-			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_regfile.v rtl/karu_trigger.v \
 			rtl/karu_m.v \
 			rtl/karu_fregfile.v rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
 			rtl/zvk/keccak.v rtl/zvk/keccak_round.v \
@@ -932,7 +940,58 @@ $(VMMU_PBMT_HEXS): $(BUILD)/karu_vmmu_pbmt_%.hex: $(BUILD)/karu_vmmu_pbmt_%.elf
 	$(XCHAIN)objcopy -O binary $< $(BUILD)/karu_vmmu_pbmt_$*.bin
 	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/karu_vmmu_pbmt_$*.bin > $@
 .PHONY: vmmu-pbmt-test vmmu-pbmt-test-spike icache-unit-test
-.PHONY: eth-bridge-test plic-test
+.PHONY: eth-bridge-test plic-test uart-rx-test
+# FPGA UART receive path. tb_uart_rx drives the receiver alone;
+# tb_ns16550_loop drives karu_ns16550 with its real serializers in loopback,
+# reading as an 8250 driver does. Two mutants must fail:
+#  * uart_rx with the old ack rule (honoured only while tmr != 0), which made
+#    a driver read about one console byte in 41 twice. It must fail through
+#    the receiver's own assertion, through tb_uart_rx with assertions off,
+#    and through the loopback ("byte read twice");
+#  * karu_ns16550 with the old pop one cycle after the RBR read, which lost
+#    a byte completing on the read edge. It must fail through the wrapper's
+#    own assertion and, with assertions off, through the loopback's
+#    collision case.
+uart-rx-test: | $(BUILD)
+	mkdir -p $(BUILD)/uart-rx
+	iverilog -g2012 -Irtl -s tb_uart_rx -o $(BUILD)/uart-rx/tb_uart_rx test/tb_uart_rx.sv flow/fpga/uart_rx.v
+	vvp -n $(BUILD)/uart-rx/tb_uart_rx > $(BUILD)/uart-rx/run.log 2>&1 || { tail -5 $(BUILD)/uart-rx/run.log; exit 1; }
+	grep 'uart_rx: PASS' $(BUILD)/uart-rx/run.log
+	sed 's/if (ack)$$/if (ack \&\& tmr != 0)/' flow/fpga/uart_rx.v > $(BUILD)/uart-rx/uart_rx_mutant.v
+	test "$$(diff flow/fpga/uart_rx.v $(BUILD)/uart-rx/uart_rx_mutant.v | grep -c '^>')" = 1
+	iverilog -g2012 -Irtl -s tb_uart_rx -o $(BUILD)/uart-rx/tb_uart_rx_mutant test/tb_uart_rx.sv $(BUILD)/uart-rx/uart_rx_mutant.v
+	vvp -n $(BUILD)/uart-rx/tb_uart_rx_mutant > $(BUILD)/uart-rx/mutant-assert.log 2>&1 || true
+	! grep -q 'uart_rx: PASS' $(BUILD)/uart-rx/mutant-assert.log
+	grep -q 'ASSERT. uart_rx: ack did not clear rdy' $(BUILD)/uart-rx/mutant-assert.log
+	iverilog -g2012 -Irtl -DKARU_NO_ASSERT -s tb_uart_rx -o $(BUILD)/uart-rx/tb_uart_rx_mutant_na test/tb_uart_rx.sv $(BUILD)/uart-rx/uart_rx_mutant.v
+	@if vvp -n $(BUILD)/uart-rx/tb_uart_rx_mutant_na > $(BUILD)/uart-rx/mutant-bench.log 2>&1; then \
+		echo 'uart_rx ack mutant NOT detected by the bench'; exit 1; fi
+	grep -q 'FAIL uart_rx check' $(BUILD)/uart-rx/mutant-bench.log
+	@echo "detected uart_rx ack mutant: assertion and $$(grep -o 'FAIL uart_rx check.*' $(BUILD)/uart-rx/mutant-bench.log | head -1)"
+	iverilog -g2012 -Irtl -s tb_ns16550_loop -o $(BUILD)/uart-rx/tb_ns16550_loop test/tb_ns16550_loop.sv \
+		flow/fpga/karu_ns16550.v flow/fpga/uart_tx.v flow/fpga/uart_rx.v
+	vvp -n $(BUILD)/uart-rx/tb_ns16550_loop > $(BUILD)/uart-rx/loop.log 2>&1 || { tail -5 $(BUILD)/uart-rx/loop.log; exit 1; }
+	grep 'ns16550 loopback: PASS' $(BUILD)/uart-rx/loop.log
+	iverilog -g2012 -Irtl -DKARU_NO_ASSERT -s tb_ns16550_loop -o $(BUILD)/uart-rx/tb_ns16550_loop_mutant test/tb_ns16550_loop.sv \
+		flow/fpga/karu_ns16550.v flow/fpga/uart_tx.v $(BUILD)/uart-rx/uart_rx_mutant.v
+	@if vvp -n $(BUILD)/uart-rx/tb_ns16550_loop_mutant > $(BUILD)/uart-rx/loop-mutant.log 2>&1; then \
+		echo 'uart_rx ack mutant NOT detected by the ns16550 loopback'; exit 1; fi
+	grep -q 'byte read twice' $(BUILD)/uart-rx/loop-mutant.log
+	@echo "detected uart_rx ack mutant at the register interface: $$(grep -o 'FAIL ns16550 loop check.*' $(BUILD)/uart-rx/loop-mutant.log | head -1)"
+	sed 's/wire[[:space:]]*rx_ack = rbr_read & rx_rdy;.*/reg rx_ack; always @(posedge clk) rx_ack <= !rst \& rbr_read \& rx_rdy;/' \
+		flow/fpga/karu_ns16550.v > $(BUILD)/uart-rx/karu_ns16550_mutant.v
+	test "$$(diff flow/fpga/karu_ns16550.v $(BUILD)/uart-rx/karu_ns16550_mutant.v | grep -c '^>')" = 1
+	iverilog -g2012 -Irtl -s tb_ns16550_loop -o $(BUILD)/uart-rx/tb_ns16550_loop_late test/tb_ns16550_loop.sv \
+		$(BUILD)/uart-rx/karu_ns16550_mutant.v flow/fpga/uart_tx.v flow/fpga/uart_rx.v
+	vvp -n $(BUILD)/uart-rx/tb_ns16550_loop_late > $(BUILD)/uart-rx/late-assert.log 2>&1 || true
+	! grep -q 'ns16550 loopback: PASS' $(BUILD)/uart-rx/late-assert.log
+	grep -q 'ASSERT. ns16550 received byte dropped without an RBR read' $(BUILD)/uart-rx/late-assert.log
+	iverilog -g2012 -Irtl -DKARU_NO_ASSERT -s tb_ns16550_loop -o $(BUILD)/uart-rx/tb_ns16550_loop_late_na test/tb_ns16550_loop.sv \
+		$(BUILD)/uart-rx/karu_ns16550_mutant.v flow/fpga/uart_tx.v flow/fpga/uart_rx.v
+	@if vvp -n $(BUILD)/uart-rx/tb_ns16550_loop_late_na > $(BUILD)/uart-rx/late-bench.log 2>&1; then \
+		echo 'late-pop mutant NOT detected by the ns16550 loopback'; exit 1; fi
+	grep -q 'byte completing on the read edge stays ready' $(BUILD)/uart-rx/late-bench.log
+	@echo "detected late-pop mutant: wrapper assertion and $$(grep -o 'FAIL ns16550 loop check.*' $(BUILD)/uart-rx/late-bench.log | head -1)"
 plic-test: | $(BUILD)
 	iverilog -g2012 -s tb_plic -o $(BUILD)/tb_plic test/tb_plic.sv rtl/karu_plic.v rtl/karu_plic_assert.sv
 	vvp $(BUILD)/tb_plic
@@ -1152,11 +1211,28 @@ hmem-decode-test: | $(BUILD)
 	vvp $(BUILD)/tb_hmem_decode_h
 
 # Small standalone privilege/translation regressions, no full-core rebuild.
-.PHONY: sv39-test sv39-compare-test ifu-test svinval-decode-test csr-test
+.PHONY: sv39-test sv39-auth-pma-test sv39-compare-test ifu-test svinval-decode-test csr-test
 sv39-test: | $(BUILD)
 	iverilog -g2012 -Irtl -s karu_sv39_tb -o $(BUILD)/karu_sv39_tb \
 		test/karu_sv39_tb.v rtl/karu_sv39.v rtl/karu_ram_prim.v
 	vvp $(BUILD)/karu_sv39_tb
+#	The same bench built as a core with the Debug Module and debug authentication
+#	has: the Debug Module's page and the island SRAM are inside the boot ROM's
+#	span and must not be ROM. The control removes the island SRAM exclusion from
+#	karu_pma.vh; HLVX then reads island SRAM, and the bench must object.
+sv39-auth-pma-test: | $(BUILD)
+	mkdir -p $(BUILD)/sv39-auth-pma/mutant
+	iverilog -g2012 -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -s karu_sv39_tb -o $(BUILD)/sv39-auth-pma/tb \
+		test/karu_sv39_tb.v rtl/karu_sv39.v rtl/karu_ram_prim.v
+	vvp $(BUILD)/sv39-auth-pma/tb > $(BUILD)/sv39-auth-pma/run.log 2>&1 || { tail -4 $(BUILD)/sv39-auth-pma/run.log; exit 1; }
+	grep 'PASS checks=' $(BUILD)/sv39-auth-pma/run.log
+	grep -v "a\[31:14\] != 18'h00008" rtl/karu_pma.vh > $(BUILD)/sv39-auth-pma/mutant/karu_pma.vh
+	test "$$(diff rtl/karu_pma.vh $(BUILD)/sv39-auth-pma/mutant/karu_pma.vh | grep -c '^<')" = 1
+	iverilog -g2012 -I$(BUILD)/sv39-auth-pma/mutant -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -s karu_sv39_tb \
+		-o $(BUILD)/sv39-auth-pma/tb_mutant test/karu_sv39_tb.v rtl/karu_sv39.v rtl/karu_ram_prim.v
+	@if vvp $(BUILD)/sv39-auth-pma/tb_mutant > $(BUILD)/sv39-auth-pma/mutant.log 2>&1; then \
+		echo 'island SRAM mutant NOT detected'; exit 1; fi
+	@echo "detected island SRAM mutant: $$(grep -m1 -o 'FATAL.*' $(BUILD)/sv39-auth-pma/mutant.log | cut -c1-120)"
 sv39-compare-test: | $(BUILD)
 	iverilog -g2012 -Irtl -s karu_sv39_compare_tb -o $(BUILD)/karu_sv39_compare_tb \
 		test/karu_sv39_tb.v rtl/karu_sv39.v rtl/karu_ram_prim.v
@@ -1381,6 +1457,99 @@ lsu-atomic-test: | $(BUILD)
 	iverilog -g2012 -Irtl -s tb_lsu_atomic -o $(BUILD)/tb_lsu_atomic.vvp \
 		test/tb_lsu_atomic.sv rtl/karu_lsu.v
 	vvp $(BUILD)/tb_lsu_atomic.vvp
+# S7: in KARU_NO_MEM builds karu_lsu drives AXI writes directly and must
+# accept AW and W in either order. The unit bench covers every LSU write
+# state under joint, AW-first, W-first and random subordinate orders. Its
+# negative control rebuilds a _build copy with the pre-fix joint-only
+# handshake: it must pass the joint order and fail each split order.
+LSU_AW_W_DIR = $(BUILD)/lsu_aw_w
+LSU_AW_W_MUT = $(LSU_AW_W_DIR)/karu_lsu_joint_only.v
+LSU_AW_W_MUT_SED = \
+	-e 's/assign aw_w_done = (!awvalid || awready) && (!wvalid || wready);/assign aw_w_done = awvalid \&\& awready \&\& wvalid \&\& wready;/' \
+	-e 's/if (awready) awvalid <= 0;/if (awready \&\& wready) awvalid <= 0;/' \
+	-e 's/if (wready)  wvalid  <= 0;/if (awready \&\& wready) wvalid  <= 0;/'
+.PHONY: lsu-aw-w-test nomem-aw-w-isa-test
+lsu-aw-w-test: | $(BUILD)
+	mkdir -p $(LSU_AW_W_DIR)
+	iverilog -g2012 -Irtl -s tb_lsu_aw_w -o $(LSU_AW_W_DIR)/tb.vvp \
+		test/tb_lsu_aw_w.sv rtl/karu_lsu.v
+	vvp -n $(LSU_AW_W_DIR)/tb.vvp > $(LSU_AW_W_DIR)/tb.log 2>&1 || \
+		{ cat $(LSU_AW_W_DIR)/tb.log; exit 1; }
+	@grep '^LSU_AW_W_PASS' $(LSU_AW_W_DIR)/tb.log
+	sed $(LSU_AW_W_MUT_SED) rtl/karu_lsu.v > $(LSU_AW_W_MUT)
+	@test "$$(grep -c 'assign aw_w_done = awvalid && awready && wvalid && wready;' $(LSU_AW_W_MUT))" = 1 && \
+	 test "$$(grep -c 'if (awready && wready) awvalid <= 0;' $(LSU_AW_W_MUT))" = 4 && \
+	 test "$$(grep -c 'if (awready && wready) wvalid  <= 0;' $(LSU_AW_W_MUT))" = 4 || \
+		{ echo "lsu-aw-w-test: joint-only mutation did not apply to rtl/karu_lsu.v"; exit 1; }
+	iverilog -g2012 -Irtl -s tb_lsu_aw_w -o $(LSU_AW_W_DIR)/mutant.vvp \
+		test/tb_lsu_aw_w.sv $(LSU_AW_W_MUT)
+	@vvp -n $(LSU_AW_W_DIR)/mutant.vvp +modes=1 > $(LSU_AW_W_DIR)/mutant_joint.log 2>&1 && \
+	 grep -q '^LSU_AW_W_PASS' $(LSU_AW_W_DIR)/mutant_joint.log || \
+		{ echo "lsu-aw-w-test: joint-only mutant failed the joint control"; \
+		  cat $(LSU_AW_W_DIR)/mutant_joint.log; exit 1; }
+	@echo "lsu-aw-w-test: joint-only mutant passes the joint order (control)"
+	@for m in 2:aw_first:AW 4:w_first:W 8:random:W; do \
+		mask=$${m%%:*}; rest=$${m#*:}; name=$${rest%%:*}; ch=$${rest#*:}; \
+		log=$(LSU_AW_W_DIR)/mutant_$$name.log; \
+		if vvp -n $(LSU_AW_W_DIR)/mutant.vvp +modes=$$mask > $$log 2>&1; then \
+			echo "lsu-aw-w-test: joint-only mutant NOT detected in $$name order"; exit 1; fi; \
+		grep -q "LSU_AW_W_FAIL extra $$ch handshake .* mode=$$name " $$log || \
+			{ echo "lsu-aw-w-test: unexpected mutant failure in $$name order:"; cat $$log; exit 1; }; \
+		echo "lsu-aw-w-test: joint-only mutant detected ($$name): $$(grep -m1 -o 'LSU_AW_W_FAIL.*' $$log)"; \
+	done
+	@echo "LSU_AW_W_TEST_PASS"
+
+# S7 end to end: a KARU_NO_V KARU_NO_MEM core on htif_tb whose DDR model
+# accepts AW before W (+ddr_w_lag=N) or W before AW (+ddr_aw_lag=N). Runs
+# every rv64ua-p test plus the scalar, misaligned, compressed and FP store
+# tests, and requires the [ddr_skew] stat to show only the chosen order.
+NOMEM_AW_W_DIR = $(BUILD)/Vhtif_nomem_aw_w
+NOMEM_AW_W_BIN = $(NOMEM_AW_W_DIR)/Vhtif_tb
+NOMEM_AW_W_LAGS ?= 1 3
+NOMEM_AW_W_TIMEOUT ?= 60
+NOMEM_AW_W_AMOS = amoadd amoand amomax amomaxu amomin amominu amoor amoswap amoxor
+NOMEM_AW_W_ISA = $(foreach a,$(NOMEM_AW_W_AMOS),rv64ua-p-$(a)_d rv64ua-p-$(a)_w) rv64ua-p-lrsc \
+	rv64ui-p-sb rv64ui-p-sh rv64ui-p-sw rv64ui-p-sd rv64ui-p-ld_st rv64ui-p-st_ld \
+	rv64ui-p-ma_data rv64uc-p-rvc rv64uf-p-ldst rv64ud-p-ldst
+NOMEM_AW_W_HEX = $(NOMEM_AW_W_ISA:%=$(NOMEM_AW_W_DIR)/hex/%.hex)
+$(NOMEM_AW_W_BIN): $(HTIF_SRC) $(wildcard rtl/*.vh) flow/sim_tb.cpp Makefile
+	verilator $(VFLAGS) -DKARU_NO_V -DKARU_NO_MEM -Mdir $(NOMEM_AW_W_DIR) --cc --exe --build -j 4 \
+		--top-module htif_tb -DSIM_TB \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY \
+		$(HTIF_SRC) flow/sim_tb.cpp
+$(NOMEM_AW_W_ISA:%=test/riscv-tests/isa/%):
+	$(MAKE) -C test/riscv-tests/isa XLEN=64 $(@F)
+$(NOMEM_AW_W_DIR)/hex/%.hex: test/riscv-tests/isa/%
+	@mkdir -p $(@D)
+	$(XCHAIN)objcopy -O binary $< $(@D)/$*.bin
+	hexdump -v -e '1/8 "%016x\n"' $(@D)/$*.bin > $@
+nomem-aw-w-isa-test: $(NOMEM_AW_W_BIN) $(NOMEM_AW_W_HEX)
+	@mkdir -p $(NOMEM_AW_W_DIR)/logs
+	@fail=0; runs=0; \
+	for order in w_lag aw_lag; do \
+		case $$order in w_lag) want=aw_first; other=w_first ;; aw_lag) want=w_first; other=aw_first ;; esac; \
+		for lag in $(NOMEM_AW_W_LAGS); do \
+			pass=0; bad=""; \
+			for t in $(NOMEM_AW_W_ISA); do \
+				log=$(NOMEM_AW_W_DIR)/logs/$$t.$$order$$lag.log; runs=$$((runs+1)); \
+				off=$$($(XCHAIN)nm test/riscv-tests/isa/$$t | \
+					awk '/ tohost$$/ { printf "%x\n", strtonum("0x"$$1) - 0x80000000 }'); \
+				timeout $(NOMEM_AW_W_TIMEOUT) $(NOMEM_AW_W_BIN) +hex=$(NOMEM_AW_W_DIR)/hex/$$t.hex \
+					+tohost=$${off:-1000} +max_cycles=2000000 +ddr_$$order=$$lag > $$log 2>&1; \
+				skew=$$(grep -m1 '^\[ddr_skew\]' $$log); \
+				n_want=$$(echo "$$skew" | sed -n "s/.* $$want=\([0-9]*\).*/\1/p"); \
+				if grep -q '^\[HTIF\] exit 0 @' $$log && [ "$${n_want:-0}" -gt 0 ] && \
+				   echo "$$skew" | grep -q " $$other=0 " && echo "$$skew" | grep -q " joint=0 "; then \
+					pass=$$((pass+1)); \
+				else bad="$$bad $$t"; fi; \
+			done; \
+			echo "nomem-aw-w-isa-test: +ddr_$$order=$$lag ($$want) PASS=$$pass/$(words $(NOMEM_AW_W_ISA))$${bad:+ FAIL:$$bad}"; \
+			[ -z "$$bad" ] || fail=1; \
+		done; \
+	done; \
+	[ $$fail = 0 ] || { echo "nomem-aw-w-isa-test: FAILED (logs: $(NOMEM_AW_W_DIR)/logs)"; exit 1; }; \
+	echo "NOMEM_AW_W_ISA_PASS runs=$$runs"
 rva23-config-test:
 	python3 test/test_ext_config.py
 # Opt-in profile composition; legacy simulator and FPGA defaults are unchanged.
@@ -1508,7 +1677,7 @@ vrf-bram-core-test bwe-core-test:	$(VERI_BIN) $(BUILD)/vint_subj.hex $(BUILD)/vp
 #	core RTL minus the sim-only testbench + assertion checker
 CORE_RTL =	rtl/karu_ram_prim.v \
 			rtl/karu64.v rtl/karu_ifu.v rtl/karu_icache.v rtl/karu_dec.v rtl/karu_rvc64.v \
-			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v \
+			rtl/karu_alu.v rtl/karu_bitmanip.v rtl/karu_lsu.v rtl/karu_mem.v rtl/karu_csr.v rtl/karu_trigger.v \
 			rtl/karu_regfile.v rtl/karu_m.v rtl/karu_fregfile.v \
 			rtl/karu_vrf_bram.v rtl/karu_vrf_bram_wr.v \
 			rtl/karu_vlsu_buf.v rtl/karu_vlsu.v rtl/karu_varith.v rtl/karu_vlane.v rtl/karu_vest7.v \
@@ -1610,7 +1779,8 @@ DDR_RTL =	flow/fpga/fpga_ddr_top.v flow/fpga/karu_ddr_xbar.v flow/fpga/assert/ka
 			rtl/karu_clint.v rtl/karu_plic.v \
 			flow/fpga/eth/karu_eth.v flow/fpga/eth/liteeth_core.v \
 			flow/fpga/eth/eth_mii_loopback.v flow/fpga/eth/eth_sim_prims.v \
-			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v
+			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v \
+			flow/fpga/karu_soft_reset.v
 
 DDR_SIM_DIR =	$(BUILD)/Vfpga_ddr
 DDR_SIM_BIN =	$(DDR_SIM_DIR)/Vfpga_ddr_tb
@@ -1622,7 +1792,7 @@ $(DDR_SIM_BIN): $(DDR_SIM_DIR)/Vfpga_ddr_tb.mk
 $(DDR_SIM_DIR)/Vfpga_ddr_tb.mk: flow/fpga/fpga_ddr_tb.v $(DDR_RTL) $(CORE_RTL) flow/fpga_ddr_sim.cpp Makefile
 	@mkdir -p $(DDR_SIM_DIR)
 	verilator $(VFLAGS) -Iflow/fpga -Mdir $(DDR_SIM_DIR) --cc --exe \
-		--top-module fpga_ddr_tb -DSIM_TB $(addprefix -D,$(DDR_DEFINES)) \
+		--top-module fpga_ddr_tb -DSIM_TB $(addprefix -D,$(DDR_DEFINES)) $(DDR_VFLAGS_EXTRA) \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
 		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-COMBDLY \
 		-Wno-CMPCONST -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
@@ -1637,6 +1807,52 @@ ddr-irq-test:	$(DDR_SIM_BIN) $(BUILD)/irq_test.hex $(BUILD)/irq_rx.bin
 	irq_rc=$$?; cat $(BUILD)/ddr-irq-test.log; \
 	test $$irq_rc -eq 0 && grep -q '\[irq-test\] PASS' $(BUILD)/ddr-irq-test.log \
 		&& ! grep -Eq 'ERROR|FATAL|ASSERT.*FAIL' $(BUILD)/ddr-irq-test.log
+
+#	Software reset through the system-control register at 0x1000_0800
+#	(karu_ddr_xbar.v, karu_soft_reset.v); see test/fw/reboot_test.c. The
+#	firmware boots twice and checks what the reset must clear and keep. Seven
+#	mutants of the bus decode (test/fw/reboot_mutants.txt: name, sed
+#	expression, expected failure) must each fail with their own message:
+#	  no-privilege      a U-mode access is accepted
+#	  any-value         any value written to the register resets
+#	  any-width         a write of another width is accepted
+#	  any-register      any register of the block resets
+#	  no-request        the request never leaves the decode
+#	  uart-alias        the UART still repeats through the whole page
+#	  uart-write-alias  writes to the block still reach the UART
+REBOOT_TEST_SRCS = test/fw/htif_start.S test/fw/irq_trap.S test/fw/ns16550.c test/fw/reboot_test.c
+REBOOT_DIR = $(BUILD)/ddr-reboot
+REBOOT_IGNORED = a write that must be ignored reset the system
+$(BUILD)/reboot_test.elf:	$(REBOOT_TEST_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -march=rv64gcv_zicsr -T flow/spike.ld -o $@ $(REBOOT_TEST_SRCS)
+
+$(BUILD)/reboot_test.hex:	$(BUILD)/reboot_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/reboot_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/reboot_test.bin > $@
+
+.PHONY: ddr-reboot-test
+ddr-reboot-test:	$(DDR_SIM_BIN) $(BUILD)/reboot_test.hex
+	mkdir -p $(REBOOT_DIR)
+	$(DDR_SIM_BIN) +hex=$(BUILD)/reboot_test.hex +tohost=1000 +max_cycles=2000000 > $(REBOOT_DIR)/run.log 2>&1 \
+		|| { tail -8 $(REBOOT_DIR)/run.log; exit 1; }
+	grep '\[reboot-test\] PASS' $(REBOOT_DIR)/run.log
+	! grep -Eq 'ERROR|FATAL|ASSERT' $(REBOOT_DIR)/run.log
+	@set -e; while IFS='|' read -r name expr expect; do \
+		mkdir -p $(REBOOT_DIR)/$$name; \
+		sed -e "$$expr" flow/fpga/karu_ddr_xbar.v > $(REBOOT_DIR)/$$name/karu_ddr_xbar.v; \
+		test "$$(diff flow/fpga/karu_ddr_xbar.v $(REBOOT_DIR)/$$name/karu_ddr_xbar.v | grep -c '^>')" = 1 \
+			|| { echo "reboot mutant $$name did not apply to exactly one line"; exit 1; }; \
+		$(MAKE) --no-print-directory DDR_SIM_DIR=$(REBOOT_DIR)/$$name/obj \
+			DDR_RTL='$(subst flow/fpga/karu_ddr_xbar.v,$(REBOOT_DIR)/'$$name'/karu_ddr_xbar.v,$(DDR_RTL))' \
+			$(REBOOT_DIR)/$$name/obj/Vfpga_ddr_tb > $(REBOOT_DIR)/$$name/build.log 2>&1 \
+			|| { tail -5 $(REBOOT_DIR)/$$name/build.log; exit 1; }; \
+		if $(REBOOT_DIR)/$$name/obj/Vfpga_ddr_tb +hex=$(BUILD)/reboot_test.hex +tohost=1000 +max_cycles=2000000 \
+			> $(REBOOT_DIR)/$$name/run.log 2>&1 && grep -q '\[reboot-test\] PASS' $(REBOOT_DIR)/$$name/run.log; then \
+			echo "reboot mutant $$name NOT detected"; exit 1; fi; \
+		grep -q "$$expect" $(REBOOT_DIR)/$$name/run.log \
+			|| { echo "reboot mutant $$name failed for another reason:"; tail -4 $(REBOOT_DIR)/$$name/run.log; exit 1; }; \
+		echo "detected reboot mutant $$name: $$expect"; \
+	done < test/fw/reboot_mutants.txt
 
 #	==========================================================
 #	Linux boot sim: OpenSBI -> Linux from the karudeb RV64IMAC flat image.
@@ -2222,7 +2438,7 @@ vcu118-ddr-sgmii-taxi: gen-pcspma
 		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_sgmii_75_taxi)"
 
 #	Standalone (U-Boot-in-ROM) SGMII bitstream: identical RTL config to
-#	vcu118-ddr-sgmii-taxi, but the 1 MiB boot ROM holds the whole boot chain
+#	vcu118-ddr-sgmii-taxi, but the 2 MiB boot ROM holds the whole boot chain
 #	(fu-boot + OpenSBI + U-Boot + control DTB), so the board netboots Linux with NO
 #	JTAG/host stage. Builds the ROM image into _build/vcu118_fuboot.hex then synthesizes
 #	directly (bypassing the vcu118_ddr.bit rule so the monitor hex rule cannot clobber
@@ -2241,7 +2457,7 @@ vcu118-ddr-sgmii-rom: gen-pcspma mig-vcu118 vcu118-fuboot-rom-hex | $(BUILD)
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
 
 #	SCALAR RV64GC standalone (U-Boot-in-ROM) SGMII bitstream at 75 MHz: identical
-#	full-Linux infrastructure as vcu118-ddr-sgmii-rom (SGMII Ethernet + 1 MiB
+#	full-Linux infrastructure as vcu118-ddr-sgmii-rom (SGMII Ethernet + 2 MiB
 #	U-Boot-in-ROM boot chain + 2 GiB DRAM, scalar RV64GC boot images), but the
 #	FULL-SCALAR RV64GC core (IMAFDC -- KARU_NO_V keeps F/D, drops only V/K, so no
 #	vector instability) at cpu_clk = MIG/4 = 75 MHz (KARU_DDR_CPU_DIV=4), the
@@ -2289,7 +2505,7 @@ vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
 		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
 
-#	FULL-VECTOR standalone (U-Boot-in-ROM) SGMII bitstream: same SGMII + 1 MiB
+#	FULL-VECTOR standalone (U-Boot-in-ROM) SGMII bitstream: same SGMII + 2 MiB
 #	boot-ROM + 2 GiB DRAM as vcu118-ddr-sgmii-rom, but the FULL RV64GCV + Zvk +
 #	Keccak core (drop KARU_NO_F; add the Run-10 vector knobs: lane pipe + iterative
 #	mul/div). The boot ROM bakes the VECTOR boot chain -- a vector OpenSBI fw_jump +
@@ -2342,12 +2558,92 @@ rva23-boot-inputs-check:
 		for profile_ext in h smstateen ssstateen sscofpmf sstc svade svinval svnapot svpbmt; do \
 			printf '%s\n' "$$profile_isa" | grep -qw "$$profile_ext" || \
 			{ echo "Profile DTB lacks $$profile_ext"; exit 1; }; \
-		done
+		done; \
+		image_zkr=$(if $(filter KARU_ZKR,$(VCU118_VEC_EXTRA_DEFINES)),yes,no); dtb_zkr=no; \
+		if printf '%s\n' "$$profile_isa" | grep -qw zkr; then dtb_zkr=yes; fi; \
+		test "$$image_zkr" = "$$dtb_zkr" || \
+			{ echo "Zkr mismatch: image built with KARU_ZKR: $$image_zkr; device tree advertises zkr: $$dtb_zkr ($(FUBOOT_RVA23_DTB))"; exit 1; }
 vcu118-ddr-sgmii-rom-rva23s64: rva23-boot-inputs-check
 	$(MAKE) vcu118-ddr-sgmii-rom-vec \
 		VCU118_VEC_EXTRA_DEFINES='$(VCU118_VEC_EXTRA_DEFINES) KARU_RVA23S64' \
 		FUBOOT_VEC_DTB='$(FUBOOT_RVA23_DTB)' VCU118_NETBOOT_FILE_VEC='$(VCU118_NETBOOT_FILE_RVA23)' \
 		KARU_REPORT_TAG='$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_rva23s64_sgmii_75_rom)'
+
+#	End-to-end software reboot through the boot chain of the profile image,
+#	in simulation: the fu-boot ROM copies OpenSBI, the control DTB and an
+#	S-mode payload (in U-Boot's place) to DRAM; OpenSBI starts the payload,
+#	which asks for a cold reboot through SBI system reset. OpenSBI's
+#	syscon-reboot driver finds the system-control register through the DTB
+#	and writes it, the SoC resets, the ROM boots the chain again and the
+#	payload finds its marker in DRAM (test/fw/sbi_reboot_payload.S).
+#	Negative control: with the reboot node removed from the DTB, OpenSBI must
+#	not offer system reset and the payload must report that.
+#	The OpenSBI binary and the DTB come from karudeb, so this target is not
+#	part of the hashed functional gate. CLINT mtime is run at the clock rate
+#	to shorten fu-boot's two-second boot delay.
+SBI_REBOOT_DIR = $(BUILD)/sbi-reboot
+SBI_REBOOT_SIM = $(SBI_REBOOT_DIR)/obj/Vfpga_ddr_tb
+SBI_REBOOT_BOOT_SRCS = $(VCU118_FUBOOT_SRCS) flow/boot/fugzip.h flow/boot/vcu118_fuboot.ld
+SBI_REBOOT_RUN = +hex=$(SBI_REBOOT_DIR)/empty.hex +tohost=300000 +max_cycles=80000000
+
+$(SBI_REBOOT_DIR)/payload.bin:	test/fw/sbi_reboot_payload.S
+	mkdir -p $(SBI_REBOOT_DIR)
+	$(XCHAIN)gcc -march=rv64gc -mabi=lp64d -nostdlib -static -Wl,-Ttext=0x80200000,--no-relax \
+		-o $(SBI_REBOOT_DIR)/payload.elf $<
+	$(XCHAIN)objcopy -O binary $(SBI_REBOOT_DIR)/payload.elf $@
+
+$(SBI_REBOOT_DIR)/reboot.dtb:	$(FUBOOT_RVA23_DTB)
+	mkdir -p $(SBI_REBOOT_DIR)
+	cp $< $@
+	fdtget -t s $@ /reboot compatible | grep -qx syscon-reboot
+
+$(SBI_REBOOT_DIR)/noreboot.dtb:	$(FUBOOT_RVA23_DTB)
+	mkdir -p $(SBI_REBOOT_DIR)
+	cp $< $@
+	fdtput -r $@ /reboot
+
+#	Boot ROM for the simulation: the same fu-boot sources and ROM layout as
+#	the image, built in a private copy so that its blob-size header does not
+#	touch flow/boot/.
+$(SBI_REBOOT_DIR)/%.rom.hex:	$(SBI_REBOOT_DIR)/%.dtb $(SBI_REBOOT_DIR)/payload.bin $(KARUDEB_OPENSBI) \
+		$(SBI_REBOOT_BOOT_SRCS) flow/build_fuboot_rom.sh
+	mkdir -p $(SBI_REBOOT_DIR)/boot-$*
+	cp $(SBI_REBOOT_BOOT_SRCS) $(SBI_REBOOT_DIR)/boot-$*/
+	{ printf '#define FUBOOT_OPENSBI_OFF  %sUL\n' $(FUBOOT_OPENSBI_OFF); \
+	  printf '#define FUBOOT_OPENSBI_SIZE %sUL\n' $$(stat -c%s $(KARUDEB_OPENSBI)); \
+	  printf '#define FUBOOT_UBOOT_OFF    %sUL\n' $(FUBOOT_UBOOT_OFF); \
+	  printf '#define FUBOOT_UBOOT_SIZE   %sUL\n' $$(stat -c%s $(SBI_REBOOT_DIR)/payload.bin); \
+	  printf '#define FUBOOT_DTB_OFF      %sUL\n' $(FUBOOT_DTB_OFF); \
+	  printf '#define FUBOOT_DTB_SIZE     %sUL\n' $$(stat -c%s $<); } > $(SBI_REBOOT_DIR)/boot-$*/fuboot_blobs.h
+	$(XCHAIN)gcc $(VCU118_FUBOOT_CFLAGS) -DFUBOOT_AUTOBOOT -o $(SBI_REBOOT_DIR)/boot-$*/fuboot_rom.elf \
+		$(addprefix $(SBI_REBOOT_DIR)/boot-$*/,$(notdir $(VCU118_FUBOOT_SRCS)))
+	$(XCHAIN)objcopy -O binary $(SBI_REBOOT_DIR)/boot-$*/fuboot_rom.elf $(SBI_REBOOT_DIR)/boot-$*/fuboot_rom.bin
+	flow/build_fuboot_rom.sh $(SBI_REBOOT_DIR)/boot-$*/fuboot_rom.bin \
+		$(KARUDEB_OPENSBI) $(FUBOOT_OPENSBI_OFF) \
+		$(SBI_REBOOT_DIR)/payload.bin $(FUBOOT_UBOOT_OFF) \
+		$< $(FUBOOT_DTB_OFF) $@
+
+.PHONY: sbi-reboot-test sbi-reboot-sim
+sbi-reboot-sim:
+	$(MAKE) DDR_SIM_DIR=$(SBI_REBOOT_DIR)/obj \
+		KARU_DEFINES='$(filter-out KARU_ICACHE,$(RVA23_SHIP_SYN_DEFINES))' \
+		DDR_VFLAGS_EXTRA='-GRAM_XADR=25 -GRESET_PC=4096 -GCPU_CLK_HZ=1000000' \
+		DDR_RTL='$(DDR_RTL) $(ZVK_RTL)' \
+		$(SBI_REBOOT_SIM)
+
+sbi-reboot-test:	sbi-reboot-sim $(SBI_REBOOT_DIR)/reboot.rom.hex $(SBI_REBOOT_DIR)/noreboot.rom.hex
+	: > $(SBI_REBOOT_DIR)/empty.hex
+	$(SBI_REBOOT_SIM) $(SBI_REBOOT_RUN) +rom=$(SBI_REBOOT_DIR)/reboot.rom.hex > $(SBI_REBOOT_DIR)/run.log 2>&1 \
+		|| { tail -12 $(SBI_REBOOT_DIR)/run.log; exit 1; }
+	grep '\[sbi-reboot\] PASS' $(SBI_REBOOT_DIR)/run.log
+	grep -q '\[HTIF\] exit 0 ' $(SBI_REBOOT_DIR)/run.log
+	test "$$(grep -c 'fu-boot: copying boot chain' $(SBI_REBOOT_DIR)/run.log)" = 2
+	test "$$(grep -c '^OpenSBI v' $(SBI_REBOOT_DIR)/run.log)" = 2
+	! grep -Eq 'ASSERT|FATAL' $(SBI_REBOOT_DIR)/run.log
+	@echo "sbi-reboot-test: $$(grep -m1 '^OpenSBI v' $(SBI_REBOOT_DIR)/run.log) booted twice; reset through $$(grep -m1 -i 'Platform Reboot Device' $(SBI_REBOOT_DIR)/run.log | sed 's/ *: */: /')"
+	$(SBI_REBOOT_SIM) $(SBI_REBOOT_RUN) +rom=$(SBI_REBOOT_DIR)/noreboot.rom.hex > $(SBI_REBOOT_DIR)/noreboot.log 2>&1; true
+	! grep -q '\[sbi-reboot\] PASS' $(SBI_REBOOT_DIR)/noreboot.log
+	grep '\[sbi-reboot\] FAIL: OpenSBI does not offer system reset' $(SBI_REBOOT_DIR)/noreboot.log
 
 #	Post-synth write-path ILA insertion. This starts from an existing
 #	vcu118_ddr_synth.dcp so the protected board-top RTL does not need edits.
@@ -2388,7 +2684,7 @@ vcu118-ddr-eth-probe-100:
 #	Transfer bundle for programming an already-built image on another host.
 #	The member names retain their _build/... paths. The .ltx debug-probes file
 #	is optional, matching prog_vcu118_ddr.tcl; the .bit file is mandatory.
-#	For a U-Boot-in-ROM image (1 MiB = 131072 words in vcu118_fuboot.hex) the
+#	For a U-Boot-in-ROM image (2 MiB = 262144 words in vcu118_fuboot.hex) the
 #	bundle also carries a manifest and the control DTB, both read back from the
 #	packed ROM by flow/rom_manifest.py, so the host that serves the board can
 #	check its TFTP/NFS setup against what the bitstream contains. A ROM image
@@ -2401,7 +2697,7 @@ vcu118-program-bundle: | $(BUILD)
 	@test -s "$(BUILD)/vcu118_ddr.bit" || { echo "ERROR: $(BUILD)/vcu118_ddr.bit not found -- build the bitstream first"; exit 1; }
 	@set -e; files="$(BUILD)/vcu118_ddr.bit"; \
 		if test -s "$(BUILD)/vcu118_ddr.ltx"; then files="$$files $(BUILD)/vcu118_ddr.ltx"; fi; \
-		if test -s "$(VCU118_FUBOOT_HEX)" && test "$$(wc -l < "$(VCU118_FUBOOT_HEX)")" -eq 131072; then \
+		if test -s "$(VCU118_FUBOOT_HEX)" && test "$$(wc -l < "$(VCU118_FUBOOT_HEX)")" -eq 262144; then \
 			if test "$(VCU118_FUBOOT_HEX)" -nt "$(BUILD)/vcu118_ddr.bit"; then \
 				echo "ERROR: $(VCU118_FUBOOT_HEX) is newer than the bitstream -- the ROM was repacked after the build, so it cannot describe this bitstream; rebuild"; exit 1; \
 			fi; \
@@ -2643,6 +2939,101 @@ stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/
 	$(VERI_STATEEN_BIN) +hex=$(BUILD)/karu_stateen_xchk.hex +tohost=1000 +max_cycles=2000000
 	spike --isa=rv64gc_smstateen_smnpm_ssnpm $(BUILD)/karu_stateen_xchk.elf
 
+#	---- Zkr entropy source (KARU_ZKR, default-off) ----
+#	rtl/karu_entropy.v behind the seed CSR, with the FPGA noise source
+#	flow/fpga/karu_rosc_rng.v (a behavioural model in simulation).
+#	  entropy-test	unit test of karu_entropy with driven symbols, and its
+#			one-mechanism mutants (test/entropy_mutants.py)
+#	  zkr-test	the seed access table, mseccfg, word delivery and the custom
+#			CSRs on the core, with and without H, and with the strap low;
+#			then mutants of the access rules in rtl/karu_csr.v
+#	  zkr-test-spike	the access table on Spike, as a cross-check
+#	  zkr-loop-test	no combinational loop between the CSR file and the
+#			entropy block (Yosys), with a control
+ZKR_RTL		=	rtl/karu_entropy.v flow/fpga/karu_rosc_rng.v flow/fpga/karu_entropy_src.v
+ZKR_SPIKE_ISA	=	rv64gch_zkr
+.PHONY: entropy-test zkr-test zkr-test-spike
+entropy-test: | $(BUILD)
+	mkdir -p $(BUILD)/entropy
+	verilator --binary --timing -Wno-fatal --top-module tb_entropy -Mdir $(BUILD)/entropy/obj -o tb \
+		test/tb_entropy.sv rtl/karu_entropy.v > $(BUILD)/entropy/build.log 2>&1 || { tail -20 $(BUILD)/entropy/build.log; exit 1; }
+	$(BUILD)/entropy/obj/tb > $(BUILD)/entropy/run.log 2>&1 || { tail -5 $(BUILD)/entropy/run.log; exit 1; }
+	grep 'entropy test: PASS' $(BUILD)/entropy/run.log
+	grep 'first ES16' $(BUILD)/entropy/run.log
+	python3 test/entropy_mutants.py --out $(BUILD)/entropy/mut > $(BUILD)/entropy/mutants.log 2>&1 || { cat $(BUILD)/entropy/mutants.log; exit 1; }
+	tail -1 $(BUILD)/entropy/mutants.log
+
+#	No combinational loop between the CSR file and the entropy block. A CSR
+#	set or clear instruction computes the value it writes from the value it
+#	reads, so nothing that the entropy block lets the core read may depend
+#	combinationally on what the core writes. Simulation does not notice such a
+#	loop; Vivado refuses to write a bitstream with it, two hours into a build.
+#	Yosys elaborates two wrappers from test/zkr_loop_wrap.v and reports logic
+#	loops:
+#	  zkr_loop_wrap		karu_csr and karu_entropy connected as in the SoC
+#	  zkr_loop_strict	karu_entropy alone, every output fed back into the
+#				write strobes, the written value and the acknowledge
+#	The control puts back the dependence that the first image build was refused
+#	for (a restart, which depends on the written value, suppressing the value
+#	read); both wrappers must then report a loop.
+.PHONY: zkr-loop-test
+ZKR_LOOP_READ = read_verilog -sv -Irtl -DKARU_ZKR -DKARU_H -DKARU_NO_ASSERT rtl/karu_csr.v
+ZKR_LOOP_PASS = proc; flatten; opt -fast; check
+zkr-loop-test: | $(BUILD)
+	mkdir -p $(BUILD)/zkr-loop
+	yosys -q -l $(BUILD)/zkr-loop/zkr_loop_wrap.log -p '$(ZKR_LOOP_READ) rtl/karu_entropy.v test/zkr_loop_wrap.v; hierarchy -top zkr_loop_wrap; $(ZKR_LOOP_PASS)' > /dev/null 2>&1
+	grep -q 'Executing CHECK pass' $(BUILD)/zkr-loop/zkr_loop_wrap.log
+	! grep 'found logic loop' $(BUILD)/zkr-loop/zkr_loop_wrap.log
+	yosys -q -l $(BUILD)/zkr-loop/zkr_loop_strict.log -p '$(ZKR_LOOP_READ) rtl/karu_entropy.v test/zkr_loop_wrap.v; hierarchy -top zkr_loop_strict; $(ZKR_LOOP_PASS)' > /dev/null 2>&1
+	grep -q 'Executing CHECK pass' $(BUILD)/zkr-loop/zkr_loop_strict.log
+	! grep 'found logic loop' $(BUILD)/zkr-loop/zkr_loop_strict.log
+	sed 's/!test_q \&\& !fail \&\& !hold;/!test_q \&\& !clear;/' rtl/karu_entropy.v > $(BUILD)/zkr-loop/karu_entropy_mutant.v
+	test "$$(diff rtl/karu_entropy.v $(BUILD)/zkr-loop/karu_entropy_mutant.v | grep -c '^>')" = 1
+	yosys -q -l $(BUILD)/zkr-loop/zkr_loop_wrap_mutant.log -p '$(ZKR_LOOP_READ) $(BUILD)/zkr-loop/karu_entropy_mutant.v test/zkr_loop_wrap.v; hierarchy -top zkr_loop_wrap; $(ZKR_LOOP_PASS)' > /dev/null 2>&1
+	grep -q 'found logic loop' $(BUILD)/zkr-loop/zkr_loop_wrap_mutant.log
+	yosys -q -l $(BUILD)/zkr-loop/zkr_loop_strict_mutant.log -p '$(ZKR_LOOP_READ) $(BUILD)/zkr-loop/karu_entropy_mutant.v test/zkr_loop_wrap.v; hierarchy -top zkr_loop_strict; $(ZKR_LOOP_PASS)' > /dev/null 2>&1
+	grep -q 'found logic loop' $(BUILD)/zkr-loop/zkr_loop_strict_mutant.log
+	@echo 'zkr-loop-test: PASS (no logic loop: karu_csr with karu_entropy, and karu_entropy with its outputs fed back; the control is found by both)'
+
+#	One HTIF bench per configuration; ZKR_TB_SRC lets the mutant runs swap karu_csr.v.
+ZKR_TB_SRC	=	$(HTIF_SRC)
+define ZKR_BENCH
+$(1)/Vhtif_tb.mk: $$(ZKR_TB_SRC) $$(ZVK_RTL) $$(ZKR_RTL) $$(wildcard rtl/*.vh) flow/sim_tb.cpp Makefile
+	verilator $$(VFLAGS) -Mdir $(1) --cc --exe \
+		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_ZKR $(2) \
+		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+		-Wno-BLKANDNBLK -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-VARHIDDEN \
+		$$(ZKR_TB_SRC) $$(ZVK_RTL) $$(ZKR_RTL) flow/sim_tb.cpp
+$(1)/Vhtif_tb: $(1)/Vhtif_tb.mk
+	$$(MAKE) -C $(1) -f Vhtif_tb.mk
+endef
+ZKR_DIR		?=	$(BUILD)/zkr
+$(eval $(call ZKR_BENCH,$(ZKR_DIR)/Vhtif,))
+$(eval $(call ZKR_BENCH,$(ZKR_DIR)/Vhtif_h,-DKARU_H))
+ZKR_TEST_CC	=	$(XCHAIN)gcc -mabi=lp64d -nostdlib -nostartfiles -static -T test/karu_priv_test.ld
+$(ZKR_DIR)/%.hex: $(ZKR_DIR)/%.elf
+	$(XCHAIN)objcopy -O binary $< $(ZKR_DIR)/$*.bin
+	hexdump -v -e '1/8 "%016x\n"' $(ZKR_DIR)/$*.bin > $@
+$(ZKR_DIR)/zkr.elf: test/karu_zkr_test.S test/karu_priv_test.ld
+	mkdir -p $(ZKR_DIR)
+	$(ZKR_TEST_CC) -march=rv64gc -DZKR_TEST_CUSTOM -o $@ test/karu_zkr_test.S
+$(ZKR_DIR)/zkr_h.elf: test/karu_zkr_test.S test/karu_priv_test.ld
+	mkdir -p $(ZKR_DIR)
+	$(ZKR_TEST_CC) -march=rv64gch -DZKR_TEST_CUSTOM -DZKR_TEST_H=1 -o $@ test/karu_zkr_test.S
+$(ZKR_DIR)/zkr_off.elf: test/karu_zkr_test.S test/karu_priv_test.ld
+	mkdir -p $(ZKR_DIR)
+	$(ZKR_TEST_CC) -march=rv64gch -DZKR_TEST_H=1 -DZKR_TEST_STRAP_OFF -o $@ test/karu_zkr_test.S
+$(ZKR_DIR)/zkr_xchk.elf: test/karu_zkr_test.S test/karu_priv_test.ld
+	mkdir -p $(ZKR_DIR)
+	$(ZKR_TEST_CC) -march=rv64gch -DZKR_TEST_H=1 -DZKR_TEST_SPIKE -o $@ test/karu_zkr_test.S
+ZKR_RUN		=	+tohost=1000 +max_cycles=6000000
+zkr-test: $(ZKR_DIR)/Vhtif/Vhtif_tb $(ZKR_DIR)/Vhtif_h/Vhtif_tb \
+		$(ZKR_DIR)/zkr.hex $(ZKR_DIR)/zkr_h.hex $(ZKR_DIR)/zkr_off.hex $(ZKR_DIR)/zkr_xchk.hex
+	python3 test/zkr_run.py --dir $(ZKR_DIR)
+	python3 test/zkr_mutants.py --out $(ZKR_DIR)/mut
+zkr-test-spike: $(ZKR_DIR)/zkr_xchk.elf
+	spike --isa=$(ZKR_SPIKE_ISA) $(ZKR_DIR)/zkr_xchk.elf
+
 #	---- Smcntrpmf counter privilege-mode filtering (KARU_SMCNTRPMF, default-off) ----
 #	minstretcfg/mcyclecfg MINH/SINH/UINH freeze the fixed counters per privilege.
 #	Default-off knob -> dedicated -DKARU_SMCNTRPMF binary (the Vhtif_stateen precedent).
@@ -2802,3 +3193,17 @@ HTIF_MODEL_DIRS = $(VERI_DIR) $(VERI_FP_DIR) $(VERI_IC_DIR) $(VERI_VP_DIR) \
 	$(VERI_KEC_DIR) $(VERI_ZVKKEC_DIR) $(VERI_STATEEN_DIR) \
 	$(VERI_SMCNTR_DIR) $(VERI_SMCNTR_NOS_DIR) $(VERI_SSCOF_DIR) $(VERI_SSCOF_NOS_DIR)
 $(addsuffix /Vhtif_tb.mk,$(HTIF_MODEL_DIRS)) $(BUILD)/htif_tb.vvp: test/htif_pbmt_check.vh test/htif_ifu_fault_check.vh test/htif_hcontext_preempt_check.vh
+
+# Opt-in debug and AXI protection validation; generated outputs stay in _build/dbg.
+include dbg/axi.mk
+include dbg/dm.mk
+include dbg/auth.mk
+include dbg/sba.mk
+include dbg/jtag.mk
+include dbg/core-test.mk
+include dbg/trigger.mk
+include dbg/synthesis.mk
+include dbg/checks.mk
+include dbg/isa.mk
+include dbg/fpga.mk
+include dbg/board.mk

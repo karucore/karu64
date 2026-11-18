@@ -17,6 +17,46 @@
 module karu_csr (
     input  wire         clk,
     input  wire         rst,
+`ifdef KARU_DBG
+    // Sdext entry/exit are precise core events, separate from application traps.
+    input  wire         debug_mode_i,
+    input  wire         debug_enter_i,
+    input  wire         debug_exit_i,
+    input  wire [63:0]  debug_pc_i,
+    input  wire [2:0]   debug_cause_i,
+    output wire [63:0]  debug_dpc_o,
+    output wire         debug_step_o,
+    output wire         debug_ebreak_o,
+`ifdef KARU_DBG_TRIGGERS
+    input wire trigger_exec_valid_i,
+    input wire [63:0] trigger_exec_addr_i,
+    input wire trigger_data_valid_i, trigger_data_load_i, trigger_data_store_i,
+    input wire [63:0] trigger_data_addr_i,
+    output wire trigger_exec_hit_o, trigger_data_hit_o, trigger_data_armed_o,
+`endif
+`ifdef KARU_DBG_AUTH
+    //  Authentication CSRs 0x7C0-0x7C3, 0xFC0 live in the POR-domain
+    //  karudbg_auth block (doc/debug-auth-contract.md section 3). This file
+    //  only decodes them, applies the instruction-form legality table and
+    //  reports one committed (legal, non-trapping) access per instruction.
+    input  wire [63:0]  auth_rdata_i,
+    output wire         auth_fire_o,
+    output wire [2:0]   auth_sel_o,
+    output wire         auth_we_o,
+    output wire [63:0]  auth_wdata_o,
+`endif
+`endif
+`ifdef KARU_EN_ZKR
+    //  Zkr. seed (0x015) and the custom M-mode CSRs mnoise (0x7C8) and
+    //  mentropycfg (0x7C9) live in karu_entropy, outside the core. This file
+    //  decodes them, applies the access rules and reports one committed
+    //  (legal, non-trapping) access per instruction. mseccfg is kept here.
+    input  wire [63:0]  zkr_rdata_i,
+    output wire         zkr_fire_o,
+    output wire [1:0]   zkr_sel_o,      //  0 seed, 1 mnoise, 2 mentropycfg
+    output wire         zkr_we_o,
+    output wire [63:0]  zkr_wdata_o,
+`endif
 
     //  -- CSR access (csrrw/s/c[i]) --
     input  wire         op_req,
@@ -220,7 +260,11 @@ module karu_csr (
         end
     end
     assign virt_o = virt;
-    assign data_virt_o = csr_mstatus[17]
+    assign data_virt_o =
+`ifdef KARU_DBG
+        debug_mode_i ? 1'b0 :
+`endif
+        csr_mstatus[17]
         ? (csr_mstatus[12:11] != 2'd3 && csr_mstatus[39]) : virt;
     assign vsatp_o = csr_vsatp;
     assign hgatp_o = csr_hgatp;
@@ -347,12 +391,48 @@ module karu_csr (
 `endif
 `endif
     reg [1:0]  priv;
+`ifdef KARU_EN_ZKR
+    //  mseccfg (0x747): only the Zkr fields exist. SSEED lets S/HS-mode use
+    //  seed, USEED lets U-mode; both reset to 0. All other bits read zero
+    //  (no Smepmp, and no M-mode pointer masking).
+    reg        mseccfg_sseed, mseccfg_useed;
+`endif
+    wire debug_counter_stop;
+`ifdef KARU_DBG
+    reg [31:0] csr_dcsr;
+    reg [63:0] csr_dpc, csr_dscratch0, csr_dscratch1;
+    localparam [31:0] DCSR_WMASK = 32'h0000_8007
+`ifdef KARU_EN_S
+        | 32'h0000_2000
+`endif
+        | 32'h0000_1000
+`ifdef KARU_EN_H
+        | 32'h0003_0020
+`endif
+        ;
+    wire [1:0] debug_new_prv;
+    assign debug_dpc_o = csr_dpc;
+    assign debug_step_o = csr_dcsr[2];
+    assign debug_counter_stop = debug_mode_i;
+    assign debug_ebreak_o =
+`ifdef KARU_EN_H
+        virt ? ((priv == 2'd1) ? csr_dcsr[17] : csr_dcsr[16]) :
+`endif
+        (priv == 2'd3) ? csr_dcsr[15] :
+        (priv == 2'd1) ? csr_dcsr[13] : csr_dcsr[12];
+`else
+    assign debug_counter_stop = 1'b0;
+`endif
     localparam [1:0] EXC_NONE = 2'd0, EXC_ILLEGAL = 2'd1, EXC_VIRTUAL = 2'd2;
     localparam [1:0] PRIV_U = 2'd0;
     localparam [1:0] PRIV_S = 2'd1;
     localparam [1:0] PRIV_M = 2'd3;
     assign priv_o = priv;
-    assign data_priv_o = csr_mstatus[17] ? csr_mstatus[12:11] : priv;
+    assign data_priv_o =
+`ifdef KARU_DBG
+        debug_mode_i ? 2'd3 :
+`endif
+        csr_mstatus[17] ? csr_mstatus[12:11] : priv;
     assign menvcfg_pmm_o = menvcfg_pmm;
     assign senvcfg_pmm_o = senvcfg_pmm;
 `ifdef KARU_EN_S
@@ -893,9 +973,48 @@ module karu_csr (
     assign hpm_rd_v = 64'b0;
 `endif
 
+`ifdef KARU_DBG_TRIGGERS
+`ifndef KARU_DBG_TRIGGER_COUNT
+`define KARU_DBG_TRIGGER_COUNT 2
+`endif
+    wire [63:0] trigger_rd;
+    wire [63:0] new_v_w;
+    wire trigger_wr;
+    karu_trigger #(.COUNT(`KARU_DBG_TRIGGER_COUNT)) triggers (
+        .clk(clk), .rst(rst), .debug_mode_i(debug_mode_i),
+        .csr_write_i(trigger_wr), .csr_addr_i(op_addr),
+        .csr_data_i(new_v_w), .csr_data_o(trigger_rd),
+        .priv_i(priv), .virt_i(virt_o),
+        .exec_valid_i(trigger_exec_valid_i), .exec_addr_i(trigger_exec_addr_i),
+        .data_valid_i(trigger_data_valid_i), .data_load_i(trigger_data_load_i),
+        .data_store_i(trigger_data_store_i), .data_addr_i(trigger_data_addr_i),
+        .exec_hit_o(trigger_exec_hit_o), .data_hit_o(trigger_data_hit_o),
+        .data_armed_o(trigger_data_armed_o)
+    );
+`endif
     //  -- read value (combinational) --
     wire [63:0] rd_v_w;
+`ifndef KARU_DBG_TRIGGERS
+    wire [63:0] new_v_w;
+`endif
     assign rd_v_w =
+`ifdef KARU_DBG_TRIGGERS
+        (op_addr == 12'h7a0 || op_addr == 12'h7a1 || op_addr == 12'h7a2 || op_addr == 12'h7a4) ? trigger_rd :
+`endif
+`ifdef KARU_DBG_AUTH
+        (op_addr == 12'h7c0 || op_addr == 12'h7c1 || op_addr == 12'h7c2 ||
+         op_addr == 12'h7c3 || op_addr == 12'hfc0) ? auth_rdata_i :
+`endif
+`ifdef KARU_EN_ZKR
+        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9) ? zkr_rdata_i :
+        op_addr == 12'h747 ? {54'b0, mseccfg_sseed, mseccfg_useed, 8'b0} :
+`endif
+`ifdef KARU_DBG
+        op_addr == 12'h7b0 ? {32'b0, csr_dcsr} :
+        op_addr == 12'h7b1 ? csr_dpc :
+        op_addr == 12'h7b2 ? csr_dscratch0 :
+        op_addr == 12'h7b3 ? csr_dscratch1 :
+`endif
 `ifdef KARU_EN_H
         h_read_sel ? h_rd_v :
 `endif
@@ -988,6 +1107,18 @@ module karu_csr (
         input [11:0] a;
         begin
             case (a)
+`ifdef KARU_DBG_TRIGGERS
+                12'h7a0,12'h7a1,12'h7a2,12'h7a4,
+`endif
+`ifdef KARU_DBG
+                12'h7b0,12'h7b1,12'h7b2,12'h7b3,
+`endif
+`ifdef KARU_DBG_AUTH
+                12'h7c0,12'h7c1,12'h7c2,12'h7c3,12'hfc0,
+`endif
+`ifdef KARU_EN_ZKR
+                12'h015,12'h747,12'h7c8,12'h7c9,
+`endif
 `ifdef KARU_EN_H
                 12'h200,12'h204,12'h205,12'h240,12'h241,12'h242,
                 12'h243,12'h244,12'h24d,12'h280,
@@ -1039,12 +1170,19 @@ module karu_csr (
     wire [63:0] rmw_v;
     assign rmw_v = (op_addr == 12'h344)
    ? {rd_v_w[63:10], csr_mip[9], rd_v_w[8:0]} : rd_v_w;
-    wire [63:0] new_v_w;
     assign new_v_w =
         op_sub == `CSR_RW || op_sub == `CSR_RWI ? op_src               :
         op_sub == `CSR_RS || op_sub == `CSR_RSI ? rmw_v |  op_src      :
         op_sub == `CSR_RC || op_sub == `CSR_RCI ? rmw_v & ~op_src      :
                                                   rmw_v;
+`ifdef KARU_DBG
+    assign debug_new_prv =
+`ifdef KARU_EN_S
+        (new_v_w[1:0] == 2'd2) ? 2'd0 : new_v_w[1:0];
+`else
+        (new_v_w[1:0] == 2'd3) ? 2'd3 : 2'd0;
+`endif
+`endif
     // MPP is WARL: encoding 2 is never a privilege mode; S is absent in an
     // M/U build. Normalize unsupported writes to U before any MRET/MPRV use.
     wire [1:0] new_mpp;
@@ -1063,6 +1201,20 @@ module karu_csr (
         (op_sub == `CSR_RW || op_sub == `CSR_RWI) ||
         ((op_sub == `CSR_RS || op_sub == `CSR_RC ||
           op_sub == `CSR_RSI || op_sub == `CSR_RCI) && op_rs1 != 5'd0);
+
+    //  Authentication CSR instruction forms (contract section 3): mdbgrx and
+    //  mdbgrng pop on a write (Zkr seed rule), so every read-only form is
+    //  illegal; mdbgtx pushes only on CSRRW/CSRRWI, so the set/clear forms that
+    //  write are illegal; rx, tx and rng are illegal in Debug Mode.
+    wire auth_form_ill;
+`ifdef KARU_DBG_AUTH
+    assign auth_form_ill =
+        ((op_addr == 12'h7c1 || op_addr == 12'h7c3) && (!wen_w || debug_mode_i)) ||
+        (op_addr == 12'h7c2 && (debug_mode_i ||
+                                (wen_w && op_sub != `CSR_RW && op_sub != `CSR_RWI)));
+`else
+    assign auth_form_ill = 1'b0;
+`endif
 
     //  CSR legality: unimplemented CSR, insufficient privilege (csr[9:8] is the
     //  minimum mode), or a write to a read-only CSR (csr[11:10]==2'b11) that the
@@ -1135,6 +1287,24 @@ module karu_csr (
     assign stateen_block = 1'b0;
 `endif
 
+    //  Zkr seed access (ISA manual, Volume II, "Entropy Source Access
+    //  Control"). A form that does not write is illegal in every mode. U-mode
+    //  needs USEED, S/HS-mode needs SSEED. In VS/VU-mode a writing access is
+    //  a virtual-instruction exception when SSEED is set, so that a
+    //  hypervisor can emulate it, and illegal otherwise.
+    wire seed_ill, seed_virtual;
+`ifdef KARU_EN_ZKR
+    assign seed_ill = (op_addr == 12'h015) &&
+        (!wen_w ||
+         (virt ? !mseccfg_sseed
+               : ((priv == PRIV_U && !mseccfg_useed) ||
+                  (priv == PRIV_S && !mseccfg_sseed))));
+    assign seed_virtual = (op_addr == 12'h015) && virt;
+`else
+    assign seed_ill = 1'b0;
+    assign seed_virtual = 1'b0;
+`endif
+
 `ifdef KARU_EN_H
     wire [1:0] csr_priv_rank;
     assign csr_priv_rank = (!virt && priv == PRIV_S) ? 2'd2 : priv;
@@ -1147,6 +1317,7 @@ module karu_csr (
                          || (priv == PRIV_U && !csr_scounteren[ctr_idx])))
            || (timer_csr && (!h_stce || !csr_hcounteren[1]
                          || (priv == PRIV_U && !csr_scounteren[1])))
+           || seed_virtual
            || (op_addr == 12'h180 && csr_hstatus[20])
            || (op_addr == 12'h10a && !csr_hstateen[0][62])
            || ((op_addr >= 12'h10c && op_addr <= 12'h10f)
@@ -1162,20 +1333,27 @@ module karu_csr (
                       || (v_csr_access && ((status_vs_o == 0) || (virt && vsstatus_vs_o == 0)));
     wire csr_hard_illegal;
     assign csr_hard_illegal = !csr_present(op_addr)
+`ifdef KARU_DBG
+          || ((op_addr[11:4] == 8'h7b) && !debug_mode_i)
+`endif
           || (csr_priv_denied && (!virt || op_addr[9:8] == PRIV_M))
           || ctr_blocked || satp_tvm_block || stimecmp_block || stateen_block
-          || context_off || ((op_addr[11:10] == 2'b11) && wen_w);
+          || context_off || ((op_addr[11:10] == 2'b11) && wen_w) || auth_form_ill
+          || seed_ill;
     assign csr_exc_o = csr_hard_illegal ? EXC_ILLEGAL : guest_denied ? EXC_VIRTUAL : EXC_NONE;
     assign csr_illegal = csr_exc_o == EXC_ILLEGAL;
 `else
     assign csr_illegal =
         !csr_present(op_addr) ||
+`ifdef KARU_DBG
+        ((op_addr[11:4] == 8'h7b) && !debug_mode_i) ||
+`endif
         (priv < op_addr[9:8]) ||
         ctr_blocked ||
         satp_tvm_block ||
         stimecmp_block ||
         stateen_block ||
-        ((op_addr[11:10] == 2'b11) && wen_w);
+        ((op_addr[11:10] == 2'b11) && wen_w) || auth_form_ill || seed_ill;
     assign csr_exc_o = csr_illegal ? EXC_ILLEGAL : EXC_NONE;
 `endif
 
@@ -1183,6 +1361,53 @@ module karu_csr (
     //  the actual write fires only when the access is legal.
     wire csr_w_fire;
     assign csr_w_fire = op_req && wen_w && (csr_exc_o == EXC_NONE);
+`ifdef KARU_DBG_AUTH
+    // A CSR instruction killed by a hart/system reset, or by a trap taken in
+    // the same cycle, reports nothing: it does not retire (plan C8).
+    assign auth_fire_o = op_req && !rst && !trap_req && (csr_exc_o == EXC_NONE) &&
+        (op_addr == 12'h7c0 || op_addr == 12'h7c1 || op_addr == 12'h7c2 ||
+         op_addr == 12'h7c3 || op_addr == 12'hfc0);
+    assign auth_sel_o = op_addr == 12'hfc0 ? 3'd4 : {1'b0, op_addr[1:0]};
+    assign auth_we_o = wen_w;
+    assign auth_wdata_o = new_v_w;
+`endif
+`ifdef KARU_EN_ZKR
+    //  As for the authentication CSRs: an access killed by a reset or by a
+    //  trap taken in the same cycle reports nothing, so no word is taken by
+    //  an instruction that does not retire.
+    assign zkr_fire_o = op_req && !rst && !trap_req && (csr_exc_o == EXC_NONE) &&
+        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9);
+    assign zkr_sel_o = op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd1 : 2'd2;
+    assign zkr_we_o = wen_w;
+    assign zkr_wdata_o = new_v_w;
+`endif
+`ifdef KARU_EN_ZKR
+`ifndef KARU_NO_ASSERT
+    // synthesis translate_off
+    //  The access table again, stated per mode instead of per denial, and
+    //  checked against what was reported to the entropy source. Nothing is
+    //  reported from VS/VU-mode: those accesses always trap.
+    reg zkr_seed_may;
+    always @* begin
+        if (virt)                   zkr_seed_may = 1'b0;
+        else if (priv == PRIV_M)    zkr_seed_may = 1'b1;
+        else if (priv == PRIV_S)    zkr_seed_may = mseccfg_sseed;
+        else                        zkr_seed_may = mseccfg_useed;
+    end
+    always @(posedge clk) if (!rst && zkr_fire_o) begin
+        if (zkr_sel_o == 2'd0 && !(zkr_seed_may && zkr_we_o)) begin
+            $display("ASSERT: karu_csr: a seed access was reported against the access table"); $fatal;
+        end
+        if (zkr_sel_o != 2'd0 && (virt || priv != PRIV_M)) begin
+            $display("ASSERT: karu_csr: mnoise/mentropycfg access reported outside M-mode"); $fatal;
+        end
+    end
+    // synthesis translate_on
+`endif
+`endif
+`ifdef KARU_DBG_TRIGGERS
+    assign trigger_wr = csr_w_fire;
+`endif
 
     //  Smcntrpmf per-privilege inhibit for the CURRENT privilege: when set, the
     //  matching fixed counter is frozen this cycle (mcycle uses the cycle's priv;
@@ -1219,6 +1444,12 @@ module karu_csr (
 `endif
     always @(posedge clk) begin
         if (rst) begin
+`ifdef KARU_DBG
+            csr_dcsr <= 32'h4000_0403; // debugver=4, stopcount=1, prv=M
+            csr_dpc <= 0;
+            csr_dscratch0 <= 0;
+            csr_dscratch1 <= 0;
+`endif
             csr_mcycle   <= 0;
             csr_instret  <= 0;
             csr_mcountinhibit <= 0;
@@ -1229,6 +1460,10 @@ module karu_csr (
             end
 `endif
             csr_mstatus  <= 0;
+`ifdef KARU_EN_ZKR
+            mseccfg_sseed <= 1'b0;
+            mseccfg_useed <= 1'b0;
+`endif
             csr_misa     <= MISA_RESET;
             csr_medeleg  <= 0;
             csr_mideleg  <= H_IRQ_MASK;
@@ -1284,9 +1519,9 @@ module karu_csr (
             csr_vxsat    <= 0;
             csr_vxrm     <= 0;
         end else begin
-            if (!csr_mcountinhibit[0] && !cyc_pinh)
+            if (!debug_counter_stop && !csr_mcountinhibit[0] && !cyc_pinh)
                 csr_mcycle <= csr_mcycle + 64'b1;
-            if (retire && !csr_mcountinhibit[2] && !ir_pinh)
+            if (!debug_counter_stop && retire && !csr_mcountinhibit[2] && !ir_pinh)
                 csr_instret <= csr_instret + 64'b1;
 `ifdef KARU_EN_HPM
 `ifdef KARU_EN_SSCOFPMF
@@ -1296,7 +1531,7 @@ module karu_csr (
 `ifdef KARU_EN_SSCOFPMF
                 hpm_ovf[hpm_i] = 1'b0;
 `endif
-                if (!csr_mcountinhibit[hpm_i + 3] &&
+                if (!debug_counter_stop && !csr_mcountinhibit[hpm_i + 3] &&
                     hpm_event_hit(csr_mhpmevent[hpm_i])
 `ifdef KARU_EN_SSCOFPMF
                     && !hpm_pinh(csr_mhpmevent[hpm_i])
@@ -1325,6 +1560,19 @@ module karu_csr (
 `endif
             if (csr_w_fire) begin
                 case (bank_addr)
+`ifdef KARU_DBG
+                    12'h7b0: begin
+                        csr_dcsr <= (csr_dcsr & ~DCSR_WMASK) |
+                                    (new_v_w[31:0] & DCSR_WMASK);
+                        csr_dcsr[1:0] <= debug_new_prv;
+`ifdef KARU_EN_H
+                        csr_dcsr[5] <= new_v_w[5] && debug_new_prv != PRIV_M;
+`endif
+                    end
+                    12'h7b1: csr_dpc <= new_v_w & EPC_WMASK;
+                    12'h7b2: csr_dscratch0 <= new_v_w;
+                    12'h7b3: csr_dscratch1 <= new_v_w;
+`endif
 `ifdef KARU_EN_H
                     12'h200: csr_vsstatus <= new_v_w & SSTATUS_WMASK;
                     12'h204: csr_mie <= (csr_mie & ~((csr_hideleg & VS_IRQ_MASK) | vs_lcofi_alias))
@@ -1428,6 +1676,14 @@ module karu_csr (
                     12'h305: csr_mtvec    <= {new_v_w[63:2],        //  WARL: modes 2/3
                                     new_v_w[1] ? 2'b00 : new_v_w[1:0]}; //  reserved -> direct
                     12'h306: csr_mcounteren <= new_v_w & COUNTEREN_WMASK;
+`ifdef KARU_EN_ZKR
+                    12'h747: begin
+`ifdef KARU_EN_S
+                        mseccfg_sseed <= new_v_w[9];
+`endif
+                        mseccfg_useed <= new_v_w[8];
+                    end
+`endif
                     12'h30A: begin
 `ifdef KARU_EN_S
                         menvcfg_stce <= new_v_w[63];
@@ -1614,6 +1870,25 @@ module karu_csr (
 `ifdef KARU_EN_H
                 end
 `endif
+            end
+`endif
+`ifdef KARU_DBG
+            if (debug_enter_i) begin
+                csr_dpc <= debug_pc_i & EPC_WMASK;
+                csr_dcsr[1:0] <= priv;
+                csr_dcsr[8:6] <= debug_cause_i;
+`ifdef KARU_EN_H
+                csr_dcsr[5] <= virt;
+                virt <= 1'b0;
+`endif
+                priv <= PRIV_M;
+            end
+            if (debug_exit_i) begin
+                priv <= csr_dcsr[1:0];
+`ifdef KARU_EN_H
+                virt <= csr_dcsr[5] && csr_dcsr[1:0] != PRIV_M;
+`endif
+                if (csr_dcsr[1:0] != PRIV_M) csr_mstatus[17] <= 1'b0;
             end
 `endif
 `ifdef KARU_IRQ_TRACE

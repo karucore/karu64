@@ -9,6 +9,11 @@
 //	  +tohost=<hex>      tohost offset within DRAM (default 0x1000)
 //	  +max_cycles=<dec>  watchdog (default 2,000,000)
 //	  +uart_in=<file>    bytes fed to the UART RX
+//	  +rom=<file>        boot ROM image (replaces the xbar's default ROM_HEX)
+//
+//	Top-level parameters (verilator -G) for runs that boot from the ROM:
+//	RAM_XADR (DRAM size, log2 bytes), RESET_PC and CPU_CLK_HZ (sets how fast
+//	CLINT mtime runs relative to the clock).
 
 `include "karu_ext.vh"
 
@@ -24,9 +29,17 @@ module clk_gen;
 	fpga_ddr_tb tb (clk);
 endmodule
 
-module fpga_ddr_tb (input wire clk);
+module fpga_ddr_tb #(
+	parameter		 RAM_XADR	= 20,
+	parameter [31:0] RESET_PC	= 32'h8000_0000,
+	parameter		 CPU_CLK_HZ	= 100000000,
+	//	passed to fpga_ddr_top: the Zkr entropy source's rate, and the island
+	//	ROM of a build with debug authentication
+	parameter integer ZKR_SAMPLE_DIV = 256,
+	parameter [15:0] ZKR_INTERVAL	= 16'd15,
+	parameter		 AUTH_ROM_HEX	= ""
+) (input wire clk);
 
-	localparam	RAM_XADR = 20;
 	localparam	RLAT	 = 4;			//	model a few MIG read-latency beats
 
 	reg [8*256-1:0]	hex_file;
@@ -53,6 +66,9 @@ module fpga_ddr_tb (input wire clk);
 
 	fpga_ddr_top #(
 		.RAM_XADR(RAM_XADR),
+		.RESET_PC(RESET_PC),
+		.CPU_CLK_HZ(CPU_CLK_HZ),
+		.ZKR_SAMPLE_DIV(ZKR_SAMPLE_DIV), .ZKR_INTERVAL(ZKR_INTERVAL), .AUTH_ROM_HEX(AUTH_ROM_HEX),
 		.RLAT	 (RLAT)
 	) dut (
 		.clk(clk), .rst(rst),
@@ -60,6 +76,17 @@ module fpga_ddr_tb (input wire clk);
 		.uart_rts(uart_rts), .uart_cts(1'b1),
 		.trap(trap)
 	);
+
+	//	Optional boot ROM image. It is loaded on the first clock edge, still
+	//	inside the power-on reset, so that it replaces the xbar's own image
+	//	whatever the order of the initial blocks.
+	reg [8*256-1:0]	rom_file;
+	reg				rom_loaded = 1'b0;
+	always @(posedge clk) if (!rom_loaded) begin
+		rom_loaded <= 1'b1;
+		if ($value$plusargs("rom=%s", rom_file))
+			$readmemh(rom_file, dut.xbar.u_boot_mem.rom);
+	end
 
 	wire [RAM_XADR-4:0]	tohost_idx = tohost_off[RAM_XADR-1:3];
 	reg  [63:0]			tohost_v;

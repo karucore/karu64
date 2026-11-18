@@ -25,6 +25,7 @@
 `include "karu_ext.vh"
 `include "karu_axi_defs.vh"
 
+`include "karu_bootmap.vh"
 module karu_ddr_xbar #(
 	parameter		CPU_CLK_HZ = 100000000,		//	core clock in Hz (100 MHz default; DDR top overrides via MIG/div)
 	parameter		ROM_HEX = "vcu118_fuboot.hex"
@@ -87,6 +88,7 @@ module karu_ddr_xbar #(
 	output wire [`AXI_LEN_W-1:0]	m_arlen,
 	output wire [`AXI_SIZE_W-1:0]	m_arsize,
 	output wire [`AXI_BURST_W-1:0]	m_arburst,
+	output wire [`AXI_PROT_W-1:0]	m_arprot,
 	output wire						m_arvalid,
 	input  wire						m_arready,
 	input  wire [`AXI_ID_W-1:0]		m_rid,
@@ -100,6 +102,7 @@ module karu_ddr_xbar #(
 	output wire [`AXI_LEN_W-1:0]	m_awlen,
 	output wire [`AXI_SIZE_W-1:0]	m_awsize,
 	output wire [`AXI_BURST_W-1:0]	m_awburst,
+	output wire [`AXI_PROT_W-1:0]	m_awprot,
 	output wire						m_awvalid,
 	input  wire						m_awready,
 	output wire [`AXI_DATA_W-1:0]	m_wdata,
@@ -123,6 +126,11 @@ module karu_ddr_xbar #(
 	output wire			irq_software,
 	output wire			irq_ext_m,
 	output wire			irq_ext_s,
+	//	== system control ==
+	//	One-cycle request for a system reset: a privileged 32-bit write of
+	//	0x7777 to 0x1000_0800. The top level stretches it into a reset pulse
+	//	that also resets this block (karu_soft_reset.v).
+	output wire			sys_reset_req_o,
 	//	CLINT mtime -> core CSR `time` (rdtime), so rdtime + mtimecmp share one domain
 	output wire [63:0]	clint_mtime
 `ifdef KARU_ETH_SGMII
@@ -143,13 +151,19 @@ module karu_ddr_xbar #(
 	//	unambiguously DRAM. The MIG/converter AXI is 31-bit, so bit 31 is dropped on the
 	//	way out -> core 0x8000_0000..0xFFFF_FFFF maps to MIG offset 0..0x7FFF_FFFF (2 GiB).
 	function automatic is_dram (input [`AXI_ADDR_W-1:0] a); is_dram = (a[31] == 1'b1); endfunction
-	//	Boot mem = 0x0000_1000..0x001F_FFFF (below the first MMIO at 0x0200_0000):
-	//	a 1 MiB ROM (0x1000..0x100FFF) + 64 KiB scratch SRAM (0x101000..0x110FFF),
-	//	with the gap above reading 0. karu_boot_mem does the precise ROM/SRAM split.
+	//	Boot mem: the ROM from 0x0000_1000 (2 MiB by default, karu_bootmap.vh)
+	//	and 64 KiB of scratch SRAM directly above it. The decode window is the
+	//	next power of two, below the first MMIO at 0x0200_0000, and the gap
+	//	above the SRAM reads 0. karu_boot_mem does the precise ROM/SRAM split.
+	localparam [19:0] BOOT_WIN_PAGES =
+		((`KARU_BOOT_ROM_PAGES + 20'h00011) > 20'h00200) ? 20'h00400 : 20'h00200;
 	function automatic is_boot (input [`AXI_ADDR_W-1:0] a);
-		is_boot = (a[31:21] == 11'b0) && (a[20:12] != 9'b0);
+		is_boot = (a[31:12] != 20'b0) && (a[31:12] < BOOT_WIN_PAGES);
 	endfunction
-	function automatic is_uart (input [`AXI_ADDR_W-1:0] a); is_uart = (a[31:12] == 20'h10000); endfunction
+	//	The UART has the lower half of its page; the upper half
+	//	(0x1000_0800..0x1000_0fff) is the system-control block.
+	function automatic is_uart (input [`AXI_ADDR_W-1:0] a); is_uart = (a[31:11] == 21'h020000); endfunction
+	function automatic is_sysctl(input [`AXI_ADDR_W-1:0] a); is_sysctl = (a[31:11] == 21'h020001); endfunction
 	function automatic is_eth  (input [`AXI_ADDR_W-1:0] a); is_eth   = (a[31:20] == 12'h110); endfunction
 	function automatic is_flash(input [`AXI_ADDR_W-1:0] a); is_flash = (a[31:12] == 20'h12000); endfunction
 	function automatic is_clint(input [`AXI_ADDR_W-1:0] a); is_clint = (a[31:16] == 16'h0200); endfunction
@@ -193,6 +207,7 @@ module karu_ddr_xbar #(
 	//	them -- hoist the decls so a single-pass front-end (Genus + default_nettype
 	//	none) does not see implicit nets in the .re() port expressions.
 	reg				mr_uart, mr_clint, mr_plic, mr_flash, mr_eth;
+	reg				mr_sysctl;			//	system-control block: reads as zero
 	localparam MR_IDLE = 1'b0, MR_VLD = 1'b1;
 	reg mr_st;
 	wire mmio_ar_accept;
@@ -300,6 +315,7 @@ module karu_ddr_xbar #(
 	reg [`AXI_ADDR_W-1:0]	dr_araddr;
 	reg [`AXI_LEN_W-1:0]	dr_arlen;
 	reg [`AXI_SIZE_W-1:0]	dr_arsize;
+	reg [`AXI_PROT_W-1:0]	dr_arprot;
 	wire					dmem_rd_arready;	//	DRAM-engine AR grant for dmem
 
 	wire imem_rd_req = imem_arvalid && !imem_boot_req;
@@ -319,11 +335,13 @@ module karu_ddr_xbar #(
 					dr_own <= OWN_DMEM;
 					dr_arid <= dmem_arid; dr_araddr <= dmem_araddr;
 					dr_arlen <= dmem_arlen; dr_arsize <= dmem_arsize;
+					dr_arprot <= dmem_arprot;
 					dr_st <= DR_AR;
 				end else if (grant_imem) begin
 					dr_own <= OWN_IMEM;
 					dr_arid <= imem_arid; dr_araddr <= imem_araddr;
 					dr_arlen <= imem_arlen; dr_arsize <= imem_arsize;
+					dr_arprot <= imem_arprot;
 					dr_st <= DR_AR;
 				end
 			end
@@ -348,6 +366,7 @@ module karu_ddr_xbar #(
 	assign m_arlen   = dr_arlen;
 	assign m_arsize  = dr_arsize;
 	assign m_arburst = `AXI_BURST_INCR;
+	assign m_arprot  = dr_arprot;
 	assign m_arvalid = (dr_st == DR_AR);
 
 	//	master R routed to the owner; rready from the owner
@@ -397,6 +416,7 @@ module karu_ddr_xbar #(
 				mr_addr  <= dmem_araddr;
 				mr_id    <= dmem_arid;
 				mr_uart  <= is_uart(dmem_araddr);
+				mr_sysctl <= is_sysctl(dmem_araddr);
 				mr_clint <= is_clint(dmem_araddr);
 				mr_plic  <= is_plic(dmem_araddr);
 				mr_flash <= is_flash(dmem_araddr);
@@ -430,7 +450,7 @@ module karu_ddr_xbar #(
 	assign dmem_rid    = lr_to_dmem ? lr_id :
 						 mmio_rvalid ? mr_id : m_rid;
 	assign dmem_rresp  = lr_to_dmem ? `AXI_RESP_OKAY :
-		mmio_rvalid ? ((mr_uart || mr_clint || mr_plic || mr_eth || mr_flash)
+		mmio_rvalid ? ((mr_uart || mr_clint || mr_plic || mr_eth || mr_flash || mr_sysctl)
 			? `AXI_RESP_OKAY : `AXI_RESP_DECERR) : m_rresp;
 	assign dmem_rlast  = (lr_to_dmem || mmio_rvalid) ? 1'b1 : m_rlast;
 
@@ -474,6 +494,14 @@ module karu_ddr_xbar #(
 	assign clint_we = mmio_aw_fire && is_clint(dmem_awaddr);
 	assign plic_we  = mmio_aw_fire && is_plic(dmem_awaddr);
 	assign flash_we = mmio_aw_fire && is_flash(dmem_awaddr);
+	//	System reset request: register 0 of the system-control block, a 32-bit
+	//	write (exactly the four low byte lanes) of 0x7777, from a privileged
+	//	access. AxPROT[0] is set for M- and S-mode and for debug SBA writes,
+	//	and clear for U-mode. Every other write to the block completes
+	//	normally and has no effect.
+	assign sys_reset_req_o = mmio_aw_fire && is_sysctl(dmem_awaddr) &&
+							 (dmem_awaddr[10:0] == 11'b0) && dmem_awprot[0] &&
+							 (dmem_wstrb == 8'h0F) && (dmem_wdata[31:0] == 32'h0000_7777);
 
 	reg [1:0] local_bresp;
 	always @(posedge clk) begin
@@ -482,6 +510,7 @@ module karu_ddr_xbar #(
 		end else case (w_st)
 			W_IDLE: begin
 				local_bresp <= (dmem_aw_boot || dmem_aw_eth || is_uart(dmem_awaddr) ||
+					is_sysctl(dmem_awaddr) ||
 					is_clint(dmem_awaddr) || is_plic(dmem_awaddr) || is_flash(dmem_awaddr))
 					? `AXI_RESP_OKAY : `AXI_RESP_DECERR;
 				if (boot_wr_fire) begin
@@ -523,6 +552,7 @@ module karu_ddr_xbar #(
 	assign m_awlen   = dmem_awlen;
 	assign m_awsize  = dmem_awsize;
 	assign m_awburst = `AXI_BURST_INCR;
+	assign m_awprot  = dmem_awprot;
 	assign m_awvalid = (w_st == W_IDLE) && dmem_awvalid && dmem_aw_dram;
 	assign m_wdata   = dmem_wdata;
 	assign m_wstrb   = dmem_wstrb;
@@ -586,8 +616,8 @@ module karu_ddr_xbar #(
 `endif
 
 	//	Unused AXI attributes.
-	wire _unused = &{ imem_arsize, imem_arburst, imem_arprot,
-					  dmem_arsize, dmem_arburst, dmem_arprot,
-					  dmem_awlen, dmem_awsize, dmem_awburst, dmem_awprot,
+	wire _unused = &{ imem_arsize, imem_arburst,
+					  dmem_arsize, dmem_arburst,
+					  dmem_awlen, dmem_awsize, dmem_awburst,
 					  dmem_wlast, m_bresp, 1'b0 };
 endmodule

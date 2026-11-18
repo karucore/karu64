@@ -669,6 +669,9 @@ module karu_dec (
                         12'h001: sub = `SYS_EBREAK;
                         12'h102: sub = `SYS_SRET;
                         12'h302: sub = `SYS_MRET;
+`ifdef KARU_DBG
+                        12'h7b2: sub = `SYS_DRET;
+`endif
                         12'h105: sub = `SYS_WFI;
                         //  Zawrs: WRS.NTO (0x00d) / WRS.STO (0x01d). On this
                         //  single-hart core a reservation set is never stolen, so

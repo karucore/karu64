@@ -1,35 +1,156 @@
 # Karu area and timing estimates
 
-This file records the current release measurements for the `karu64` processor
-top. Older checkpoints and superseded tool runs are intentionally omitted;
-the retained output manifests under `_build/syn_out` bind each result to its
-exact RTL, scripts, tools and Liberty input. These September 15 measurements
-predate the Genus declaration cleanup and the 1W2R FP register-file change;
-no updated Yosys/OpenSTA area matrix is claimed for that image. Its FPGA
-routed timing and board results are in the
-[release diagnostics](../../doc/release-diagnostics-2026-09-14.md).
+The complete debug-extension comparison is dated 2026-10-29. All twelve
+area/timing rows were fresh mappings with identical before/after input hashes
+at that checkpoint; no mapped-design reuse was used.
+Manifests under `_build/syn_out` bind each result to RTL, scripts, tools and
+Liberty. Earlier comparisons below are separate historical checkpoints.
 
-These are comparative NanGate45 standard-cell estimates. They are not an ASIC
-macro-area estimate, a signoff timing result or an FPGA utilization report.
-Memories are mapped to cells by this flow; use the maintained
-[`flow/asic` inventory](../asic/README.md) when planning SRAM replacement.
+The October 30 RTL registers the SBA pause to remove the reset-to-trigger
+feedthrough introduced by fetch-fault pause qualification. The freshly mapped
+full two-trigger row has register WNS **−0.3978 ns**, TNS **−17.40 ns** and
+input-to-register slack **+0.2328 ns** (previously −0.1739 ns). Register-to-output
+and input-to-output slack are +0.3106/+0.5794 ns. IO groups pass; 200 MHz
+still misses on the IFU/decode-to-double-FMA register path. Only this timing
+row was rerun; the area table and other timing values below retain the
+October 29 source. See the
+[pause follow-up](../../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30)
+for the current result and its scope. The accepted FPGA bundle is unchanged.
+
+**2026-11-18.** The shipping rows were mapped again after the boot map in
+the access permissions changed (2 MiB ROM), together with the first rows
+for the opt-in `KARU_ZKR`:
+
+| Configuration | kGE | Register-to-register WNS | TNS |
+| --- | ---: | ---: | ---: |
+| Shipping, debug disabled (`karu64`) | 4,386.002 | −0.4436 ns | −26.11 ns |
+| The same with `KARU_ZKR` | 4,386.015 | −0.4436 ns | −19.22 ns |
+| `karu_entropy` alone (outside `karu64`) | 4.994 | +3.6363 ns | 0 |
+
+The core is 0.15 kGE larger than on October 26 and its timing is the
+October 26 result to the digit. Zkr's CSR-side logic is below the
+resolution of the area mapping, and adds no register-to-register path; the
+entropy block is about 5 kGE. The debug and authentication rows, the IO
+groups and two output strobes that now miss the output budget in the debug
+tops are in
+[karudbg measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18).
+
+These are comparative NanGate45 standard-cell estimates, with memories mapped
+to cells. They are not ASIC macro-area or signoff timing results. Use the
+[ASIC inventory](../asic/README.md) when planning memory-macro replacement.
+
+## Debug extensions — 2026-10-29
+
+These rows use the same shipping processor and conventional-JTAG debug top.
+Base debug has `KARU_DBG`; the full rows add autoexec, SBA and two or four
+debugger-owned address triggers.
+
+| Configuration | kGE | Increment kGE | Increment % |
+| --- | ---: | ---: | ---: |
+| Base debug | 4,406.7233 | 0.0000 | 0.0000 |
+| Autoexec | 4,406.8260 | 0.1027 | 0.0023 |
+| Two triggers | 4,412.8477 | 6.1243 | 0.1390 |
+| SBA | 4,415.0943 | 8.3710 | 0.1900 |
+| Full, two triggers | 4,421.3380 | 14.6147 | 0.3316 |
+| Full, four triggers | 4,425.0677 | 18.3443 | 0.4163 |
+
+All six timing rows are complete and none closes at 200 MHz. Base debug has
+register-to-register WNS −0.3991 ns and TNS −16.64 ns; the selected full
+two-trigger row has −0.3978 ns and −20.38 ns. The full row's longest path
+remains IFU buffered address through compressed decode and FP operands to
+double FMA, with 5.36 ns arrival. The registered VLSU watch address does not
+set that critical path.
+
+The full row also has **−0.1739 ns input-to-register slack**, from timed
+synchronous `rst` through DM/SBA and trigger/core control to the IFU. The
+specified input delay is 1.50 ns; arrival is 5.14 ns. Base debug's input group
+passes at +0.4428 ns. Full-debug output groups pass (+0.3106 ns register-to-
+output, +0.3510 ns input-to-output), so these results must not be summarized
+as all IO paths passing.
+
+The optional four-trigger row has WNS −0.9432 ns, TNS −96.76 ns and reset
+input slack −0.2210 ns. Its longest path is scalar FP distribution through
+widening/FP-estimate logic to `ksbuf`, not a trigger comparator. Mapping
+variation in unchanged logic prevents attributing that difference solely to
+the slot count.
+
+See [the complete extension matrix and reproduction commands](../../dbg/MEASUREMENTS.md#extension-measurements--2026-10-29)
+for all path groups, source/report evidence and the separate FPGA acceptance.
+The standard full-debug/two-trigger FPGA image also completed on 2026-10-29:
+75 MHz routed setup/hold +0.010/+0.011 ns overall and +0.048/+0.011 ns in the
+CPU, with 16/16 bus-skew constraints and zero bitstream DRC errors. It uses
+375,881 LUTs. Its +12.66% LUT count versus the older base-debug FPGA checkpoint
+is an unisolated source/configuration comparison, not the controlled +0.3316%
+NanGate45 increment. See the measurements for hashes and scope. Board testing
+and 200 MHz mapped timing closure remain open.
+
+## Historical shipping debug comparison — 2026-10-26
+
+Both rows use RVA23S64, I-cache, Zvk, Keccak, pipeline and PMU defines with
+AXI protection metadata. Geometry is VLEN=256/ELEN=64/VBUS=128, two 64-bit
+compute lanes with FP units and static `NONSECURE=1`. The enabled row adds
+`KARU_DBG`, DM/private bridges, conventional JTAG and its reset conditioner.
+Mapping uses FPGA/default initialization semantics rather than `KARU_ASIC`;
+separate ASIC audits confirm zero initialized state in that mode.
+
+| Configuration | Top | kGE | Increment |
+| --- | --- | ---: | ---: |
+| Shipping, debug disabled | `karu64` | 4,385.849 | baseline |
+| Shipping + karudbg | `karudbg_top` | 4,406.494 | +20.644 kGE / +0.4707% |
+
+Yosys 0.69+24 (`d0e71cfb7`), hierarchical `synth -noshare`, fast area-only ABC,
+NanGate45 typical (`NAND2_X1=0.798 um²`). The enabled area run has identical
+before/after input fingerprints. The disabled design is reused after an exact
+non-debug preprocessed-token comparison and mapping-flow/tool identity audit.
+
+The corrected 200 MHz timing comparison uses explicit core-clock reset input
+timing. Full OpenSTA reports were refreshed on the unchanged disabled mapped
+netlist, and the enabled design was remapped from the corrected RTL:
+
+| Configuration | Register-to-register WNS | TNS | Longest path |
+| --- | ---: | ---: | --- |
+| Debug disabled | -0.4436 ns | -26.11 ns | IFU buffered address through compressed decode/FP register file to double FMA |
+| Debug enabled | -0.3977 ns | -16.93 ns | IFU buffered address through compressed decode/FP register file to double FMA |
+
+Neither row closes at 200 MHz; electrical-limit violations remain, including
+high-fanout reset nets. Enabled input-to-register and register-to-output slack
+are +0.0566 ns and +2.0143 ns. Its newly timed synchronous reset also reaches
+`debug_resume_ack_o` with +0.7022 ns input-to-output slack. The disabled row's
+input-to-register and register-to-output slack are +1.1159 ns and +2.7162 ns;
+it has no input-to-output paths. Both enabled runs have identical before/after
+input fingerprints.
+The review-corrected VCU118 debug build completed on 2026-10-27 at 75 MHz.
+Whole-design routed setup/hold slack is +0.005/+0.011 ns; CPU setup slack is
++0.482 ns. All 16 bus-skew constraints pass and bitstream DRC reports zero
+errors. Routed use is 333,645 LUTs, 88,712 registers, 317.5 BRAM tiles and
+29 DSPs. Board acceptance remains open; FPGA timing closure does not change
+the separate 200 MHz OpenSTA shortfall above.
+
+See [karudbg measurements](../../dbg/MEASUREMENTS.md) for exact defines, current
+source/tool evidence, disabled-row equivalence proof, initialization scope and
+reproduction commands. This is a paired debug comparison, not a rerun of every
+feature row.
 
 ## Release setup
+
+The retained September 15 feature-matrix checkpoint used these settings;
+its crypto-leaf refresh predates the current karudbg comparison.
 
 - Yosys 0.69+24 (`d0e71cfb7`).
 - OpenSTA 3.1.0, resolved from `PATH` and fingerprinted in the run manifest.
 - NanGate45 typical Liberty; `NAND2_X1 = 0.798 um2`.
 - Hierarchical `synth -noshare`, no flattening.
-- Generic timing constraints with 30% input and 70% output budgets.
+- Generic timing constraints with input arrival at 30% and output deadline at
+  70% of the period (1.5 ns input/output delays for a 5 ns clock).
 - Full timing-oriented ABC mapping for the 5 ns run.
 - Fast ABC mapping with STA disabled for area comparison rows.
 
-The release refresh measures the two affected crypto leaves, their common
+The September refresh measured the two affected crypto leaves, their common
 baseline and umbrella configurations, and the exact shipping composition. The
 minimal RVA23S64 row does not enable vector crypto, so the `.vs` correction
 cannot change its mapped logic.
 
-## Current results — 2026-09-15
+## Feature matrix checkpoint — 2026-09-15
 
 All six corrected-source rows completed successfully. The before/after input
 manifests are byte-identical for every row; the summary CSV SHA-256 is

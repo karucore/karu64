@@ -4,6 +4,10 @@
 // KARU_PMA_CUSTOM_HEADER. Regions must have 4 KiB-aligned boundaries: the
 // vector translator caches permissions by page. Check the full PA before
 // narrowing it to the 32-bit AXI bus. Slave errors remain authoritative.
+`ifdef KARU_DBG
+`include "karudbg_defs.vh"
+`endif
+`include "karu_bootmap.vh"
 `ifdef KARU_PMA_CUSTOM_HEADER
 `include `KARU_PMA_CUSTOM_HEADER
 `else
@@ -25,12 +29,33 @@ function automatic karu_pma_ok(input [63:0] a, input [1:0] acc);
     reg ram, rom, scratch, device;
     begin
         ram = a[31];                         // 0x80000000..0xffffffff
-        rom = a[31:12] >= 20'h00001 && a[31:12] < 20'h00101;
-        scratch = a[31:12] >= 20'h00101 && a[31:12] < 20'h00111;
+        // boot ROM from 0x1000, then 64 KiB of scratch SRAM (karu_bootmap.vh)
+        rom = a[31:12] >= 20'h00001 && a[31:12] < (20'h00001 + `KARU_BOOT_ROM_PAGES) &&
+              a[31:12] != `KARU_BOOT_DEBUG_PAGE    // the Debug Module's private page
+`ifdef KARU_DBG_AUTH
+              // Island SRAM lies inside the ROM's span and is not ROM. Without
+              // this it would be fetchable here, which the island refuses on
+              // the fetch port but HLVX would get past: HLVX asks for execute
+              // permission and then reads through the data port.
+              && a[31:14] != 18'h00008
+`endif
+              ;
+        scratch = a[31:12] >= `KARU_BOOT_SCRATCH_LO && a[31:12] < `KARU_BOOT_SCRATCH_HI;
         device = karu_pma_io(a);
         // acc: fetch=0, load=1, store/AMO=2, CBO read-or-write=3.
         karu_pma_ok = (a[63:32] == 0) &&
-            (ram || scratch || (rom && acc != 2) || (device && acc != 0));
+            (ram || scratch || (rom && acc != 2) || (device && acc != 0)
+`ifdef KARU_DBG
+             // The platform independently restricts this page to core ports.
+             // This core-side gate also excludes ordinary M-mode accesses.
+             || (debug_mode_i && (a[31:0] & 32'hffff_f000) == `KARUDBG_BASE)
+`endif
+`ifdef KARU_DBG_AUTH
+             // Island SRAM 0x0002_0000..0x0002_3fff (karudbg_island defaults):
+             // verifier stack and data, load/store only, never executable.
+             || (a[31:14] == 18'h00008 && acc != 0)
+`endif
+            );
     end
 endfunction
 `endif

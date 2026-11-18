@@ -77,9 +77,220 @@ source modules elaborate away. The external system RAM/ROM, timer and
 interrupt-controller implementation belong to ASIC SoC integration, outside
 this processor inventory.
 
+Optional external debug has a separate combined top, `karudbg_top`, and
+source manifest [dbg/karudbg.f](../../dbg/karudbg.f), enabled explicitly with
+`KARU_DBG` and include paths `rtl/` and `dbg/`. It does not change this
+processor-only manifest's scope. The DM/ROM/DTM origins, licenses, clocks,
+reset domains, protection contract and acceptance gates are in
+[dbg/README.md](../../dbg/README.md). `NONSECURE` defaults to 1; integrations
+must preserve AXI attributes and use the documented cacheability restrictions
+before treating an external firewall as a security boundary.
+The combined top keeps core/DM reset synchronous and conditions asynchronous
+JTAG reset release over two TCK edges. Its `IDCODE` parameter must be set to
+the assigned platform identity; the default is a simulation placeholder.
+The October 29 full-extension audit reports zero initialized state and the
+same 97,024 data-array bits: nine macro candidates, two 1W2R register files
+and four scratch arrays. Core-only/base-debug/full-debug control-array counts
+are 33/34/37; constant lookup arrays remain 14. The extra three full-debug
+arrays are trigger address, control and precomputed NAPOT masks, each 64×2
+(384 logical bits together, or 768 with four slots). These small parallel
+control arrays belong in flops. They add no ports or geometry changes to
+RF/cache/VRF macros. See `_build/dbg/asic-audit-full/` for the exact defines,
+source hashes, elaborated RTLIL and generated inventory.
+
+The [karudbg extension plan](../../dbg/README.md#extension-implementation-and-testing-plan)
+tracks auto-execution, hardware address triggers and SBA for the single-hart
+ASIC, with separate FPGA validation. It covers the portable bus/clock/reset
+contract, cache coherence, four-state startup, macro-interface preservation,
+CDC/RDC, timing and DFT integration. The extension RTL is independently selectable
+and includes the [implemented trigger contract](../../dbg/TRIGGERS.md).
+The earlier measurements above describe the base debug implementation; consult
+the current combined validation/measurement record before quoting extension
+costs. Multi-hart support is excluded.
+The [fixed E0 decisions](../../dbg/README.md#fixed-e0-decisions) select
+debugger-owned triggers, post-pointer-masking
+address comparison, explicit FF watchpoint entry, and reuse of whole-cache
+flush/refill-poison logic for SBA coherence. Writes to DRAM and executable
+scratch SRAM (`0x00201000..0x00210fff`) use a hardware issue/drain and
+fetch-resynchronization handshake, without Program Buffer execution. The
+issue hold is registered; RAM-write acceptance requires that hold and quiet,
+including any instruction admitted on the hold's assertion edge. This breaks
+reset-gated request VALID's combinational path into trigger/issue control;
+request suppression during reset remains active. Scratch
+also needs maintenance because its instructions can be prefetched. For a
+custom physical map, override `sba_ram` through
+`KARU_DBG_SBA_RAM_HEADER` to cover its writable cacheable and executable regions;
+the default classifier is not inferred from `KARU_PMA_CUSTOM_HEADER`. After the
+write response, the core pulses platform `cache_flush_req` with
+`cache_flush_invalidate=1` and samples `cache_flush_done` after the request
+clock before acknowledging SBA completion or releasing the issue hold. An
+idle-high done value on the request edge is ignored. After the request,
+acknowledgement is latched even while a prefetch is active; SBA completion
+still waits for the core to become quiet. A platform without
+additional maintenance may tie done high. An outer data cache must share the
+coherent core/SBA path, or add pre-write coordination; maintenance must preserve
+dirty data. Account for the cache-loss/stall cost. The common
+hart/fabric reset must reset affected responders and cancel pending external
+maintenance together. A nonresponding older access, an accepted SBA access
+without a response, or a missing maintenance acknowledgement can retain the
+hold indefinitely; no implicit timeout discards ownership.
+The vector trigger query registers a 64-bit post-masking address before its
+comparator, with one extra cycle per armed field and no change to the disabled
+path or any memory macro port. The payload has no reset and is qualified by
+its sequencing state. Four-state capture checks and a stale-address negative
+control exercise that contract. The full-debug CPU replay passes 2872/2872
+preserved ACT4 ELFs, and 16 ordinary subjects have zero idle cycle delta;
+the combined functional gate also passes with 274 unchanged input hashes.
+All twelve mapped comparisons completed at the October 29 checkpoint. The
+October 30 registered-pause follow-up restores full two-trigger input-to-register
+slack to +0.2328 ns; register WNS remains −0.3978 ns, so 200 MHz is still open.
+Other timing and area rows retain the October 29 source. See the
+[current timing scope](../../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30).
+Technology-specific physical signoff has its own acceptance gate.
+
+For the combined ASIC top, source [dbg/sources.tcl](../../dbg/sources.tcl)
+to obtain the maintained absolute source paths, both include directories,
+`KARU_ASIC` profile defines and `karu_top=karudbg_top`. It selects base debug;
+append `KARU_DBG_FULL` to `karu_defines` for all extensions, or append the
+individual `KARU_DBG_AUTOEXEC`, `KARU_DBG_TRIGGERS`, `KARU_DBG_SBA` defines.
+Use `KARU_DBG_TRIGGER_COUNT=4` only with the trigger feature enabled. Do not
+substitute FPGA source lists or remove `KARU_ASIC` for this top.
+
+The extensions introduce no additional clock domain: trigger, autoexec, SBA
+and maintenance state use `clk`; the existing TAP/DTM uses `tck`. The exposed
+AXI interface is synchronous to `clk`. A different fabric clock requires an
+explicit CDC bridge preserving transaction ownership and reset cancellation.
+Keep the common core/DM/SBA clock active during debug, including while halted.
+RAM coherence requires core clock edges; any future core clock gate must wake
+for maintenance before acknowledging completion. Halting instruction retirement
+does not require stopping that clock.
+
+Use [dbg/karudbg.sdc.in](../../dbg/karudbg.sdc.in) as the conventional-top
+clock/reset/CDC timing template. Synchronous `rst` remains timed against
+`clk`, including new reset fanout. Exceptions cover only first-stage control
+synchronizers and external-reset ingress to TCK asynchronous reset pins;
+reset-release recovery/removal paths and bounded bundled-data paths remain
+timed. `ndmreset` resets the hart, arbiter and affected fabric responders
+together, preserving the DM; a transport reset preserves accepted commands and
+SBA work. Foundry RDC/CDC analysis must check those ownership and release
+contracts rather than applying blanket clock-group or reset cuts.
+
+Scan insertion and clock-gating cells are SoC integration work. Quiesce the
+DMI/bus protocol around scan, provide the required test clocks and reset
+control, retain synchronizer identification, and re-establish protocol reset
+before functional execution. The generic RTL/constraints do not establish
+scan coverage, ATPG, a foundry macro binding, PVT timing or silicon CDC/RDC
+signoff. `NONSECURE` and `SBA_ENABLE` are trusted static integration parameters;
+`SBA_ENABLE=0` also removes SBA discovery/capabilities and launch state from the
+DM (all SBA registers read zero), while retaining the bus-side deny gate and
+ordinary core/Program Buffer operation.
+Default builds have no debug authentication. The opt-in `KARU_DBG_AUTH`
+scheme and what it requires from the SoC are described next.
+
+### Debug authentication obligations (`KARU_DBG_AUTH`)
+
+`KARU_DBG_AUTH` gates debug by a lifecycle input and lets a boot ROM grant it
+once per power-on reset. The design is in the
+[plan](../../doc/debug-auth-plan.md), the interface in the
+[contract](../../doc/debug-auth-contract.md) and the open finding in the
+[review](../../doc/security-review-2026-11-15.md) (S6). It is not
+production-ready: there is no production signature verifier, and the formal
+and simulation milestones are partial. The RTL assumes all of the following;
+none is checked by the generic flow.
+
+| Obligation | What the SoC must provide |
+| --- | --- |
+| Island ROM | A real ROM macro for `[AUTH_ROM_BASE, AUTH_ROM_END)`, 64 KB by default, holding the window code. `RESET_PC` and the reset `mtvec` must lie inside it (prior finding S4). The RTL array is a simulation model |
+| Island SRAM | An SRAM macro, 16 KB by default, reachable only through the island. It is deliberately not reset and keeps its contents across hart and system resets, so the ROM must not leave secrets in it, or must scrub it (plan D1) |
+| Island response paths | Nothing outside `karudbg_core` may drive the island's memories or their responses. No other bus manager, test wrapper or repair logic may reach them |
+| Verification key | The public key or its hash in OTP or ROM, read only through the island |
+| Lifecycle `lc_i` | A two-bit value from OTP or a lifecycle controller, stable from power-on reset and sampled in the reset cycle. `0` is `OPEN`, `1` is `AUTH`, `2` and `3` are `DISABLED`. Its integrity is assumed; an attacker who can change it owns debug |
+| Power-on reset | `rst` of `karudbg_top` must be a true power-on reset. It is the only reset that clears the grant, `boot_done`, the firmware lock and revocation. System and hart resets must use `hart_reset_i` |
+| Reset fan-out | `auth_reset_o` (boot hold and relock) joins the hart-side reset inside `karudbg_core`; fabric responders that share the hart reset must follow it, as for `ndmreset` |
+| Boot-hold strap `hold_strap_i` | A physical-presence input sampled at power-on reset. It only delays boot in `AUTH`. It is treated as adversary-controlled and grants nothing by itself |
+| Revocation `revoke_i` | Optional trusted input; tie low if unused. Once high it disables debug until power-on reset |
+| TRNG port | A health-checked entropy source on `trng_opst_i`, `trng_data_i` and `trng_ack_o`, with the Zkr `seed` status encoding. The nonce is only as good as this source |
+| Scan and DFT | The scan controller must force `debug_enable` low and reset `karudbg_auth` on scan entry and exit (plan D6). Scan access to the grant, the mailbox or the island SRAM is outside the proof |
+| ROM software | The obligations of plan §6: interrupts off, trap vector in ROM, fresh nonce, fixed-size parsing, constant-time verification, a fault-resistant decision. The simulation ROM under `test/dbg/auth_rom/` does not meet them and must not be shipped; its `TEST` algorithm (`0x80`) must be rejected by a production ROM |
+| Window deadline | The ROM's `WINDOW_CYCLES` limit is a software cutoff with an implementation-dependent tolerance. A hard cutoff needs a worst-case margin in the ROM or a hardware timer (contract §5.3) |
+
+Mapped size, from [measurements](../../dbg/MEASUREMENTS.md): the
+authentication logic is an estimated 21.9 kGE on top of full debug, partly
+derived from a reduced-memory probe. The two island memories are not costed,
+and no run used ASIC memory macros. At 200 MHz the authentication netlist's
+worst path is the existing fetch-to-FMA path; authentication adds no new
+critical path, and the 200 MHz goal itself is still unmet.
+
+Fault injection, glitching, probing and side channels are outside the claim.
+An FPGA is never the security target, because its configuration port can
+replace the design.
+
+`make dbg-config-matrix-test` checks off/base/each/full/four-slot configurations
+using strict Verilog-2001 parsing and Verilator, with preprocessed sources,
+defines and manifests under `_build/dbg/config-matrix/`. It rejects leaked
+debug ports in the disabled core and FPGA primitives in the conventional ASIC
+sources. `make dbg-asic-random-test` reuses one full-profile `KARU_ASIC` model
+for six randomized startup seeds; four-state checks remain separate. The
+constraints' executable scope regression is
+`make dbg-ooc-reset-constraints-test`; it checks the Tcl contract, not physical
+timing or technology-specific CDC selection.
+
 `sources.tcl` supplies variables for the site's Genus script. It does not
 load technology libraries or run Cadence. The manifest was elaborated with
 Yosys; Cadence execution and compiler-macro binding have not been performed.
+
+### Entropy source obligations (`KARU_ZKR`)
+
+`KARU_ZKR` is opt-in and is not part of `flow/asic/karu64.f`: the core then
+has the `seed`, `mseccfg`, `mnoise` and `mentropycfg` CSRs and expects an
+entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
+
+- **A noise source.** `flow/fpga/karu_rosc_rng.v` is for FPGA only: its
+  rings are LUT loops kept by Vivado attributes. The replacement connects
+  through the same raw interface (`rng_en`, `rng_fips`, a one-cycle
+  `rng_val`, four `rng_b` lanes, no back-pressure), which is the one
+  OpenTitan's entropy block expects from its analog sensor top.
+- **`rtl/karu_entropy.v` unchanged in front of it**, so that the bits the
+  health tests see, the bits `seed` delivers and the bits the GetNoise
+  interface shows stay the same bits. Add `rtl/karu_entropy.v` to the file
+  list.
+- **Parameters from an assessment.** The reset interval, its floor
+  (`INTERVAL_MIN`) and the health-test cutoffs and their ceilings
+  (`RCT_MAX`, `APT_MAX`) are provisional. They have to come from raw data
+  of the actual source, fitted per lane to the stochastic model and
+  checked for dependence between lanes.
+- **A policy for the test interface.** `mnoise` gives M-mode raw samples
+  and holds `seed` in `BIST` meanwhile. Firmware should set the lock bit of
+  `mentropycfg` before leaving M-mode; a production device may want the
+  interface tied off.
+- **A power-on reset value for the platform strap** (`en_i`), and, as for
+  the debug block, scan must not expose or drive the source.
+- **No path from the written value back to the read value.** A CSR set or
+  clear instruction computes the value it writes from the value it reads,
+  so `zkr_wdata_o` depends combinationally on `zkr_rdata_i` inside the core
+  (about 0.5 ns in the 200 MHz mapping). Whatever sits behind the ports
+  must not let the value it returns depend on `zkr_wdata_o`, `zkr_we_o` or
+  `zkr_fire_o` in the same cycle. `rtl/karu_entropy.v` keeps to that, and
+  `make zkr-loop-test` checks it; the first FPGA build of the block did
+  not, and was refused for the loop.
+- **Registered noise inputs.** In `rtl/karu_entropy.v` the incoming symbol
+  reaches the value read from `seed` combinationally: a health-test
+  failure in the cycle of a read wins over the read. `rng_val` and `rng_b`
+  should therefore come from registers, as they do in the FPGA source.
+
+*Estimates, 2026-11-18* (NanGate45 typical, the flow of
+[the measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)):
+`karu_entropy` alone is 4.99 kGE in the area mapping and meets 200 MHz
+with +0.95 ns on its tightest path, the one from the incoming symbol to
+the read value. The CSR-side logic in the core is below the resolution of
+the area mapping. `zkr_fire_o` has to wait for the decision that the
+access takes effect. On the bare core it has +1.34 ns against the generic
+output budget of that flow; in the top with full debug and authentication,
+where that decision also passes through the trigger logic, it misses the
+budget by 0.19 ns, and the authentication block's `trng_ack_o` misses it by
+0.23 to 0.29 ns for the same reason. An integration should give these
+strobes a budget of their own or place their consumers next to the CSR
+file.
 
 ## Memory-compiler request
 
@@ -276,6 +487,21 @@ Outputs in `_build/asic-audit/` include RTLIL, memory JSON, CSV/Markdown,
 summary, tool version and source SHA-256 manifest. The command fails on
 initialized state. Use a fresh `--out` directory when preserving a prior audit.
 The checked-in inventory is a snapshot; regenerate after RTL/define changes.
+
+The default audit remains core-only. Audit the opt-in combined debug top
+separately, retaining the standard ASIC profile defines and adding `KARU_DBG`:
+
+```sh
+python3 flow/asic/audit.py --manifest dbg/karudbg.f --top karudbg_top \
+  --define KARU_DBG --out _build/dbg/asic-audit-combined
+```
+
+For the full extensions, add `--define KARU_DBG_FULL` and use
+`--out _build/dbg/asic-audit-full`. `--define` is repeatable. Source paths in either manifest are relative to the
+repository root; a source manifest may use `#` or `//` comments. Each audit
+writes its inventory and provenance only under `--out`; the combined report
+does not replace the checked-in core-only CSV/Markdown files. A subsequent
+`--report-only --out ...` uses the top recorded in that output's manifest.
 
 The four-state memory test checks unspecified startup, x0, explicit writes,
 VRF byte enables, output hold and soft-reset retention:

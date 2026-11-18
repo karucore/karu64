@@ -40,9 +40,15 @@
 `ifndef KARU_EXT_VH
 `define KARU_EXT_VH
 
+`ifdef KARU_DBG
+`include "karudbg_cfg.vh"
+`endif
+
 //  ======================================================================
 //  System / board configuration
 //  ======================================================================
+//  KARU_DBG independently opts into Sdext/core debug ports. It is never
+//  implied by KARU_RVA23S64; the combined debug manifest also needs -Idbg.
 //  KARU_ASIC removes FPGA power-up values from RAM/register-file storage and
 //  the v0 shadow, and excludes FPGA RAM inference attributes. It does not
 //  change memory read latency or instantiate a foundry macro. Architectural
@@ -265,6 +271,18 @@
         `ifndef KARU_EN_SSTATEEN
             `define KARU_EN_SSTATEEN
         `endif
+    `endif
+`endif
+
+//  --- Zkr (entropy source) ---
+//  Opt-IN only (default OFF; keeps all current builds byte-identical). Adds the
+//  seed CSR (0x015), mseccfg (0x747) with its SSEED/USEED fields, and the two
+//  custom M-mode CSRs of the entropy source, mnoise (0x7C8) and mentropycfg
+//  (0x7C9). The entropy source itself (rtl/karu_entropy.v) is outside the core
+//  and connects through the zkr_* ports of karu64.
+`ifdef KARU_ZKR
+    `ifndef KARU_EN_ZKR
+        `define KARU_EN_ZKR
     `endif
 `endif
 

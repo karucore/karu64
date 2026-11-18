@@ -59,12 +59,19 @@ module uart_rx #(
 
 		end else begin
 
+			//	The byte was read: clear rdy in whatever cycle ack arrives.
+			//	(ack used to be honoured only while tmr != 0, so a pulse on a
+			//	bit-FSM step was lost, the byte stayed ready and was read
+			//	twice.) This comes before the FSM so that a byte whose stop
+			//	bit completes in the same cycle wins and stays ready: ack is
+			//	raised in the cycle the reader samples data, so it refers to
+			//	the byte in data before this edge, never to the new one.
+			if (ack)
+				rdy <= 0;
+
 			if ( tmr != 0 ) begin
 
 				tmr <= tmr - 1'b1;
-				if (ack) begin				//	data was read
-					rdy <= 0;
-				end
 
 			end else begin
 
@@ -102,6 +109,23 @@ module uart_rx #(
 			end
 		end
 	end
+
+	// synthesis translate_off
+`ifndef KARU_NO_ASSERT
+	//	Local invariant (simulation only): one cycle after an ack, rdy is 0
+	//	unless a new byte completed (stop bit accepted) in the ack cycle
+	//	itself.
+	reg		chk_ack_q, chk_done_q;
+	always @(posedge clk) begin
+		chk_ack_q  <= !rst && ack;
+		chk_done_q <= !rst && tmr == 0 && idx == 4'd8 && rxd_s;
+		if (!rst && chk_ack_q && !chk_done_q && rdy) begin
+			$display("[ASSERT] uart_rx: ack did not clear rdy");
+			$finish;
+		end
+	end
+`endif
+	// synthesis translate_on
 
 endmodule
 

@@ -208,9 +208,21 @@ make supm-test supm-test-spike vsupm-test vsupm-test-spike
 make sstc-test sstc-test-spike
 make vmmu-pbmt-test vmmu-pbmt-test-spike icache-unit-test mem-stream-test
 make vmmu-pbmt-fault-test eth-bridge-test plic-test axi-bram-burst-test
+make uart-rx-test
 make keccak-sponge-pbmt-test
 make irq-test ddr-irq-test
+make sv39-auth-pma-test
+make entropy-test zkr-test zkr-loop-test zkr-test-spike
 ```
+
+`sv39-auth-pma-test` is `sv39-test` built as a core with the Debug Module
+and authentication has it: the island SRAM and the Debug Module's page lie
+inside the boot ROM's span and must not be ROM. The Zkr targets cover the
+opt-in `KARU_ZKR`: `entropy-test` the entropy block with driven symbols and
+33 one-mechanism mutants, `zkr-test` the `seed` access table in M, S, U, VS
+and VU with `mseccfg` and the custom CSRs on the core (14 mutants),
+`zkr-loop-test` the absence of a combinational loop between the CSR file and
+the block (Yosys), and `zkr-test-spike` the same access table on Spike.
 
 `csr-test` covers implemented CSR masks, WARL behavior, privilege, pending
 interrupts, MPRV and Sstc's six CSR forms, permissions, 64-bit comparison and
@@ -435,6 +447,10 @@ These use the NS16550 console (not HTIF) and the FPGA SoC harnesses. See
     make spike-uart      # the same NS16550-console hello on spike
     make irq-test        # CLINT timer/software + PLIC/UART IRQ + interrupt-during-vector drain
     make ddr-irq-test    # the same suite through the DDR4/MIG bridge
+    make ddr-reboot-test # software reboot through the system-control register
+    make sbi-reboot-test # fu-boot ROM -> karudeb's OpenSBI -> S-mode payload -> SBI reboot -> second boot
+    make image-boot-test # the debug image's composition: island ROM, 2 MiB ROM, OpenSBI with the zkr tree,
+                         # seed read as Linux reads it, reboot; lifecycle OPEN and AUTH, entropy strap, a control
     make icache-test     # opt-in I-cache: FENCE.I coherence + Sv39 fetch + IMMU arbitration
 
 The software-interrupt case writes the CLINT MSIP MMIO register, checks

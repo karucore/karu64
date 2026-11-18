@@ -6,7 +6,8 @@
 
 module karu_sv39_tb #(
     parameter GUEST_TLB_ENABLE = 1,
-    parameter STOP_ON_FINISH = 1
+    parameter STOP_ON_FINISH = 1,
+    parameter NONSECURE = 1
 ) (
     output reg finished = 0,
     output reg [63:0] result_signature = 0,
@@ -31,14 +32,22 @@ module karu_sv39_tb #(
     wire [31:0] araddr;
     wire [7:0] arlen;
     wire [2:0] arsize;
+    wire [2:0] arprot;
+`ifdef KARU_DBG
+    wire debug_mode_i=0;
+    reg island_pma_checked = 0;
+`endif
     wire arvalid, arready, rready;
     wire awvalid, wvalid, bready;
     wire [63:0] rdata;
     wire [1:0] rresp;
     wire rvalid, rlast;
 
-    karu_sv39 #(.GUEST_TLB_ENABLE(GUEST_TLB_ENABLE)) dut (
+    karu_sv39 #(.GUEST_TLB_ENABLE(GUEST_TLB_ENABLE), .NONSECURE(NONSECURE)) dut (
         .clk(clk), .rst(rst), .req(req), .va(va), .access(access),
+`ifdef KARU_DBG
+        .debug_mode_i(debug_mode_i),
+`endif
         .priv(priv), .satp(satp), .status_sum(status_sum),
         .status_mxr(status_mxr), .pbmte(pbmte), .pbmt(pbmt), .flush(flush),
         .cancel(cancel), .done(done),
@@ -50,7 +59,7 @@ module karu_sv39_tb #(
         .fault_tinst(fault_tinst), .fault_gpa_is_pte(fault_gpa_is_pte),
         .fault(fault), .fault_va(fault_va), .fault_cause(fault_cause),
         .pa(pa), .busy(busy), .arid(), .araddr(araddr), .arlen(arlen),
-        .arsize(arsize), .arburst(), .arprot(), .arvalid(arvalid),
+        .arsize(arsize), .arburst(), .arprot(arprot), .arvalid(arvalid),
         .arready(arready), .rid(4'b0), .rdata(rdata), .rresp(rresp),
         .rlast(rlast), .rvalid(rvalid), .rready(rready),
         .awid(), .awaddr(), .awlen(), .awsize(), .awburst(), .awprot(),
@@ -95,6 +104,8 @@ module karu_sv39_tb #(
         if (rst) begin
             read_active <= 0;
         end else begin
+            if (arvalid && arprot !== {1'b0, (NONSECURE != 0), 1'b1})
+                $fatal(1,"PTE read is not privileged data in the static domain");
             if (awvalid || wvalid || bready)
                 $fatal(1, "Svade emitted a page-table write at cycle %0d", cycles);
             if (done && fault && pbmt !== 0)
@@ -495,7 +506,7 @@ module karu_sv39_tb #(
         @(negedge clk); rst = 0;
 
         local_page_tables(64'h1000);   // boot ROM
-        local_page_tables(64'h101000); // scratch SRAM
+        local_page_tables(64'h201000); // scratch SRAM
 
         // A malformed DRAM response must fault, not cache zero-filled PTEs.
         // Check all early termination positions and original access causes.
@@ -626,10 +637,40 @@ module karu_sv39_tb #(
         mem[ROOT_I] = pte(0, 'hcf);
         translate(1, 1, 0, 0, 0, va); // boot ROM
         translate(2, 1, 0, 0, 7, 0);
-        va = 64'h101000; // writable scratch, same superpage
+        va = 64'h201000; // writable scratch, same superpage
         translate(2, 1, 0, 0, 0, va);
-        va = 64'h200000; // unmapped hole, same superpage
+        va = 64'h211000; // unmapped hole, same superpage
         translate(1, 1, 0, 0, 5, 0);
+`ifdef KARU_DBG
+        // The Debug Module's private page is inside the ROM's span and is not
+        // ROM: outside Debug Mode every access to it faults.
+        va = 64'h120000;
+        translate(1, 1, 0, 0, 5, 0);
+        translate(0, 1, 0, 0, 1, 0);
+        va = 64'h121000; // the ROM continues behind it
+        translate(1, 1, 0, 0, 0, va);
+`endif
+`ifdef KARU_DBG_AUTH
+        // Authentication island. Its ROM is ordinary ROM: readable,
+        // executable, and so acceptable to HLVX, which is a load that needs
+        // execute permission at the physical address. Its SRAM is data only:
+        // loads and stores pass, a fetch faults, and HLVX faults as a load.
+        va = 64'h10000;
+        translate(0, 1, 0, 0, 0, va);
+        hlvx = 1; translate(1, 1, 0, 0, 0, va); hlvx = 0;
+        translate(2, 1, 0, 0, 7, 0);
+        va = 64'h20000;
+        translate(1, 1, 0, 0, 0, va);
+        translate(2, 1, 0, 0, 0, va);
+        hlvx = 1; translate(1, 1, 0, 0, 5, 0); hlvx = 0;
+        translate(0, 1, 0, 0, 1, 0);
+        va = 64'h23ff8; // its last doubleword
+        translate(2, 1, 0, 0, 0, va);
+        hlvx = 1; translate(1, 1, 0, 0, 5, 0); hlvx = 0;
+        va = 64'h24000; // ROM again
+        hlvx = 1; translate(1, 1, 0, 0, 0, va); hlvx = 0;
+        island_pma_checked = 1;
+`endif
         va = 64'h45678;
 
         // PTE physical read faults outrank interpretation of the PTE. A/D
@@ -947,7 +988,7 @@ module karu_sv39_tb #(
             translate(1, 1, 0, 0, 0, va, attr[1:0]); // ROM
             before_reads = reads;
             translate(2, 1, 0, 0, 7, 0); // PBMT cannot make ROM writable
-            va = 'h200000;
+            va = 'h211000; // just above the scratch SRAM
             translate(1, 1, 0, 0, 5, 0); // nor make a vacant PMA accessible
             if (reads != before_reads) $fatal(1, "PBMT superpage PMA hit missed");
             va = 'h45678;

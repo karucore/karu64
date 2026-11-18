@@ -6,6 +6,544 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Tested — VCU118 board session, 2026-11-18
+
+- The debug image `d7ff00dc…3e80` (Zkr, debug authentication, 2 MiB boot
+  ROM, SW12 straps, software reboot, OpenSBI v1.9) ran every stage of
+  [the board test plan](dbg/BOARD_TEST_PLAN.md) on the lab VCU118; all
+  pass. The record is
+  [dbg/BOARD_ACCEPTANCE-2026-11-18.md](dbg/BOARD_ACCEPTANCE-2026-11-18.md).
+  - Boot through the authentication island into fu-boot, OpenSBI v1.9 with
+    `zkr` and `syscon-reboot`, U-Boot, Linux `7.4.0-rc3-zvk-dirty` on NFS;
+    Linux lists `zkr`; no duplicated console characters.
+  - Software reboot: eight in total, each back through the boot ROM and
+    OpenSBI.
+  - The debugger phases on the 2 MiB map, including reset-halt at the
+    island (`0x10000`), the 600 s soak, detach and a live kernel
+    breakpoint. Translation fails with the six known pristine-OpenOCD
+    walker results of 2026-11-16.
+  - `board_accept.sh`, the KVM tests, the vector selftests, `xtest` and all
+    92 OpenSSL pairs.
+  - All twelve authentication cases, with the nonce from the physical
+    entropy source and the `TEST` algorithm (no protection is claimed).
+  - GetNoise: 10^6 raw symbols at each k from 1 to 32, no losses. The
+    lanes show a fixed bias (lane 0 at 0.485) and no detectable
+    dependence. At one raw sample per 256 clocks the noise model cannot be
+    fitted, so no entropy figure follows.
+- Found on the board: an SSH connection takes 30–55 s and a reboot about
+  440 s, which the harness's limits did not allow for (below); and one
+  TFTP stall in 11 kernel loads, recovered by U-Boot's retry.
+
+### Changed — board harness limits
+
+- `linux_reboot.py` and `auth_phase.py`: one SSH command may take
+  `KARU_BOARD_SSH_TIMEOUT` seconds (default 180; the reboot probe used 30 s
+  and never saw the board return). `KARU_BOARD_REBOOT_TIMEOUT` and
+  `KARU_BOARD_AUTH_BOOT_TIMEOUT` default to 900 s (were 300 s).
+- `post_linux_host.py`: the evidence copy may take 900 s (was 180 s; it
+  takes about 4.5 minutes), the remote `mkdir` 180 s.
+- `make dbg-board-harness-test` passes (204 checks, 26 scripts).
+
+### Added — Zkr follow-up plan
+
+- [doc/zkr-followup-plan.md](doc/zkr-followup-plan.md): a runtime sampling
+  divider, burst capture of raw samples for characterisation, repeat
+  captures, and a U-Boot update using the headroom of the 2 MiB ROM.
+
+### Fixed — documentation
+
+- Board-status statements across the FPGA guide, the READMEs, the
+  authentication plan (A5 is done), the board harness README and the S6
+  follow-up now describe the tested image.
+- The 2026-11-15 security review no longer links into the untracked
+  `_build` tree.
+
+### Added — Zkr entropy source, 2 MiB boot ROM, authentication in the FPGA image
+
+Implemented and simulated on 2026-11-17, and built into the VCU118 debug
+image on 2026-11-18: bitstream `d7ff00dc…3e80`, timing met at 75 MHz
+([measurements](dbg/MEASUREMENTS.md#fpga-image--2026-11-18)). Board-tested
+on 2026-11-18; see above.
+
+- **Zkr (`KARU_ZKR`, opt-in).** The `seed` CSR (`0x015`) with the access
+  rules of the ISA manual's table (M always; S/HS with `SSEED`; U with
+  `USEED`; VS/VU a virtual-instruction exception with `SSEED`, illegal
+  otherwise; a form that does not write is always illegal), `mseccfg`
+  (`0x747`) with only `SSEED` and `USEED`, and two custom M-mode CSRs:
+  `mnoise` (`0x7C8`), the GetNoise test interface, and `mentropycfg`
+  (`0x7C9`), which holds the sampling interval, the health-test cutoffs and
+  a lock. The custom bits of `seed` are zero.
+- **Entropy source.** `flow/fpga/karu_rosc_rng.v` is one sampled inverter
+  ring per raw bit, four bits, with the ports of OpenTitan's raw noise
+  source and a behavioural model for simulation. `rtl/karu_entropy.v` keeps
+  every k-th symbol, runs repetition-count and adaptive-proportion tests
+  per lane, and packs four raw symbols into a `seed` word. No bit is
+  combined with another anywhere. Words are buffered and released four at
+  a time. **No entropy figure has been established** (first raw captures on
+  the board 2026-11-18, above); the reset parameters are
+  provisional.
+- **Tests.** `make entropy-test` (3,740 checks; 33 one-mechanism mutants
+  caught by the bench alone), `make zkr-test` (the access table with and
+  without H, the value format, the custom CSRs, the platform strap; two
+  controls; 14 access-rule mutants), `make zkr-test-spike` (Spike agrees on
+  the access table). The first two are in `make dbg-test`, as are the
+  later `zkr-loop-test`, `sv39-auth-pma-test`, `dbg-getnoise-test` and
+  `dbg-board-auth-rehearsal-test` below.
+- **Boot ROM 2 MiB.** `KARU_BOOT_ROM_PAGES` in the new `rtl/karu_bootmap.vh`
+  is shared by the access permissions, the boot memory and the bus decode.
+  The scratch SRAM moved to `0x201000`. The layout leaves core
+  `0x1_0000..0x2_3fff` empty for the authentication island and the page at
+  `0x12_0000` empty for the Debug Module, with OpenSBI at ROM offset
+  `0x30000`, U-Boot at `0x120000` and the DTB at `0x1FC000`. The Debug
+  Module's page stays outside the ROM in the access permissions: the first
+  version of this change let ordinary accesses reach it, which
+  `dbg-core-test` and `dbg-core-full-four-state-test` caught.
+- **Debug authentication in the VCU118 debug image.** `KARU_DBG_AUTH` and
+  `KARU_ZKR` join `KARU_DBG_FULL` in `VCU118_DBG_EXT_DEFINES`. The hart
+  starts in the island ROM, built from `test/dbg/auth_rom` to read its
+  nonce from `seed`, and continues in fu-boot. The ROM still verifies with
+  the non-cryptographic `TEST` algorithm (decision D3 is open).
+- **Straps.** DIP switch SW12: positions 1 and 2 the debug lifecycle,
+  3 the boot hold, 4 entropy source off. All off behaves as an image
+  without these features.
+- **Device tree.** karudeb gains the `rva23s64-zkr-ddr` variant; the plain
+  `rva23s64-ddr` tree is unchanged. The image build refuses a tree whose
+  `zkr` does not match `KARU_ZKR`.
+- `make image-boot-test`: the composition in simulation, from the island
+  ROM through fu-boot and OpenSBI v1.9 to an S-mode payload that reads
+  `seed` as Linux does and reboots; with lifecycle `OPEN` and `AUTH`, with
+  the entropy strap low, and a control with the tree without `zkr`. All
+  four runs behave as intended: OpenSBI lists `zkr`, four `seed` words
+  arrive within 100 polls on both boots, and with the strap low `seed`
+  stays in `BIST` while the boot and the reboot go on.
+- **Ring placement.** `flow/fpga/rosc_constraints.tcl` places every ring
+  stage by hand and keeps everything else out of the rings' slices. Two
+  defects were found on the way, both by its own checks: synthesis folded
+  upstream logic into a ring's enable gate (the noise source now registers
+  its enable locally), and region constraints alone let the placer pack
+  three rings into one slice. Checked on an out-of-context place and route
+  of the entropy source: 486 LUTs, 362 flip-flops, no block RAM.
+- `dbg-auth-window-seed-test`: the authentication window bench again with
+  the nonce read from `seed` (108 checks; every nonce word from `seed`,
+  none from `mdbgrng`).
+- **Board tooling.** `test/dbg/board/getnoise_capture.py` and
+  `getnoise_analyze.py` (raw capture through `mnoise` and its offline
+  analysis, `make dbg-getnoise-test`, 104 checks), and `linux_zkr.py`
+  (Linux lists `zkr`). None has run on a board.
+- The board top elaborates in Vivado with the image's define list.
+- **Review follow-ups, same day.**
+  - The island SRAM (`0x2_0000..0x2_3fff`) was executable in the access
+    permissions, because it lies inside the ROM's span; that was already
+    so with the 1 MiB ROM. The island refuses instruction fetches from it,
+    but `HLVX` asks for execute permission and reads through the data
+    port. It is now data only. `make sv39-auth-pma-test` checks the island
+    and the Debug Module's page through the address translator; its
+    control is caught by the `HLVX` case.
+  - An image with authentication and without `KARU_ZKR` got a ROM that
+    read `seed`, which would trap with no trap vector once a debugger sent
+    a request. The ROM's nonce source now follows the image, and the ROM is
+    rebuilt when its flags change.
+  - GetNoise works on a source that has gone `DEAD`: test mode switches
+    the rings back on, and `seed` keeps reporting `DEAD`.
+  - The board harness takes the scratch SRAM address and the reset vector
+    from the kind of image under test (`KARU_BOARD_IMAGE`: `rom2m-auth`,
+    `rom2m`, `rom1m`), builds the fixture for it, and refuses a fixture
+    linked for another map. Before this, the fixture and several phases
+    pointed into what is ROM in the new map, and the reset-halt checks
+    expected `0x1000`.
+  - `test/dbg/board/auth_phase.py` with `authlib.py`: the authentication
+    exchange on the board through OpenOCD, one case per switch setting,
+    rehearsed on the simulated target with the real window ROM
+    (`make dbg-board-auth-rehearsal-test`, in the gate).
+  - `getnoise_analyze.py` could pass a per-lane threshold that the lane's
+    measured bias makes impossible. Its verdicts now use the lower end of
+    the smallest of the bias cap, a predictor cap and a duty-cycle-aware
+    model figure, and are refused when the model does not fit.
+  - U-Boot's Zkr random-number driver is explicitly off; the `zkr` device
+    tree is staged with `random.trust_cpu=off`.
+  - `dbg/BOARD_TEST_PLAN.md`: the order of work for the first board
+    session with this image, the boot files to pair with it, and what to
+    do when a stage fails.
+- **Combinational loop between the CSR file and the entropy block,
+  2026-11-18.** The first build of this image routed with timing met and
+  was then refused at `write_bitstream` (DRC LUTLP-1). The value read from
+  `seed` depended on "no restart in this cycle", a restart depends on the
+  value being written to `mentropycfg` or `mnoise`, and a CSR set or clear
+  instruction computes the written value from the read one. The two
+  halves are never active together (they belong to different CSR
+  addresses), so no simulation noticed, and the out-of-context run of the
+  entropy source alone could not contain it.
+  - `rtl/karu_entropy.v`: a restart no longer gates delivery. Nothing the
+    block lets the core read depends on the write strobes, the written
+    value or the acknowledge. A health failure still wins over a read in
+    the same cycle.
+  - `make zkr-loop-test` (in the gate): Yosys looks for logic loops in
+    `karu_csr` with `karu_entropy` connected as in the SoC, and in
+    `karu_entropy` with every output fed back into its write-side inputs.
+    The control restores the old term, and both must report a loop.
+  - `flow/fpga/xcvu9p-ddr-synth.tcl` runs the LUTLP-1 check right after
+    synthesis and stops there, instead of two hours later. The ring
+    oscillators are allowed loops and are not among its violations. The
+    refused build's synthesised netlist is the control: one violation.
+- **Image and measurements, 2026-11-18.**
+  - The rebuilt debug image `d7ff00dc…3e80` meets timing at 75 MHz (setup
+    +0.051 ns, hold +0.011 ns). Read back from the routed design: no loop
+    but the four rings, the sampling paths cut from timing, the switches
+    on the intended pins. It passed the board session of 2026-11-18.
+  - The NanGate45 area rows and the 200 MHz OpenSTA rows were mapped again,
+    with first rows for `KARU_ZKR`
+    ([measurements](dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)).
+    Areas moved by about 0.1 kGE; the entropy block is about 5 kGE;
+    register-to-register timing is unchanged. Two CSR strobe outputs,
+    `trng_ack_o` and `zkr_fire_o`, miss the generic output budget in the
+    debug tops by 0.19 to 0.29 ns. That is recorded as an ASIC integration
+    obligation; no RTL was changed for it.
+  - Documentation sweep: the FPGA guide's build recipe and ROM figures for
+    the `zkr` variant, status lines in the authentication plan and the
+    debug README, missing test rows, and karudeb's README. karudeb's
+    `karu64-rva23s64-check` also prints the `zkr` tree's hash.
+
+### Built — VCU118 debug image, 2026-11-17
+
+- `make vcu118-ddr-sgmii-rom-rva23s64-dbg` from an empty `_build`, at karu64
+  commit `d58aa6f` and karudeb commit `8dfc019`: bitstream SHA-256
+  `d5e603cdf92cb22474e9ac073de33ebf2d5ac16d6f5d22ac38b2b4ec8dffd9b2`.
+  It contains the UART receive fixes, the software reboot, and OpenSBI v1.9
+  with the reboot device-tree nodes in its ROM.
+- Timing is met at 75 MHz with little margin: setup +0.003 ns, hold
+  +0.002 ns, no failing paths; `cpu_clk` has +0.113 ns. DRC reports no
+  errors. See [measurements](dbg/MEASUREMENTS.md#fpga-image--2026-11-17).
+- Not programmed and not tested on a board.
+
+### Added — software reboot of the VCU118 SoC
+
+- A system-control register at `0x1000_0800` (upper half of the UART's
+  page): a privileged 32-bit write of `0x7777` resets the hart, the
+  peripherals and both sides of the DDR AXI path, and the boot ROM runs
+  again. DDR calibration, DRAM contents and the debug module survive.
+  Writes of another value, width or register and U-mode writes are ignored.
+- The request joins the reset sequencer used for `ndmreset`
+  (`dbg/karudbg_fpga_reset.v`) through a new pulse stretcher
+  (`flow/fpga/karu_soft_reset.v`, 256 CPU cycles). Only the debug-enabled
+  image implements the reset; other VCU118 images ignore the request.
+- The UART now decodes only the lower half of its page. Its registers used
+  to repeat through all 4 KiB.
+- Software uses it through OpenSBI's generic `syscon-reboot` driver. The
+  `syscon` and `reboot` device-tree nodes and the move to OpenSBI v1.9 are
+  in karudeb; the profile DTB changes, so the boot ROM changes with it.
+- Tests: `make ddr-reboot-test` (firmware boots twice on the DDR simulation
+  top; seven decode mutants), `dbg-fpga-reset-test` (sequencer with two
+  mutants, single-flop check of the held reset, and a structural check of
+  the board top's reset wiring), and `make sbi-reboot-test` (fu-boot ROM,
+  OpenSBI v1.9 and an S-mode payload rebooting through SBI system reset, in
+  simulation; not part of the hashed gate because it uses karudeb's
+  binaries). `test/dbg/board/linux_reboot.py` is the board check. It
+  requires a Linux restart and, on the UART capture, the boot ROM and
+  OpenSBI banners in between; a restart alone would also follow a kexec.
+- In karudeb, the OpenSBI build now refuses a source at a different
+  version than requested, including worktree and submodule checkouts, and a
+  source without Git metadata unless that is asked for explicitly. Its own
+  clone is recognised by resolved location, so a relative `SRC_DIR` no
+  longer blocks the upgrade from v1.8.1. `make karu-opensbi-check` there
+  tests the rules offline.
+- The functional gate's input record now also covers C sources, the HTIF
+  firmware directory and its linker script; they were built by gated tests
+  but not hashed.
+- The debug image `d5e603cd…fd9b2` built on 2026-11-17 contains it and was
+  never programmed. The 2026-11-18 image `d7ff00dc…3e80` contains it too,
+  and on the board eight reboots went back through the boot ROM and
+  OpenSBI.
+
+### Changed — board acceptance harness and claims (review of 2026-11-17)
+
+- The physical-board drivers, fixture source and OpenOCD configurations of
+  the November 16 campaign existed only under the ignored `_build` tree. They
+  are now in [test/dbg/board/](test/dbg/board/README.md). Host paths, the
+  board address, ports and the adapter come from the environment, with the
+  lab values as defaults. The changed scripts ran on the board on
+  2026-11-18.
+- Every phase script now exits non-zero if any of its cases, a restore step
+  between cases or its cleanup failed. Before, a failed case was recorded
+  but most scripts exited 0, and the transport phase discarded restore
+  errors.
+- The board autoexec case now counts executions with a Program Buffer
+  increment: one per read and per write of the selected register, none for
+  reads or writes of the other nine registers, none for either once the bit
+  is cleared. The campaign's
+  version re-read an unchanged register and passes on a target whose DATA1
+  and Program Buffer triggers are dead.
+- New targets, both in `make dbg-test`: `dbg-board-harness-test` (offline
+  self-test of the harness and its exit status) and
+  `dbg-board-rehearsal-test` (the autoexec case through the same harness and
+  a real OpenOCD on the simulated full-debug target; it must fail for three
+  injected autoexec defects). `uart-rx-test` joins `make dbg-test` too.
+- The Linux phases no longer name a kernel version. The expected release
+  and the live-kernel breakpoint address come from the kernel build tree of
+  the served Image, so the harness follows karudeb's move to Linux 7.4-rc3.
+- [dbg/BOARD_ACCEPTANCE.md](dbg/BOARD_ACCEPTANCE.md) narrows two claims of
+  the November 16 campaign: it did not establish that the ten autoexec
+  triggers execute, and its SRAM code-patch case does not isolate
+  invalidation of prefetched instructions. No debug RTL changed.
+
+### Fixed — HTIF firmware link layout
+
+- `flow/spike.ld` placed `.bss` before the `.tohost` page pinned at
+  `0x80001000`. `irq_test` had grown past it and no longer linked, so
+  `make irq-test ddr-irq-test` could not run. `.bss` now follows `.tohost`,
+  and an assertion reports text or data reaching the pinned page. Both
+  interrupt tests pass again, including UART receive through both bus
+  wrappers.
+- The comment in `test/fw/ns16550.c` said an SCR write consumes a received
+  byte; the RBR read does. No code changed.
+
+### Fixed — FPGA UART receive path
+
+- **Byte read twice.** `flow/fpga/uart_rx.v` honoured the "byte was read"
+  pulse only in cycles where its bit timer was non-zero. A pulse on a bit-FSM
+  step was lost, the byte stayed ready, and the reader took it twice: at
+  75 MHz about one read in 41 with an idle line. This is the likely cause of
+  the duplicated console characters seen under Linux in the November 16
+  board campaign; that link is shown in simulation. On the board on
+  2026-11-18, with the fix, the console showed no duplicated characters.
+  The pulse now clears the ready flag in any cycle, and a byte whose stop
+  bit completes in the same cycle stays ready.
+- **Byte lost.** `flow/fpga/karu_ns16550.v` popped the receiver one cycle
+  after the accepted RBR read. If the next byte completed on the read edge,
+  the reader got the old byte and the late pop cleared the new byte's ready
+  flag: the new byte was lost. The pop is now on the edge of the accepted
+  read, the same edge on which the bus snapshots the data, so the byte
+  popped is the byte returned and a byte completing on that edge stays
+  ready. This race was found in review on 2026-11-17; it predates the fix
+  above and has not been observed on the board.
+- Both modules have a simulation-only local assertion. `make uart-rx-test`
+  runs two benches. `test/tb_uart_rx.sv` covers every byte value, a read on
+  each kind of FSM step, the stop-bit race, overrun and a random reader
+  model. `test/tb_ns16550_loop.sv` drives `karu_ns16550` with its real
+  serializers in loopback and reads as an 8250 driver does: 700 bytes each
+  come back exactly once, and an RBR read placed just before, on and just
+  after the completion edge of the next byte behaves as specified. Two
+  mutants, one per defect, must fail. The serializers were previously not
+  simulated: `SIM_TB` replaces them with file and console models.
+- [doc/fpga.md](doc/fpga.md) said that an SCR write consumes a received
+  byte; the RBR read does.
+- The VCU118 debug image `0b994847…78b22` predates these fixes. The image
+  `d5e603cd…fd9b2` built on 2026-11-17 includes them and was never
+  programmed; `d7ff00dc…3e80`, which also includes them, ran on the board on
+  2026-11-18.
+
+### Tested — physical VCU118 debug acceptance
+
+- Physical OpenOCD/GDB acceptance covers register state, stepping, triggers,
+  vector restart, Program Buffer, SBA/coherence, transport recovery and a
+  ten-minute mixed-execution soak on debug image `0b994847…78b22`.
+  The new pristine OpenOCD still mishandles invalid superpages and Svnapot in
+  software walks, and normal firmware boot needs EBREAK-policy cleanup at
+  detach. See [board acceptance](dbg/BOARD_ACCEPTANCE.md) for results, evidence
+  and remaining scope.
+
+### Fixed — VCU118 OpenOCD outer TAP configuration
+
+- Use the XCVU9P's 18-bit instruction register and USER4 opcode `0x23924`.
+  Physical OpenOCD discovery, halt, PC/DCSR reads and resume now pass on the
+  debug image; Linux remains responsive after detach. See the
+  [board smoke test](dbg/README.md#board-transport-smoke-test--2026-11-16).
+
+### Added — debug authentication RTL (`KARU_DBG_AUTH`, plan milestone A1)
+
+- An opt-in, lifecycle-gated debug authentication scheme, implementing
+  [doc/debug-auth-contract.md](doc/debug-auth-contract.md). Builds without
+  `KARU_DBG_AUTH` are unchanged.
+  - `karudbg_auth` holds the POR-domain grant, boot hold, `authdata`
+    mailbox, revocation (firmware or debugger `fw_lock`, or the platform
+    `revoke_i`) and relock reset.
+  - `karudbg_island` serves the island ROM and SRAM on the core's own ports.
+  - The DM shows the Debug 1.0 locked register view and gates its outputs
+    with a registered enable. `ndmreset_o` clears on the enable's falling
+    edge.
+  - The core gates every Debug Mode entry source and adds the authentication
+    CSRs `0x7C0–0x7C3` and `0xFC0`, with Zkr-style pop semantics.
+- A session reset after the ROM has consumed a response word closes the
+  authentication window in hardware, so a host cannot defeat the one-attempt
+  rule by repeated `ABORT`s.
+- A hart or system reset after boot closes the window, and a CSR access in a
+  reset cycle has no effect.
+- The island forwards an external response only for an outstanding external
+  transaction accepted in an earlier cycle, so the fabric cannot forge an
+  island load. Hostile-response tests cover it, including backpressure,
+  reset with transactions outstanding, and pipelined address acceptance.
+- `karudbg_core`'s debug-page router applies the same rule in every debug
+  build. A hostile fabric can no longer complete a debug-page load or fetch
+  at the transition from external traffic. `dbg-run-control-test` now forges
+  both cases and keeps the pre-fix router as a mutant.
+- With `lc=OPEN` the DM is proven sequentially equivalent to the
+  unauthenticated DM, and the full real-core debug bench runs cycle-identical.
+  An authentication build still decodes the island addresses in every
+  lifecycle, so this is not equivalence for programs that use them.
+- New invariants INV42a/b. New gate targets in `dbg-auth-test` with mutant
+  controls. The non-board gate bound is now 2,700 s.
+- A2 simulation island ROM (`test/dbg/auth_rom/`) implementing the contract's
+  frame protocol with the simulation-only `TEST` algorithm, tested on the real
+  core (`dbg-auth-window-test`).
+- Pristine OpenOCD authentication and rejection flows (`dbg-auth-openocd-test`).
+- Formal lemmas C2 and C4–C10 (`dbg-auth-formal-test`), module level; C1, C3
+  and the composition are open. C8 hardened the core: a CSR access in a trap
+  or Debug-entry cycle has no authentication effect.
+- 2026-11-16 review corrections:
+  - the simulation ROM could grant after its deadline (an available RX word
+    skipped the expiry check; no check before the grant; ABORT restarts
+    before the time check). Fixed, with `dbg-auth-rom-host-test` and
+    deadline-boundary cases in `dbg-auth-window-test`;
+  - C5 now proves window closing, `REQUEST` and hold;
+  - C9 no longer assumes single-beat requests, and new lemma C10 proves its
+    remaining assumption on the core;
+  - C6 checks reset values, polarity and reset nets, not only names, with
+    negative controls; C4 proves `debug_mode=0` after reset.
+- Milestone status: A1 and A6 done; A2 (simulation ROM only), A3 and A4
+  partial.
+- Yosys area (NanGate45), in [measurements](dbg/MEASUREMENTS.md):
+  - full debug: +35.5 kGE (+0.81 %) over no debug;
+  - authentication logic: an estimated 21.9 kGE more (partly from a
+    reduced-memory probe, no ASIC memory macros), plus 64 KB ROM and 16 KB
+    SRAM macros.
+
+### Fixed — 2026-11-15 security review findings S7–S13
+
+Findings are in [the review](doc/security-review-2026-11-15.md). S6 (debug
+authentication) remains open; see the [plan](doc/debug-auth-plan.md).
+
+- **S7:** in `KARU_NO_MEM` builds, `karu_lsu` accepts AW and W independently,
+  in either order, in every write state. Before, a subordinate that accepted
+  them in different cycles lost B responses and repeated stores.
+- **S8:** `dmactive=0` during a busy abstract command is acknowledged only
+  once the command engine is idle. An acknowledged deactivation therefore
+  always leaves reset values, and the hart's borrowed `a0`/`s0` are restored.
+  `dmactive=1, ndmreset=1` recovers a hung Program Buffer.
+- **S9:** the USER4 tunnel pulses the inner DTM TRST after a truncated frame,
+  so the nested TAP resynchronises without an outer Test-Logic-Reset.
+  Recovery adds no extra or corrupted DMI request. A write the truncated
+  frame had already committed remains valid.
+- **S10:** `ndmreset_o` is a single flop. The combinational AND with
+  `dmactive` no longer feeds the reset synchronizers.
+- **S11:** a single-stepped WFI keeps its illegal- and virtual-instruction
+  traps (U, `mstatus.TW`, VS with `hstatus.VTW`, and VU).
+- **S12:** only SYSTEM-opcode WRS executes as a Debug-Mode or stepped NOP.
+  `fence w,iow` and `fence 0,iow` keep the platform FENCE handshake.
+- **S13:** RAM-class SBA requests use aligned 64-bit beats with byte strobes,
+  matching the crossbar's DRAM-port contract; device requests keep their exact
+  size.
+- New invariants:
+  - INV41a–c in `karu_debug_assert` check WFI legality, the FENCE handshake
+    and WRS-as-NOP;
+  - SBAB9 checks the SBA beat form;
+  - local checks cover DM deactivation, the tunnel TRST pulse and LSU write
+    quiescence.
+- New regressions in the non-board gate:
+  - with in-target mutant controls: `lsu-aw-w-test`,
+    `dbg-bscan-truncate-test`, `dbg-sba-xbar-test` and
+    `dbg-ndmreset-flop-test`;
+  - positive end-to-end runs, whose failure on pre-fix RTL was shown
+    separately: `nomem-aw-w-isa-test` and `dbg-run-control-test`.
+
+  `dbg-unit-test` (with an S8 mutant), `dbg-core-test` and
+  `dbg-trigger-invariant-test` (INV41 controls) also gain cases.
+- `htif_tb` gains opt-in `+ddr_w_lag=N` and `+ddr_aw_lag=N`, which accept AW
+  and W in different cycles. Default behaviour is unchanged.
+- The combined non-board gate passes with 281 unchanged inputs: 309.69 s on
+  reused models, 1,694.84 s with full rebuilds.
+  Area, timing and the VCU118 debug image were remeasured on 2026-11-15; see
+  [measurements](dbg/MEASUREMENTS.md). The routed 75 MHz image meets timing at
+  +0.008 ns.
+
+### Fixed — registered SBA issue hold
+
+- Register the SBA pause and require it before accepting a RAM write. This
+  cuts the reset-to-trigger/issue path introduced by fetch-fault pause
+  qualification, while preserving reset suppression of bus requests and
+  draining work admitted on the hold's assertion edge. Directed tests and
+  negative controls cover registered timing, cancellation and early acceptance.
+  The combined gate passes with 274 unchanged inputs, including 13 invariant
+  corruption controls and 17 transport/backend controls.
+  Fresh full two-trigger OpenSTA input-to-register slack is +0.2328 ns,
+  replacing −0.1739 ns with unchanged constraints. Register WNS remains
+  −0.3978 ns on the IFU/decode-to-double-FMA path; 200 MHz is still open.
+  The October 29 FPGA programming bundle is unchanged; the full two-trigger
+  200 MHz timing follow-up is recorded in [measurements](dbg/MEASUREMENTS.md).
+
+### Added — karudbg autoexec, address triggers and System Bus Access
+
+- Core trigger-entry and maintenance invariants, plus SBA ownership/handshake
+  scoreboards, are exercised by deliberately corrupted controls. Static
+  `SBA_ENABLE=0` now hides SBA discovery as well as denying bus traffic.
+  Executable scratch writes synchronize fetch, and coherent writes wait for
+  the platform cache-maintenance acknowledgement. Watchpoint arming respects
+  vector load/store direction; fetch-fault triggers wait through SBA pauses.
+- Independent `KARU_DBG_AUTOEXEC`, `KARU_DBG_TRIGGERS` and `KARU_DBG_SBA`
+  switches extend the base DM; `KARU_DBG_FULL` selects all three. Autoexec
+  supports both data registers and all eight Program Buffer words.
+- Two debugger-owned `mcontrol6` address triggers (four optionally) support
+  before-access breakpoints/watchpoints, including vector element restart.
+  Native M-mode breakpoint actions, chains and data-value matching are deferred.
+- SBA provides native 8/16/32/64-bit physical RAM and MMIO access. RAM writes
+  drain older core accesses, clear LR/SC reservations, invalidate both caches
+  and restart fetch before completion, including while the application runs.
+  The private debug page remains accessible only through the core's ports.
+- The standard 75 MHz debug FPGA target selects the combined extensions;
+  `VCU118_DBG_EXT_DEFINES=` reproduces the base configuration. Current extension
+  validation and pending gates are tracked in [dbg/README.md](dbg/README.md).
+- Autoexec caches every accepted explicit command, including unsupported or
+  not-ready commands, while ignoring command writes during busy/sticky error.
+  The 958-check DM regression and counted-MMIO OpenOCD test prevent stale
+  command replay; baseline DM coverage remains 947 checks.
+- Register each 64-bit vector watch address before its trigger comparison,
+  adding one cycle per armed field query while preserving the disabled path.
+  The full-debug CPU replay passes 2872/2872 preserved ACT4 reference ELFs;
+  all 16 ordinary subjects pass with zero idle cycle delta. Focused SBA
+  four-state testing passes 30,740 checks and rejects eight coherence/ordering
+  mutations, including lost or premature external-cache acknowledgements.
+  The review follow-up passes the combined gate with 274 unchanged input hashes.
+  Current validation and mapped comparison records are in [dbg/README.md](dbg/README.md) and
+  [dbg/MEASUREMENTS.md](dbg/MEASUREMENTS.md). The separate full-extension
+  FPGA image passes 75 MHz routed acceptance; board testing remains open.
+
+### Fixed — debug metadata, exceptions and reset timing
+
+- `hartinfo` advertises two scratch CSRs without a data-register memory shadow;
+  the former 12-bit address could not describe the private data window.
+- Program Buffer exceptions preserve completed `a0`/`s0` writes, including an
+  abstract transfer followed by a failing `postexec`. Faults inside generated
+  transfer code use a separate ROM entry to restore its temporary GPRs.
+- Synchronous reset paths remain timed in the core and debug synthesis flows.
+  External-reset exceptions are restricted to TCK asynchronous reset pins.
+  Directed tests cover the exception cases and BSCAN resets during scans.
+  The historical base-debug checkpoint completed Vivado implementation on 2026-10-27 at
+  75 MHz: whole-design setup/hold +0.005/+0.011 ns, CPU setup +0.482 ns,
+  16/16 bus-skew constraints met and zero bitstream DRC errors. Board
+  acceptance remains pending.
+
+### Added — opt-in karudbg and AXI requester metadata
+
+- `KARU_DBG` enables precise execution-based debug entry, resume and stepping,
+  debug CSRs, counter freeze and command-exception containment. The separate
+  `dbg/` integration supplies a single-hart Debug 1.0-targeted DM, eight-word
+  Program Buffer, generated two-scratch ROM and conventional JTAG DTM. The base
+  configuration omits SBA and hardware triggers; optional extensions are above.
+  Authentication is outside the current scope. The private debug page is
+  accessible only in Debug Mode through the core's ports.
+- The optional VCU118 debug target connects the DM through a USER4 nested-TAP
+  BSCAN tunnel compatible with mainline OpenOCD. Transport reset release is
+  synchronized, and `ndmreset` cancels both sides of the DDR AXI path before
+  releasing the hart while leaving the DM alive.
+- AXI instruction/data and effective privilege attributes now propagate through
+  request producers, caches, queues and the FPGA DDR interconnect. A trusted
+  `NONSECURE` parameter selects the static per-hart security domain. External
+  privilege enforcement is limited to physically non-cacheable regions; this
+  does not add PMP or dynamic security domains.
+- Repository tests cover the DM, AXI adapter, CDC/reset, actual-core register
+  and execution context, MMIO, OpenOCD and GDB. The pinned OpenOCD compatibility
+  patch handles absent autoexec and rejects unsupported software translations
+  safely. See [dbg/README.md](dbg/README.md) for commands, scope and acceptance
+  status. FPGA board/BSCAN acceptance and a compliance claim remain pending.
+
 ### Documented — out-of-range `vstart` policy (issue #5)
 
 - [doc/architecture.md](doc/architecture.md#vector-unit-rvv-10-v) now states
