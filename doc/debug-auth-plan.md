@@ -6,9 +6,11 @@ implemented except the S8 and S10 prerequisites.
 *Status, 2026-11-18.* Milestones A0, A1 and A6 are done. A2 has the window
 ROM with the simulation-only `TEST` algorithm, in a simulation build and an
 FPGA build; the production verifier waits for decision D3. A3 and A4 are
-partial. A5 is implemented: the VCU118 debug image is built with
-`KARU_DBG_AUTH`, with the lifecycle and the boot hold on DIP switches. No
-part of it has run on a board. Section 7 has the notes per milestone.
+partial. A5 is done: the VCU118 debug image is built with
+`KARU_DBG_AUTH`, with the lifecycle and the boot hold on DIP switches, and
+every authentication case passed on the board on 2026-11-18
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). Section 7 has the notes
+per milestone.
 
 This plan
 addresses [review finding S6](security-review-2026-11-15.md#s6--high-for-deployment-no-debug-authentication-or-runtime-lock):

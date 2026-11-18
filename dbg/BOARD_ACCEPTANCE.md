@@ -210,8 +210,10 @@ been confirmed by the directed tests or soak.
 A review of the campaign's drivers and logs confirmed the recorded results
 (bundle and artifact hashes, 39 passing groups) and found no debug RTL
 defect. It narrowed two coverage claims and found two harness weaknesses.
-The harness changes below are in the source tree but **have not run on the
-board**; the results above are those of the scripts frozen in the bundle.
+The harness changes below are in the source tree but **had not run on the
+board** at the time; the results above are those of the scripts frozen in
+the bundle. They first ran on the board on 2026-11-18
+([record](BOARD_ACCEPTANCE-2026-11-18.md)).
 
 - **Autoexec triggers.** The campaign's test set each autoexec bit, read the
   trigger register twelve times and then checked a value that no execution

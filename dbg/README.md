@@ -285,11 +285,11 @@ OpenSBI v1.9 with the `zkr` device tree and an S-mode payload that reads
 `seed` as Linux does and reboots through SBI, in lifecycle `OPEN` and
 `AUTH`, with the entropy strap low, and a control with the tree without
 `zkr`. The board top elaborates in Vivado with the image's define list and
-the ring placement was checked out of context. None of this has run on a
-board.
+the ring placement was checked out of context.
 
-The first board session with this image follows
-[the board test plan](BOARD_TEST_PLAN.md).
+The first board session with this image, on 2026-11-18, followed
+[the board test plan](BOARD_TEST_PLAN.md); every stage passes
+([record](BOARD_ACCEPTANCE-2026-11-18.md)).
 
 **Software reboot, 2026-11-17 11:33 UTC.** `make dbg-test
 DBG_GATE_JOBS=3 DBG_JOBS=6` passed in 595.14 seconds from an empty `_build`,
