@@ -254,6 +254,29 @@ building it under the new name.
 - `make uboot-boot-test` boots this U-Boot from the ROM in simulation, with
   the entropy source on and off, through one SBI reset each.
 
+### Z6. SP 800-90B: joint-source assessment and health-test coverage
+
+*Added 2026-11-19.* The [SP 800-90B assessment](sp800-90b-assessment.md)
+finds the source not compliant. The noise-source sample is the 4-bit vector of
+the four rings, not four separate bits; its non-IID statistical estimate is
+3.53 bits per sample at the shipped spacing, and a delayed warm-restart
+experiment passes the restart tool, but the health tests run per lane only,
+fail the alternative-test criteria of §4.5, and rest on an assumed entropy;
+the operational restart requirement is untested. The work, in order:
+
+- RCT and APT (W = 512) on the 4-bit sample, with cutoffs from the assessed
+  entropy and a documented false-alarm rate; keep the lane tests as
+  diagnostics; add a test for short periodic patterns.
+- A failure indication a consumer can read, distinct from start-up, and a
+  rule that ends a recurring operational failure in `DEAD`.
+- A fixed configuration: build-time constants or a boot-time lock for k and
+  the cutoffs.
+- Operational restart data: power-on or reconfiguration restarts, samples
+  read through `seed` from the first `ES16` on.
+- Data over temperature and supply, more boards or placements, and cold
+  restarts; a physical rationale (the Z3 model with flicker and wander) for
+  the entropy claim.
+
 ## 3. Order
 
 Z1 and Z2 belong in one bitstream. Z3's simulation part can start before

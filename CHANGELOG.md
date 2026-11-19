@@ -6,6 +6,26 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Added — SP 800-90B assessment of the entropy source
+
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md): the `seed`
+  source is not SP 800-90B compliant. NIST's non-IID estimators give a
+  statistical estimate of 3.53 bits per 4-bit sample at the shipped spacing
+  (k = 16), not an established H_I. A delayed warm-restart experiment
+  (1,000 × 1,000 on the board) passes the restart tool with that value as a
+  trial input; the operational restart requirement is untested. The health
+  tests run per lane rather than on the sample, fail the §4.5
+  alternative-test criteria, rest on an assumed entropy, and do not report a
+  recurring operational failure distinctly; the configuration is not
+  locked. Point-by-point notes and the work needed (Z6
+  of the Zkr plan).
+- `test/dbg/board/getnoise_restart.py`: delayed warm-restart data in the
+  §3.1.4 format (debugger reset-halt, then 1,000 consecutive symbols in test
+  mode).
+- `test/dbg/board/sp80090b_health.py`: offline replay of the lane and sample
+  health tests, per run and including partial windows, and the §4.5
+  criteria for both.
+
 ### Tested — VCU118 board session, 2026-11-19
 
 - Image `85f07e58…` (burst capture, temperature and supply readout, SHA3
