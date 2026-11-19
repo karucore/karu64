@@ -6,6 +6,180 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Tested — VCU118 board session, 2026-11-19
+
+- Image `85f07e58…` (burst capture, temperature and supply readout, SHA3
+  authentication, U-Boot v2026.10) is accepted with documented exceptions:
+  translation fails with the six known OpenOCD walker results, and phase 12
+  records `POST_LINUX_ACCEPT_FAIL` because OpenSSL hit its 600 s limit,
+  completed by phase 13 (92 pairs, none missing or bad). The record
+  is [dbg/BOARD_ACCEPTANCE-2026-11-19.md](dbg/BOARD_ACCEPTANCE-2026-11-19.md).
+  - U-Boot 2026.10: with the source on, `rng 0 10` prints 16 bytes; with
+    it off, `rng` answers "No RNG device" at once and the boot goes on.
+    `/chosen/kaslr-seed` was present and absent accordingly when checked
+    over SSH. Three software reboots.
+  - The debugger phases and the Linux, KVM and OpenSSL acceptance pass as
+    on 2026-11-18; the harness's new default limits need no wrapper.
+  - Authentication with SHA3-256 and the build's key, six cases: `locked`,
+    `authenticate`, `wrong-response`, `replay`, `expiry`, `entropy-off`,
+    with JTAG reconfiguration as the power-on. `open`, `no-hold`,
+    `disabled`, `reboot`, `reboot-locked` and `fresh-nonce` were not rerun.
+  - Burst capture: eight runs (warm, two CPU resets, a software reset, the
+    link down, three reconfigurations), each at 9 periods × 32 bursts. The
+    noise model can be fitted at last: the fitted jitter variance per clock
+    falls with ring length, grows faster than white noise would, and is
+    stable across resets.
+    **Lanes 2 and 3 are not independent**: shared frequency wander in two
+    runs, a lagged cross-correlation, and a coherence peak at about 2.05 MHz
+    in another; supply ripple is a hypothesis. Die temperature 23.9–24.9 °C throughout.
+- The SW12 switches are hard to reach; the test plan now asks to change them
+  as rarely as possible and to use reconfiguration or the software reset
+  instead of the button where the test allows.
+
+### Added — burst capture and temperature readout for the entropy source, SHA3 debug authentication, U-Boot v2026.10
+
+Implemented on 2026-11-18 after the board session, from the
+[Zkr follow-up plan](doc/zkr-followup-plan.md) (Z1 to Z5). Tested in
+simulation, and built into VCU118 bitstream `85f07e58…` the same evening
+(75 MHz met, setup +0.002 ns; [measurements](dbg/MEASUREMENTS.md#fpga-image--2026-11-18-evening)).
+Board-tested on 2026-11-19; see the entry above. Bitstream `d7ff00dc…` has
+none of it.
+
+- **Sampling period in test mode (Z1).** `flow/fpga/karu_rosc_rng.v` takes
+  its sampling period as an input, 1 to 256 clocks, in place of the
+  `SAMPLE_DIV` parameter. Outside the entropy block's test mode the period
+  is the build's 256, by construction: the register that sets it belongs to
+  the capture block and exists only in test mode. `rtl/karu_entropy.v`
+  gains two status outputs (`test_o`, `lock_o`) and is otherwise unchanged;
+  the CSR contract is unchanged.
+- **Burst capture (Z2).** `flow/fpga/karu_noise_burst.v` records 32,768
+  consecutive raw symbols at the chosen period in four block RAMs. Its four
+  registers are in the system-control block at `0x1000_0840`, read through
+  an index and a data register, because a new address window would have
+  needed a change to the core's physical access permissions. The bus decode
+  passes on privileged 64-bit accesses only. Everything is confined to test
+  mode: outside it, or with `mentropycfg` locked, nothing can be set or
+  started and nothing is readable; leaving test mode forgets the recording.
+  A window of one cycle in which the data register could have shown a word
+  of the previous recording was found in review and closed (done is
+  reported a cycle after the last word is written), with a bench check and
+  a mutant.
+- **Board scripts (Z3).** `getnoise_burst.S` and `getnoise_burst.py` capture
+  bursts at periods of 1 to 256 clocks and write them in the capture file
+  format, one run per burst, with the period and a clock-cycle stamp per
+  burst in the sidecar. `noise_model.py` is the Python copy of the
+  simulation's noise source, which gains a model with known parameters
+  (`+rosc_jitter`, `+rosc_duty`) for the analysis to be validated on.
+- **Analysis (Z3).** `getnoise_analyze.py` reads burst captures and
+  compares all captures by the spacing of their samples in clocks. For
+  samples close together it fits (F, sigma^2) per burst at lags up to an
+  eighth of the burst, compares that with the fit pooled over bursts to
+  show frequency wander, and takes the per-burst value, never the pooled
+  one, for the per-bit model figure. It adds a spectrum per lane with the
+  lines the model explains and any spurs, the coherence of each lane pair
+  (locking), the correlation of the lanes' per-burst frequencies (shared
+  wander) and the agreement of captures with equal spacing. On the copy of
+  the simulated source, decimated to periods of 1 to 256 clocks, sigma^2
+  comes out within 3% and proportional to the period. `--require-
+  independent` now also fails on coherence or shared wander. The JSON
+  format is `karu64-getnoise-analysis-3`; the earlier keys are kept. Eight
+  board runs were analysed with it on 2026-11-19 (entry above).
+- **Burst capture hardening (from review).** A capture runs only while the
+  noise source is on: if it is off in any cycle of a capture, the start
+  cycle included, the capture is aborted, holds nothing, and status bit 6
+  says so; a burst with a gap could otherwise have been reported done. The
+  payload reports it as status `ABORTED`.
+- **Temperature readout (Z4).** `flow/fpga/karu_sysmon.v` reads the die
+  temperature, VCCINT and VCCAUX from the system monitor every 14 ms into a
+  register at `0x1000_0860`; the monitor is placed in the rings' SLR. Both
+  capture scripts store it, raw and decoded, before and after each capture,
+  and keep the previous capture's files until the new ones are complete.
+  `make sysmon-xsim-test` checks it against Xilinx's SYSMONE4 model.
+- **Tests, all in `make dbg-test`:** `noise-burst-test` (the capture block
+  with the noise model and the entropy block; 36 one-mechanism mutants),
+  `ddr-noise-burst-test` (the registers through the SoC's bus decode, from
+  M-mode and, refused, from U-mode and with narrower accesses; eight decode
+  mutants), `dbg-getnoise-burst-test` (the payload and the phase on the SoC
+  simulation, every burst compared with the simulated source; three payload
+  mutants) and `dbg-burst-analysis-test`.
+- **Checked outside simulation:** an out-of-context Vivado synthesis of the
+  entropy source infers the four RAMB36E2, adds 104 LUTs and 96 flip-flops
+  for the capture block, meets 75 MHz with 10.6 ns to spare and has no loop
+  but the four rings; the board top elaborates with the new wiring.
+- **U-Boot (Z5).** `flow/build_uboot.sh` builds v2026.10 (801,805 bytes of
+  the 901,120-byte slot) and refuses a tree of another release; the
+  Makefile's default tree is `../u-boot-v2026.10`. The Zkr random-number
+  driver is enabled with `flow/boot/uboot-zkr-timeout.patch`, which bounds
+  its waits at 100 ms: the released driver waits without bound in `BIST`
+  and `WAIT`. Its one use is `kaslr-seed`; `rng-seed` is not passed.
+  `make uboot-boot-test` boots it from the ROM in simulation: with the
+  entropy source on the driver delivers, with it off U-Boot reports "No
+  RNG device" and boots on; `make uboot-tftp-test` fetches two files by
+  TFTP through the modelled NIC. It is the first release after v2025.01 to
+  go on the board.
+
+### Added — SHA3-256 shared-secret debug authentication (algorithm 0x04)
+
+- The FPGA image's island ROM verifies
+  SHA3-256(key ‖ "karudbg-auth-v1" ‖ challenge ‖ granted) with a 32-byte key
+  generated per build tree (`_build/vcu118_auth_key.txt`, owner-only); the
+  board client computes the same (`KARU_BOARD_AUTH_KEY`). Simulation builds
+  keep the TEST algorithm and a public test key. The ROM wipes its key
+  copies and clears the island SRAM before leaving. This is an interim
+  choice for the FPGA (contract §5.1, plan D3): anyone with the bitstream,
+  or with the debugger in lifecycle `OPEN`, or privileged software on the
+  hart, can read the key.
+- `flow/auth_record.py` records, right after the bitstream is built, its
+  hash, the algorithm, the island ROM's hash and the key's fingerprint; the
+  programming bundle adds the key only when the record matches the
+  bitstream, the ROM and the key file, and is written as a fresh mode-600
+  file.
+
+### Added — formal lemmas C1 and C3, C8 strengthened
+
+- **C3** (Debug Module noninterference while locked): two copies with the
+  same DMI and mailbox inputs and free, separate hart, debug-page and SBA
+  inputs give identical DMI handshakes, responses and mailbox words in
+  every cycle after reset. Unbounded (k = 6), with three controls.
+- **C1** (bypass freedom): `make dbg-auth-bypass-test`, a structural
+  inventory of the flattened `karudbg_top`: what reaches each protected
+  element without crossing a cut, against an explicit allowlist; five
+  controls. It compares which sources reach each element, so a further
+  path from an already allowed source is not reported.
+- **C8** also proves that the issue signal, and the PC on every issue,
+  reach the authentication block in every cycle (the window closes on any
+  issue outside the ROM); two more controls.
+
+### Changed — KVM fixture pinned to OpenSBI v1.9
+
+- `test/kvm-karu` pinned karudeb's OpenSBI v1.8.1 while karudeb has built
+  v1.9 at the default path since 2026-11-17, so the fixture's build stopped
+  with a fingerprint mismatch. The pin is now v1.9 (`cbbbe5ce…a638`), the
+  binary of the board image's ROM. The kernel and initramfs of the fixture
+  come out byte-identical to the v1.8.1 fixture's.
+  With v1.9 both upstream guests complete under the fixture's QEMU control
+  and on RTL (about 245 million cycles); the results are in
+  [test/kvm-karu/README.md](test/kvm-karu/README.md#results-with-opensbi-v19).
+
+### Fixed — a fresh clone could not pass `make dbg-test`
+
+Found when the gate was run on a new clone, with an empty `_build` and
+`TMPDIR` inside the repository:
+
+- The Zkr bench rule did not create its directory, which only existed if
+  another rule had run first; with parallel jobs from an empty `_build` the
+  bench build failed.
+- `test_isa_replay.py` compared a path in a form that holds only when the
+  temporary directory is outside the repository; with `TMPDIR` inside it
+  the self-test failed.
+
+### Fixed — documentation
+
+- The FPGA guide's section on debug images is no longer headed "Latest
+  completed debug image — 2026-10-29", and the statement there and in the
+  measurements that the image "has not been programmed" now says which
+  image that was and where the acceptance was done since.
+
 ### Tested — VCU118 board session, 2026-11-18
 
 - The debug image `d7ff00dc…3e80` (Zkr, debug authentication, 2 MiB boot

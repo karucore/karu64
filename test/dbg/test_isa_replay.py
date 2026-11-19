@@ -75,10 +75,12 @@ class IsaReplayTest(unittest.TestCase):
             path.write_bytes(b"original")
             record = replay.file_record(path)
             self.assertEqual(replay.verify_records([record]), [])
+            # The record names a file under the repository by its relative
+            # path, so the temporary directory may be inside or outside it.
             path.write_bytes(b"modified")
-            self.assertEqual(replay.verify_records([record]), [str(path)])
+            self.assertEqual(replay.verify_records([record]), [record["path"]])
             path.unlink()
-            self.assertEqual(replay.verify_records([record]), [str(path)])
+            self.assertEqual(replay.verify_records([record]), [record["path"]])
 
     def test_execution_logs_preserve_dotted_names_and_remove_pass_images(self):
         # Tiny process fixtures exercise the runner, not an RTL simulation.

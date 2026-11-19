@@ -14,6 +14,14 @@
 //	a RNG_BUS_WIDTH = 4 symbol. There is no back-pressure. rng_fips_i is
 //	accepted and has no effect, as in OpenTitan's open model.
 //
+//	One port is not OpenTitan's: rng_div_i, the sampling period in clock
+//	cycles, less one (0 to 255: a symbol every 1 to 256 cycles). The rings
+//	run on regardless of it; it only says which of the sampling flop's
+//	values become symbols. At a period of one cycle rng_val_o stays high. A
+//	change takes effect at once: the next symbol comes no later than the new
+//	period after it. The entropy source ties this to a constant, except in
+//	its test mode (flow/fpga/karu_entropy_src.v, karu_noise_burst.v).
+//
 //	Vivado: the ring nets carry DONT_TOUCH, so every inverter stays a LUT,
 //	and ALLOW_COMBINATORIAL_LOOPS, which turns the loop check LUTLP-1 (an
 //	error at bitstream generation) into the warning LUTLP-2. The timing
@@ -28,18 +36,28 @@
 //	divides the jitter by 2^n. With SIM = 2 the generator is not reset and
 //	runs whether or not the source is enabled, as physical noise does, so
 //	that two resets do not give the same symbols.
+//
+//	The default model gives every lane a full-cycle random kick per clock, so
+//	its bits have no memory at any sampling period. For tests of the
+//	characterisation (burst capture and its analysis) there is a second
+//	model with known parameters, selected by +rosc_jitter=<n>: lane m
+//	advances by its mean step F plus a zero-mean, roughly Gaussian value of
+//	standard deviation (m + 1) * 2^n * 37837 / 2^32 cycles per clock, drawn
+//	separately for each lane. +rosc_duty=<hex> sets the duty cycle D as a
+//	32-bit fraction (default 80000000, one half). test/dbg/board/
+//	noise_model.py is the Python copy of both models.
 //	SPDX-License-Identifier: BSD-2-Clause
 
 module karu_rosc_rng #(
 	parameter integer STREAMS    = 4,		//	OpenTitan EntropyStreams / RngBusWidth
 	parameter integer STAGES     = 3,		//	inverters in ring 0 (odd); ring s has 2*s more
-	parameter integer SAMPLE_DIV = 256,		//	clk cycles per raw symbol
 	parameter integer SIM        = 0		//	1: behavioural model, no rings; 2: the same, free-running
 ) (
 	input  wire					clk,		//	OpenTitan: clk_ast_rng_i
 	input  wire					rst,
 	input  wire					rng_en_i,
 	input  wire					rng_fips_i,
+	input  wire [7:0]			rng_div_i,	//	clk cycles per raw symbol, less one
 	output reg					rng_val_o,	//	one-cycle pulse per symbol
 	output reg  [STREAMS-1:0]	rng_b_o		//	raw sampled ring outputs
 );
@@ -70,13 +88,27 @@ module karu_rosc_rng #(
 		//	uniform 16-bit values, centred, so roughly Gaussian.
 		reg [63:0] prng;
 		reg [31:0] phase [0:STREAMS-1];
-		reg [31:0] stuck, slow;
+		reg [31:0] stuck, slow, jitter, duty;
+		reg        characterise;
 		integer m;
 		initial begin
-			stuck = 32'd0; slow = 32'd0;
+			stuck = 32'd0; slow = 32'd0; jitter = 32'd0; duty = 32'h8000_0000;
 			if (!$value$plusargs("rosc_stuck=%d", stuck)) stuck = 32'd0;
 			if (!$value$plusargs("rosc_slow=%d", slow)) slow = 32'd0;
+			characterise = $value$plusargs("rosc_jitter=%d", jitter) != 0;
+			if (!$value$plusargs("rosc_duty=%h", duty)) duty = 32'h8000_0000;
 		end
+		//	the characterisation model's noise: per lane, four 16-bit fields
+		//	of the generator state times an odd constant, summed and centred
+		function automatic signed [31:0] lane_noise(input [63:0] state, input integer lane);
+			reg [63:0] u;
+			begin
+				u = state * (lane == 0 ? 64'hd6e8_feb8_6659_fd93 : lane == 1 ? 64'hca5a_8263_9512_1157 :
+							 lane == 2 ? 64'h9fb2_1c65_1e98_df25 : 64'hc2b2_ae3d_27d4_eb4f);
+				lane_noise = $signed({16'b0, u[15:0]}) + $signed({16'b0, u[31:16]})
+						   + $signed({16'b0, u[47:32]}) + $signed({16'b0, u[63:48]}) - 32'sd131070;
+			end
+		endfunction
 		wire [63:0] p1 = prng ^ (prng << 13);
 		wire [63:0] p2 = p1 ^ (p1 >> 7);
 		wire [63:0] p3 = p2 ^ (p2 << 17);
@@ -94,13 +126,17 @@ module karu_rosc_rng #(
 				//	a different mean step per lane, and the same noise sample
 				//	rotated so that the lanes do not move together
 				for (m = 0; m < STREAMS; m = m + 1)
-					phase[m] <= phase[m] + 32'h0a3d_70a3 * (2 * m + 3)
-							  + ({{13{noise[18]}}, noise} <<< (14 - slow[3:0])) * (m + 1)
-							  + {prng[8*m +: 8], 24'b0};
+					if (characterise)
+						phase[m] <= phase[m] + 32'h0a3d_70a3 * (2 * m + 3)
+								  + ((lane_noise(prng, m) * (m + 1)) <<< jitter[4:0]);
+					else
+						phase[m] <= phase[m] + 32'h0a3d_70a3 * (2 * m + 3)
+								  + ({{13{noise[18]}}, noise} <<< (14 - slow[3:0])) * (m + 1)
+								  + {prng[8*m +: 8], 24'b0};
 			end
 		end
 		for (s = 0; s < STREAMS; s = s + 1) begin : g_lane
-			assign osc[s] = stuck[s] ? 1'b1 : ~phase[s][31];
+			assign osc[s] = stuck[s] ? 1'b1 : (phase[s] < duty);
 		end
 	end endgenerate
 
@@ -110,33 +146,38 @@ module karu_rosc_rng #(
 		if (rst)	begin samp_q <= {STREAMS{1'b0}}; meta_q <= {STREAMS{1'b0}}; end
 		else		begin samp_q <= osc;             meta_q <= samp_q;          end
 
-	//	one symbol every SAMPLE_DIV cycles: the sampling period of the model
-	reg [15:0] div_q;
-	assign sample = (div_q == SAMPLE_DIV - 1);
+	//	one symbol every rng_div_i + 1 cycles: the sampling period of the
+	//	model. The comparison is >=, so that a period shortened below the
+	//	count takes effect in this cycle instead of after a wrap.
+	reg [7:0] div_q;
+	assign sample = (div_q >= rng_div_i);
 	always @(posedge clk)
 		if (rst) begin
-			div_q <= 16'd0; rng_val_o <= 1'b0; rng_b_o <= {STREAMS{1'b0}};
+			div_q <= 8'd0; rng_val_o <= 1'b0; rng_b_o <= {STREAMS{1'b0}};
 		end else begin
 			rng_val_o <= 1'b0;
 			if (!rng_en_i)
-				div_q <= 16'd0;
+				div_q <= 8'd0;
 			else if (sample) begin
-				div_q <= 16'd0;
+				div_q <= 8'd0;
 				rng_val_o <= 1'b1;
 				rng_b_o <= meta_q;
 			end else
-				div_q <= div_q + 16'd1;
+				div_q <= div_q + 8'd1;
 		end
 
 	wire unused = rng_fips_i;
 
 `ifndef KARU_NO_ASSERT
 	// synthesis translate_off
-	reg val_q;
+	//	Symbols in consecutive cycles only at a period of one cycle.
+	reg       val_q;
+	reg [7:0] div_d;
 	always @(posedge clk) begin
 		val_q <= !rst && rng_val_o;
-		if (!rst && rng_val_o && val_q) begin
-			$display("ASSERT: karu_rosc_rng: valid longer than one cycle"); $fatal;
+		div_d <= rng_div_i;
+		if (!rst && rng_val_o && val_q && div_d != 8'd0) begin
+			$display("ASSERT: karu_rosc_rng: symbols in consecutive cycles at a period above one"); $fatal;
 		end
 	end
 	// synthesis translate_on

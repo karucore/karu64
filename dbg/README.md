@@ -235,8 +235,67 @@ PYTHONPATH=test/dbg python3 -m unittest \
 
 The newest entry is first; each entry carries its own date.
 
+**Burst capture, temperature readout and SHA3 authentication, 2026-11-18
+21:32 UTC (current).** `make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in
+864.54 seconds on the frozen tree the image was built from, with all **441
+captured input hashes** unchanged. An earlier run of this round, before the
+SHA3 authentication and the review fixes, passed at 18:31 UTC (659.12
+seconds, 428 inputs). A baseline
+run of the same clone before any of this work passed at 16:18 UTC (585.77
+seconds, 416 inputs), after two defects that only a fresh clone shows were
+fixed: the Zkr bench rule did not create its directory, and
+`test_isa_replay.py` failed with the temporary directory inside the
+repository. **This tree is not the accepted image's: bitstream `d7ff00dc…`
+was built before these changes.** Bitstream `85f07e58…` was built from it
+right after this run (21:32 to 23:40 UTC, timing met; board-tested on
+2026-11-19, [record](BOARD_ACCEPTANCE-2026-11-19.md); see
+[measurements](MEASUREMENTS.md#fpga-image--2026-11-18-evening)).
+Since the 00:31 run the gate gained:
+- `noise-burst-test`: the FPGA entropy source with its burst capture
+  (`flow/fpga/karu_noise_burst.v`, with the noise model and
+  `rtl/karu_entropy.v`): the sampling period, bursts against a record of
+  every symbol of the source, what test mode confines, and the abort of a
+  capture during which the source was off (107,134 checks); 36
+  one-mechanism mutants caught by the bench alone;
+- `ddr-noise-burst-test`: the capture's registers and the temperature
+  readout through the DDR SoC's bus decode, from M-mode and, refused, from
+  U-mode and with narrower accesses; eight decode mutants, each failing
+  with its own message;
+- `dbg-getnoise-burst-test`: the burst payload and the burst phase on that
+  SoC simulation, every burst compared with a Python copy of the simulated
+  source, three payload mutants, and the analysis on the phase's files (93
+  checks);
+- `dbg-burst-analysis-test`: the analysis of bursts on generated data with
+  known parameters, with five controls (71 checks);
+- the board harness self-test, now 214 checks over 30 scripts;
+- `dbg-board-auth-sha3-rehearsal-test`: the board client and the island
+  ROM built for algorithm `0x04` (SHA3-256 shared secret), with the public
+  test key, against the simulated JTAG target;
+- `dbg-auth-sba-revoke-test`: revocation with an SBA transfer outstanding,
+  24 timings, four-state, three controls;
+- `dbg-auth-bypass-test` and `dbg-auth-bypass-image-test`: lemma C1 as a
+  structural inventory, in a reduced configuration and in the image's.
+`rtl/karu_entropy.v` changed by two status outputs only; `entropy-test`
+(33 of 33 mutants), `zkr-test` and `zkr-loop-test` pass unchanged, and
+`ddr-reboot-test` passes with its seven mutants on the changed bus decode.
+
+Outside the gate, on the same frozen tree on 2026-11-18:
+`make dbg-auth-formal-test` passed (13 min 47 s), with C3 new and C8
+strengthened, every control detected; `make image-boot-test` passed with
+the board's own SHA3 island ROM and the temperature readout (island ROM,
+fu-boot from the 2 MiB ROM, OpenSBI v1.9 with the `zkr` tree, an S-mode
+payload that reads `seed` and reboots, in `OPEN` and `AUTH`, with the
+entropy strap low, and the no-Zkr control); `make uboot-boot-test` passed
+(62 min): U-Boot 2026.10 from the ROM boots twice in each run, its patched
+Zkr driver delivers 16 bytes with the entropy source on and gives up with
+it off; `make uboot-tftp-test` fetched two files by TFTP with matching CRC;
+`make sysmon-xsim-test` passed against Xilinx's SYSMONE4 model. The KVM
+fixture, re-pinned to OpenSBI v1.9, completed both guests on QEMU and on
+RTL. An out-of-context Vivado run placed the system monitor in the rings'
+SLR and routed the capture block with 10.8 ns of slack on its RAM address.
+
 **Zkr, 2 MiB boot ROM and authentication in the FPGA image, 2026-11-18 00:31
-UTC (current).** `make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in 463.26
+UTC.** `make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in 463.26
 seconds, alongside the FPGA build, with all **416 captured input hashes**
 unchanged. It follows two runs on 2026-11-17 (22:42, 709.95 seconds, 410
 inputs; 23:26, 586.01 seconds, 415 inputs) that passed on RTL which Vivado
@@ -1086,7 +1145,11 @@ and the absence of a combinational loop between the two; see
 and the board harness's own checks: `dbg-board-harness-test`,
 `dbg-board-rehearsal-test`, `dbg-getnoise-test` and
 `dbg-board-auth-rehearsal-test`
-([harness README](../test/dbg/board/README.md)). `dbg/checks.mk` and
+([harness README](../test/dbg/board/README.md)). Since 2026-11-18 it also
+runs the tests of the entropy source's burst capture: `noise-burst-test`,
+`ddr-noise-burst-test`, `dbg-getnoise-burst-test` and
+`dbg-burst-analysis-test` ([the FPGA guide](../doc/fpga.md),
+[Zkr follow-up plan](../doc/zkr-followup-plan.md)). `dbg/checks.mk` and
 `dbg/board.mk` are the authoritative list.
 
 Directed core tests must include:
@@ -1414,6 +1477,9 @@ hart's bus responders with it, as for `ndmreset_o`.
 | `dbg-auth-window-seed-test` | The window bench on a core with `KARU_ZKR` and the entropy block, with a ROM built to read its nonce from `seed`, as the VCU118 image's ROM does. 108 checks; the bench confirms that every nonce word came from `seed` and none from `mdbgrng` |
 | `sv39-auth-pma-test` | The island SRAM and the Debug Module's page lie inside the boot ROM's span and are not ROM in the access permissions. Checked through the address translator; the control, which makes the island SRAM executable again, is caught by the `HLVX` case |
 | `dbg-board-auth-rehearsal-test` | The board's client (`test/dbg/board/authlib.py`, `auth_phase.py`) and pristine OpenOCD against the simulated target running the real window ROM: locked examine, a correct response, a wrong one, a replay, a fresh nonce after another power-on reset, expiry and the straps; four client mutants and five wrong setups must be refused |
+| `dbg-board-auth-sha3-rehearsal-test` | The same rehearsal with the island ROM built for algorithm `0x04` (SHA3-256 shared secret) and the public test key: locked, authenticate, wrong response, replay, fresh nonce; a wrong key, no key and a TEST-only client are refused |
+| `dbg-auth-sba-revoke-test` | Four-state bench on `karudbg_core` with authentication and SBA (`test/dbg/tb_auth_sba_revoke.sv`): debug revoked while an SBA read or write is outstanding, in 24 timings of the held beat, by `revoke_i` and by the hart's `fw_lock`. The accepted transfer drains exactly once, no SBA access reaches the bus after the fall, DMI shows only the locked view and never the drained data, and the hart's own accesses complete. Three controls (keeps launching, leaks the data, never drains) |
+| `dbg-auth-bypass-test` | Lemma C1, structural: a bit-level inventory of what reaches each protected element of the flattened `karudbg_top` without crossing a cut, against an explicit allowlist; five controls. `dbg-auth-bypass-image-test` runs it with the VCU118 image's defines (H, vectors, Zkr) |
 
 Formal lemmas (`dbg-auth-formal-test`, not part of the functional gate):
 

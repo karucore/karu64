@@ -131,6 +131,18 @@ module karu_ddr_xbar #(
 	//	0x7777 to 0x1000_0800. The top level stretches it into a reset pulse
 	//	that also resets this block (karu_soft_reset.v).
 	output wire			sys_reset_req_o,
+	//	Eight 64-bit registers of the same block, at 0x1000_0840..0x1000_087f:
+	//	the burst capture of the entropy source (karu_noise_burst.v), which
+	//	lives next to the noise source at the top level. Only privileged
+	//	64-bit accesses are passed on. Every other read of the range returns
+	//	zero and every other write has no effect; a read of the capture's
+	//	data register has a side effect, so a narrower read must not reach it.
+	output wire			sysreg_re_o,		//	a read of sysreg_raddr_o is taken in this cycle
+	output wire [2:0]	sysreg_raddr_o,
+	input  wire [63:0]	sysreg_rdata_i,		//	combinational from sysreg_raddr_o
+	output wire			sysreg_we_o,
+	output wire [2:0]	sysreg_waddr_o,
+	output wire [63:0]	sysreg_wdata_o,
 	//	CLINT mtime -> core CSR `time` (rdtime), so rdtime + mtimecmp share one domain
 	output wire [63:0]	clint_mtime
 `ifdef KARU_ETH_SGMII
@@ -207,7 +219,10 @@ module karu_ddr_xbar #(
 	//	them -- hoist the decls so a single-pass front-end (Genus + default_nettype
 	//	none) does not see implicit nets in the .re() port expressions.
 	reg				mr_uart, mr_clint, mr_plic, mr_flash, mr_eth;
-	reg				mr_sysctl;			//	system-control block: reads as zero
+	reg				mr_sysctl;			//	system-control block: zero, or a register of sysreg_*
+	reg [63:0]		sysreg_rdata_q;
+	wire			sysreg_rd_sel = is_sysctl(dmem_araddr) && (dmem_araddr[10:6] == 5'b00001) &&
+									(dmem_araddr[2:0] == 3'b000) && (dmem_arsize == 3'd3) && dmem_arprot[0];
 	localparam MR_IDLE = 1'b0, MR_VLD = 1'b1;
 	reg mr_st;
 	wire mmio_ar_accept;
@@ -413,6 +428,8 @@ module karu_ddr_xbar #(
 				if (is_clint(dmem_araddr)) clint_rdata_q <= clint_rdata;
 				// Claim atomically with this snapshot, before any R stall.
 				if (is_plic(dmem_araddr)) plic_rdata_q <= plic_rdata;
+				// The same edge takes the read at the device (sysreg_re_o).
+				sysreg_rdata_q <= sysreg_rd_sel ? sysreg_rdata_i : 64'b0;
 				mr_addr  <= dmem_araddr;
 				mr_id    <= dmem_arid;
 				mr_uart  <= is_uart(dmem_araddr);
@@ -435,7 +452,10 @@ module karu_ddr_xbar #(
 							  mr_clint ? clint_rdata_q :
 							  mr_plic  ? plic_rdata_q :
 							  mr_eth   ? eth_rdata    :
-							  mr_flash ? flash_rdata_q : 64'b0;
+							  mr_flash ? flash_rdata_q :
+							  mr_sysctl ? sysreg_rdata_q : 64'b0;
+	assign sysreg_re_o    = mmio_ar_accept && sysreg_rd_sel;
+	assign sysreg_raddr_o = dmem_araddr[5:3];
 
 	//	dmem AR ready: DRAM path or MMIO path depending on the address
 	assign dmem_arready = dmem_ar_dram ? dmem_rd_arready :
@@ -502,6 +522,14 @@ module karu_ddr_xbar #(
 	assign sys_reset_req_o = mmio_aw_fire && is_sysctl(dmem_awaddr) &&
 							 (dmem_awaddr[10:0] == 11'b0) && dmem_awprot[0] &&
 							 (dmem_wstrb == 8'h0F) && (dmem_wdata[31:0] == 32'h0000_7777);
+
+	//	The registers at 0x1000_0840: a privileged write of all eight bytes.
+	wire sysreg_wr_priv = dmem_awprot[0];
+	wire sysreg_wr_sel  = is_sysctl(dmem_awaddr) && (dmem_awaddr[10:6] == 5'b00001) &&
+						  (dmem_awaddr[2:0] == 3'b000) && (dmem_wstrb == 8'hFF) && sysreg_wr_priv;
+	assign sysreg_we_o    = mmio_aw_fire && sysreg_wr_sel;
+	assign sysreg_waddr_o = dmem_awaddr[5:3];
+	assign sysreg_wdata_o = dmem_wdata;
 
 	reg [1:0] local_bresp;
 	always @(posedge clk) begin

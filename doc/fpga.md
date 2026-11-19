@@ -17,7 +17,26 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Latest completed debug image — 2026-10-29
+## Debug images
+
+The notes are newest first. The text after them describes the October 29
+image.
+
+**2026-11-18 evening image (board-tested 2026-11-19, [record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).** Bitstream
+`85f07e58…f2639a` adds to `d7ff00dc…` a burst capture for the entropy
+source's characterisation, with a sampling period that can be set in test
+mode; a die temperature and supply readout; debug authentication with
+SHA3-256 and a shared secret (algorithm `0x04`) in place of the
+simulation-only `TEST`; and U-Boot v2026.10 in the boot ROM, with a Zkr
+random-number driver that times out. All of them are described under
+[the DDR4 SoC](#the-ddr4-soc-linux-target) and in the
+[Zkr follow-up plan](zkr-followup-plan.md). It meets 75 MHz (setup
++0.002 ns, hold +0.011 ns, no DRC errors;
+[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-18-evening)).
+It was board-tested on 2026-11-19 following section 7 of
+[the board test plan](../dbg/BOARD_TEST_PLAN.md) and accepted with
+documented exceptions ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).
+The board results below are for `d7ff00dc…`.
 
 **2026-11-18 update.** The debug image was rebuilt with Zkr, debug
 authentication, the 2 MiB boot ROM and the SW12 straps, and meets 75 MHz:
@@ -92,10 +111,12 @@ whose SHA-256 is
 Routed reports are under `_build/fpga_rpt/`; final source/ROM/timing/package
 checks are in `_build/vcu118_full_verification.json`.
 
-This image has not been programmed or booted on the board. Use the pinned
-pristine OpenOCD for the full-extension image. Physical USER4 debugging,
-watchpoints, autoexec, SBA RAM/MMIO, detach and normal karudeb boot remain
-the [hardware acceptance steps](#optional-karudbg-integration).
+The October 29 image itself was never programmed into a board. Its
+November 15 rebuild went through the acceptance that was pending here
+(physical USER4 debugging, watchpoints, autoexec, SBA RAM and MMIO, detach
+and a normal karudeb boot) on November 16, with the pinned pristine
+OpenOCD, and the November 18 image did again; see the notes above and the
+[hardware acceptance steps](#optional-karudbg-integration).
 
 ## Previous base-debug image — 2026-10-27
 
@@ -290,8 +311,8 @@ instruction-memory latency.
 - **Ethernet:** a standalone **LiteEth** wishbone MAC (`flow/fpga/eth/`, a
   vendored LiteX core + the `karu_eth` wishbone↔AXI bridge on the `0x1100_0000`
   MMIO window), driving SGMII to the on-board DP83867 PHY. The upstream
-  `liteeth` driver and a U-Boot v2025.01 S-mode payload complete the netboot
-  path.
+  `liteeth` driver and a U-Boot S-mode payload complete the netboot
+  path (v2025.01 in every image built so far; v2026.10 from the next one).
 - **Hands-off boot ROM:** `flow/boot/vcu118_fuboot.c` (fu-boot) is baked into a
   2 MiB boot ROM together with OpenSBI, U-Boot, and the control DTB. fu-boot
   copies each blob to DRAM and chains OpenSBI → U-Boot → netboot — no JTAG/host
@@ -444,6 +465,32 @@ instruction-memory latency.
     and returns raw symbols with a loss flag while `seed` is held in `BIST`.
     It also works on a source that has failed its tests for good (`seed`
     then reports `DEAD`), which is when raw samples are most needed.
+  - `flow/fpga/karu_noise_burst.v` (added 2026-11-18, after the board
+    session: **not in bitstream `d7ff00dc…`**): a measurement aid for
+    characterising the rings, which `mnoise` is too slow for. In the
+    entropy block's test mode, and only then, it sets the sampling period
+    of the rings, 1 to 256 clocks, and records bursts of 32,768
+    consecutive raw symbols in four block RAMs. Its registers are in the
+    system-control block, 64 bits each:
+
+    | Address | Register |
+    |---|---|
+    | `0x1000_0840` | status and control. Write bit 0: start a capture. Read: [0] capturing, [1] done, [2] capturing allowed, [3] `mentropycfg` locked, [4] noise source enabled, [5] test mode, [15:8] log2 of the symbols per burst, [31:16] words written so far, [63:32] `0x4b4e4231` |
+    | `0x1000_0848` | period: clock cycles per raw symbol, less one |
+    | `0x1000_0850` | index of the word that the data register returns next |
+    | `0x1000_0858` | data: sixteen symbols per word in sampling order, the first in bits [3:0]; a read moves the index on |
+    | `0x1000_0860` | die temperature, VCCINT and VCCAUX from the system monitor (`flow/fpga/karu_sysmon.v`), with an update count; readable in or out of test mode |
+
+    Only privileged 64-bit accesses reach them; anything else reads zero
+    and writes nothing. Outside test mode, and whenever `mentropycfg` is
+    locked, the period is the build's 256 clocks, no capture can be
+    started, and the period, index and status are at their reset values;
+    the data register reads zero unless a capture completed in the current
+    test-mode session. So `seed`, the health tests and the authentication
+    ROM see the noise source exactly as without the block, and no recorded
+    symbol is ever delivered as entropy. Test mode is entered through
+    `mnoise`, from M-mode or the debugger. S-mode can reach the registers,
+    as it can the reset register, but cannot enter test mode.
   The parameters are provisional: **no entropy figure has been
   established.** The first raw captures (2026-11-18,
   [record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture)) show the
@@ -459,18 +506,32 @@ instruction-memory latency.
   early in boot and with no fallback. The `zkr` variant's boot command
   carries `random.trust_cpu=off`, so Linux mixes what `seed` delivers into
   its pool without counting it as entropy; that is the right setting until
-  the source has been characterised. U-Boot's own Zkr random-number driver
-  is kept off (`flow/build_uboot.sh`): it waits without bound on `BIST` or
-  `WAIT`.
+  the source has been characterised. Up to `d7ff00dc…` the images carry
+  U-Boot v2025.01, which has no Zkr driver. The driver as released, v2026.10 included,
+  waits without bound on `BIST` or `WAIT`. `flow/build_uboot.sh` now builds
+  v2026.10 with `flow/boot/uboot-zkr-timeout.patch`, which bounds every
+  wait at 100 ms, and enables the driver. Its one use is the `kaslr-seed`
+  property that U-Boot adds to the device tree, which Linux does not count
+  as entropy; `rng-seed` is not passed. With the source off U-Boot prints
+  "No RNG device" and boots on. `make uboot-boot-test` shows both in
+  simulation. This U-Boot is in bitstream `85f07e58…`, where the board
+  showed both on 2026-11-19: with the source on `rng 0 10` prints 16 bytes
+  and `/chosen` holds a `kaslr-seed`; with it off `rng` answers "No RNG
+  device" at once and the boot goes on
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).
   On the board top the two are joined by `flow/fpga/karu_entropy_src.v`,
   which is also what the simulation benches instantiate, with a
   behavioural model in place of the rings.
   Tests: `make entropy-test` (the block, 33 mutants), `make zkr-test` (the
   access table in M, S, U, VS and VU, the value format, the custom CSRs and
   the strap on the core; 14 mutants), `make zkr-loop-test` (no
-  combinational loop between the CSR file and the block) and
-  `make zkr-test-spike` (the same access table on Spike); all but the last
-  are in `make dbg-test`.
+  combinational loop between the CSR file and the block),
+  `make noise-burst-test` (the capture block with the noise model and the
+  entropy block: the period, bursts against a record of every symbol of
+  the source, and what test mode confines; 33 mutants),
+  `make ddr-noise-burst-test` (its registers through the SoC's bus decode;
+  eight mutants) and `make zkr-test-spike` (the access table on Spike);
+  all but the last are in `make dbg-test`.
   For the board: `test/dbg/board/getnoise_capture.py` takes raw symbols
   through `mnoise` at several k, keeping the runs of consecutive samples
   apart, and `getnoise_analyze.py` evaluates them offline: per lane the
@@ -480,9 +541,17 @@ instruction-memory latency.
   `linux_zkr.py` checks that Linux lists `zkr`. `make dbg-getnoise-test`
   runs the payload on the simulated core and the analysis on synthetic
   model data. All three ran on the board on 2026-11-18.
-  Follow-up work (a runtime sampling divider, burst capture for
-  characterisation, repeat captures and a U-Boot update) is in the
-  [Zkr follow-up plan](zkr-followup-plan.md).
+  For the burst capture, `getnoise_burst.py` records bursts at periods of
+  1 to 256 clocks with the payload `getnoise_burst.S`, and writes them in
+  the same file format, one run per burst, with the period and a
+  clock-cycle stamp per burst in the sidecar; `getnoise_analyze.py` reads
+  both kinds. `make dbg-getnoise-burst-test` runs the payload and the
+  phase on the SoC simulation, where every burst is compared with a copy
+  of the simulated source, and `make dbg-burst-analysis-test` validates
+  the analysis of bursts on generated data with known parameters. None of
+  this has run on a board.
+  The [Zkr follow-up plan](zkr-followup-plan.md) has the reasons, what was
+  decided, and what is still open (repeat captures, the board session).
 - **Debug authentication on the board (added 2026-11-17; `KARU_DBG_AUTH`;
   every board case passed on 2026-11-18, with the `TEST` algorithm).** The hart starts in the authentication
   island ROM at `0x1_0000`, which hands over to fu-boot at `0x1000`. The
@@ -659,7 +728,7 @@ them against each other automatically:
 | Piece | Comes from | Fixed when |
 | --- | --- | --- |
 | OpenSBI `fw_jump.bin` (v1.9; v1.8.1 in images before 2026-11-17) | build host, `../karudeb/build/karu64/opensbi/` | bitstream build (in ROM) |
-| U-Boot v2025.01 and its boot command | build host; the command is the one-liner staged under `../karudeb/build/karu64/tftp/<variant>/` | bitstream build (in ROM) |
+| U-Boot and its boot command (v2025.01 in images up to `d7ff00dc…`; `flow/build_uboot.sh` now builds v2026.10 in `../u-boot-v2026.10-netboot`) | build host; the command is the one-liner staged under `../karudeb/build/karu64/tftp/<variant>/` | bitstream build (in ROM) |
 | Control DTB for OpenSBI and U-Boot | build host, `../karudeb/build/karu64/karu64-<variant>.dtb` | bitstream build (in ROM) |
 | Kernel `Image` and `board.dtb` for Linux | board host, TFTP root | each boot |
 | Root filesystem | board host, NFS export | each boot |

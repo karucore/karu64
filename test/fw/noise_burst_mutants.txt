@@ -1,0 +1,8 @@
+no-privilege-read|s# && (dmem_arsize == 3'd3) && dmem_arprot\[0\];# \&\& (dmem_arsize == 3'd3);#|U-mode read of data returned data
+no-privilege-write|s#wire sysreg_wr_priv = dmem_awprot\[0\];#wire sysreg_wr_priv = 1'b1;#|U-mode write changed a register
+any-width-read|s#(dmem_araddr\[2:0\] == 3'b000) && (dmem_arsize == 3'd3) && #(dmem_araddr[2:0] == 3'b000) \&\& #|narrow read of data returned data
+any-width-write|s#(dmem_wstrb == 8'hFF) && sysreg_wr_priv;#(dmem_wstrb != 8'h00) \&\& sysreg_wr_priv;#|narrow write changed a register
+read-anywhere|s#sysreg_rd_sel = is_sysctl(dmem_araddr) && (dmem_araddr\[10:6\] == 5'b00001) &&#sysreg_rd_sel = is_sysctl(dmem_araddr) \&\&#|sysctl reads nonzero
+write-anywhere|s#sysreg_wr_sel  = is_sysctl(dmem_awaddr) && (dmem_awaddr\[10:6\] == 5'b00001) &&#sysreg_wr_sel  = is_sysctl(dmem_awaddr) \&\&#|write elsewhere reached the capture registers
+read-not-taken|s#assign sysreg_re_o    = mmio_ar_accept && sysreg_rd_sel;#assign sysreg_re_o    = 1'b0;#|burst all zero or all one word
+no-device|s#sysreg_rdata_q <= sysreg_rd_sel ? sysreg_rdata_i : 64'b0;#sysreg_rdata_q <= 64'b0;#|no capture block

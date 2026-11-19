@@ -1,0 +1,25 @@
+Negative control for dbg-auth-sba-revoke-test (dbg/auth.mk): the SBA
+engine stops absorbing the response once debug_enable falls, so karudbg_bus
+waits in REPLY and the hart never regains the bus. SBAR2 is disabled; the
+bench must report [HART].
+
+--- a/dbg/karudbg_sba.v
++++ b/dbg/karudbg_sba.v
+@@ -58,7 +58,7 @@
+     assign req_data_o = data_q;
+     assign req_size_o = access_q;
+     assign req_write_o = write_q;
+-    assign resp_ready_o = state_q == RESPONSE && !bus_reset_i && !rst;
++    assign resp_ready_o = state_q == RESPONSE && active_i && !bus_reset_i && !rst;
+     assign address_low_write = dmi_valid_i && dmi_op_i == 2 && dmi_addr_i == 7'h39;
+     assign data_low_write = dmi_valid_i && dmi_op_i == 2 && dmi_addr_i == 7'h3c;
+     assign data_low_read = dmi_valid_i && dmi_op_i == 1 && dmi_addr_i == 7'h3c;
+@@ -201,7 +201,7 @@
+             if (state_q == 2'b11)
+                 $fatal(1, "SBAR1 invalid ownership state");
+             if (resp_ready_o !== sbar_owned)
+-                $fatal(1, "SBAR2 response ownership differs from accepted request");
++                $display("disabled SBAR2 response ownership differs from accepted request");
+             if (req_valid_o && sbar_owned)
+                 $fatal(1, "SBAR2 second request with outstanding owner");
+             if (sbar_wait && active_i &&

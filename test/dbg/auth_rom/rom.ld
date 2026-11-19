@@ -9,4 +9,5 @@ SECTIONS {
   .bss (NOLOAD) : { *(.bss*) *(.sbss*) *(COMMON) } > SRAM
   /DISCARD/ : { *(.data*) *(.sdata*) *(.comment) *(.eh_frame*) }
   __stack_top = ORIGIN(SRAM) + LENGTH(SRAM);
+  __sram_start = ORIGIN(SRAM);
 }

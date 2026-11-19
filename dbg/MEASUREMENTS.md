@@ -209,6 +209,84 @@ likely explanation, not a proven one, and this mapped full-debug netlist
 fails 200 MHz by 1.08 ns as it stands. The 200 MHz ASIC goal remains open,
 as before.
 
+## FPGA image — 2026-11-18 evening
+
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8
+UBOOT_NETBOOT_DIR=$PWD/_build/u-boot-v2026.10-netboot`, with the default define
+list (`KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR`, 75 MHz, Vivado 2026.1).
+Compared with `d7ff00dc…` below it adds the entropy source's burst capture
+(`flow/fpga/karu_noise_burst.v`), the temperature and supply readout
+(`flow/fpga/karu_sysmon.v`), the SHA3-256 shared-secret island ROM
+(algorithm `0x04`) and U-Boot v2026.10 with the Zkr time-out patch.
+**Board-tested on 2026-11-19**, all stages pass: see the
+[acceptance record](BOARD_ACCEPTANCE-2026-11-19.md).
+
+- **Build.** 2026-11-18, 21:32 to 23:40 UTC (2 h 7 min: synthesis 25,
+  placement 36, routing 37 minutes, post-route optimisation 7), from karu64
+  `a39f3da` and karudeb `db180ff`, **karu64 with uncommitted changes**. No
+  source file changed during the build; two documents did. The diff and the
+  new files are kept in `_build/vcu118-2026-11-18c-sources/` with their
+  hashes. The functional gate passed on the same sources just before
+  (21:32 UTC, 441 inputs; [README](README.md)).
+- **Final timing:**
+  - setup WNS +0.002 ns, TNS 0, over 276,720 endpoints; `cpu_clk` setup
+    +0.002 ns;
+  - hold WHS +0.011 ns; pulse width +0.005 ns;
+  - all 16 bus-skew constraints pass, with at least 2.27 ns margin.
+- The router ended at WNS −0.301 ns (TNS −16.95 ns); the flow's post-route
+  `phys_opt_design` closed it to +0.002 ns. The worst path is in the vector
+  unit (`varith_u`); nothing of the new logic is among the reported worst
+  paths.
+- DRC at `write_bitstream`: 0 errors. One critical warning in the log, the
+  known `BOARD_PART_PIN` message from the DDR4 IP's board file.
+- The self-checking constraints ran: `KARUDBG_BSCAN_CONSTRAINTS`,
+  `KARU_LOOP_CHECK no combinational loop outside the ring oscillators`,
+  `KARU_ROSC_CONSTRAINTS rings=4`, the four `KARU_ROSC_PLACED` lines in the
+  same slices as `d7ff00dc…` (`SLICE_X100Y450` to `SLICE_X112Y451`), and
+  `KARU_SYSMON_CONSTRAINTS monitor … at SYSMONE4_X0Y1 in SLR1, with the
+  rings`.
+- Resources: 363,237 LUTs (30.7%), 91,126 registers, 451.5 block-RAM tiles,
+  29 DSPs, 1 SYSMONE4. The six more tiles than `d7ff00dc…` are the capture
+  block's four and two more in the boot ROM (386 RAMs), whose larger U-Boot
+  leaves less of the layout empty.
+- **Read back from the routed design** (`_build/vcu118_ddr_route.dcp`,
+  read-only queries, `_build/post-route-burst.log` and
+  `_build/post-route-bram.log`):
+  - the capture block's four RAMB36E2 are at `RAMB36_X7Y90` to `X7Y93`.
+    Setup into their address pins +2.879 ns, from the core's load path
+    through the bus decode (the out-of-context estimate was +10.8 ns);
+    hold +0.053 ns. Into their data pins +12.18 ns; out of them, into the
+    read-data register, +9.64 ns;
+  - the monitor's paths have at least +7.13 ns, and the paths through the
+    read-data selection that the capture block and the readout share at
+    least +3.61 ns;
+  - `report_drc` on loops: no LUTLP-1, four LUTLP-2 (the rings of 3, 5, 7
+    and 9 LUTs).
+- **Boot ROM.** `_build/vcu118_fuboot.hex` (`9e850d63…`) was compared byte
+  for byte with its sources: OpenSBI `fw_jump` (`cbbbe5ce…`, the same as
+  `d7ff00dc…`) at `0x30000`, U-Boot `2026.10-dirty` (`0e560318…`, 802,453
+  bytes, the tree at `v2026.10` with only `drivers/rng/riscv_zkr_rng.c`
+  changed, to `94e649a1…`, the patched driver; `BOARD_RNG_SEED` off) at
+  `0x120000`, and the device tree (`784e2762…`, the same) at `0x1FC000`.
+  The ROM manifest in the bundle repeats this from the packed image.
+- **Island ROM.** `_build/vcu118_auth_rom.hex` (`f518b750…`), built with
+  `-DCSR_RNG=0x015 -DTRNG_TRIES=200000 -DWINDOW_CYCLES=1073741824ull
+  -DAUTH_ROM_NEXT=0x1000 -DAUTH_ROM_NO_MTVEC -DAUTH_ALG_SHA3`. The key
+  (fingerprint `276bf6e96d8edecc`) was generated on the build host at
+  20:25 UTC. It is in `_build/vcu118_auth_key.txt` (mode 600), which git
+  ignores, and the build checked that the ROM holds it exactly
+  once. `_build/vcu118_auth_record.json` records the bitstream hash, the
+  ROM flags and hash and the key fingerprint. The bundle was packed only
+  after that record verified.
+- None of these checks decodes the `.bit` file, as before.
+
+The bitstream SHA-256 is
+`85f07e58354646ff3102fe3ddfe8c2e91005b5171b895391aea7ea3795f2639a`; the
+bundle `_build/vcu118_programming.tgz` (mode 600, with the key) is
+`fbdec6e42c75f0c5e236beeede5314f2e7962afb6935bc6615ebf852d6510f38`. This
+image's reports replace those of `d7ff00dc…` in `_build/fpga_rpt/` on this
+build host.
+
 ## FPGA image — 2026-11-18
 
 `make vcu118-ddr-sgmii-rom-rva23s64-dbg` with its default define list
@@ -699,10 +777,14 @@ karudeb `a3e6b70`. The previous base bitstream and its hash metadata are
 retained as `_build/vcu118_ddr.base-2026-10-27.bit` and
 `_build/vcu118_build_inputs.base-2026-10-27.json`.
 
-The image has not been programmed or booted on the board. Physical USER4
-transport, full-extension debugger acceptance, detach and normal karudeb boot
-remain pending. See [FPGA handoff](../doc/fpga.md#optional-karudbg-integration)
-for the native pinned OpenOCD and board acceptance instructions.
+This image was never programmed into a board. The acceptance that was
+pending when this section was written (physical USER4 transport, the
+full-extension debugger, detach and a normal karudeb boot) was done on its
+November 15 rebuild ([board acceptance](BOARD_ACCEPTANCE.md), 2026-11-16)
+and on the November 18 image
+([record](BOARD_ACCEPTANCE-2026-11-18.md)). See
+[FPGA handoff](../doc/fpga.md#optional-karudbg-integration) for the native
+pinned OpenOCD and the board acceptance instructions.
 
 ## ASIC initialization and memory scope
 

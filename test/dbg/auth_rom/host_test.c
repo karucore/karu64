@@ -11,6 +11,12 @@
 //
 // This models the software only. The hardware commit predicate and the
 // real core are covered by tb_auth.sv and tb_auth_window.sv.
+//
+// Built with -DHOST_SHA3 (and sha3.c, and -DAUTH_KEY_HEADER) it also checks
+// SHA3-256 against known answers and the 0x04 MAC against its Python
+// definition, and sends a response of the other algorithm, which the ROM
+// must reject: 0x04 to the TEST ROM, or, with -DAUTH_ALG_SHA3 as well, TEST
+// to the SHA3 ROM, whose own responses the schedules above then use.
 // SPDX-License-Identifier: BSD-2-Clause
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +25,10 @@
 
 #define AUTH_ROM_HOST
 #include "window.c"
+#ifdef HOST_SHA3
+#include "sha3.h"
+#include AUTH_KEY_HEADER
+#endif
 
 #define W ((uint64_t)WINDOW_CYCLES)
 #define SLACK 16u
@@ -33,6 +43,7 @@ static struct {
     uint64_t storm_from, storm_to, storm_period;   /* periodic ABORTs */
     unsigned rng_opst;
     int corrupt;
+    unsigned alg;                      /* algorithm of the host's response */
     /* mailbox state */
     unsigned tx_count, tx_since_reset, rx_rd;
     uint64_t last_reset;
@@ -54,7 +65,27 @@ static uint32_t rotl32(uint32_t x, unsigned r) { return r ? (x << r) | (x >> (32
 static const uint32_t host_key[8] = {
     0x6b617275u, 0x64626761u, 0x75746821u, 0x54455354u,
     0x2d6f6e6cu, 0x792d6e6fu, 0x742d6372u, 0x7970746fu };
+#ifdef HOST_SHA3
+/* The 0x04 response, written here independently of window.c: SHA3-256 of
+   key || "karudbg-auth-v1" || challenge (80 bytes LE) || granted mask 1. */
+static uint32_t sha3_response_word(unsigned i) {
+    if (i == 0) return 0x02010400u;
+    if (i == 1) return 0x00010020u;
+    uint8_t msg[128], d[32];
+    memcpy(msg, auth_key, 32);
+    memcpy(msg + 32, "karudbg-auth-v1", 15);
+    for (unsigned j = 0; j < 80; j++) msg[47 + j] = (uint8_t)(challenge[j / 4] >> (8 * (j % 4)));
+    msg[127] = 1;
+    sha3_256(d, msg, sizeof msg);
+    uint32_t a = (uint32_t)d[4 * (i - 2)] | (uint32_t)d[4 * (i - 2) + 1] << 8 |
+                 (uint32_t)d[4 * (i - 2) + 2] << 16 | (uint32_t)d[4 * (i - 2) + 3] << 24;
+    return (m.corrupt && i == 5) ? a ^ 1u : a;
+}
+#endif
 static uint32_t response_word(unsigned i) {
+#ifdef HOST_SHA3
+    if (m.alg == ALG_SHA3) return sha3_response_word(i);
+#endif
     if (i == 0) return 0x02018000u;
     if (i == 1) return 0x00010020u;
     uint32_t a = host_key[i - 2] ^ 0x01010101u;
@@ -129,7 +160,7 @@ void mock_write(unsigned csr, uint64_t w) {
 static void reset_model(const char *name) {
     scenario = name;
     memset(&m, 0, sizeof m);
-    m.t = T0 - 2; m.rng_opst = 2;
+    m.t = T0 - 2; m.rng_opst = 2; m.alg = ROM_ALG;
     for (unsigned i = 0; i < 10; i++) m.resp_at[i] = NEVER;
     for (unsigned i = 0; i < MAX_ABORTS; i++) m.abort_at[i] = NEVER;
 }
@@ -147,6 +178,7 @@ static void run(int want) {
         if (m.unlock_t > T0 + W) fail("I1: grant written after the deadline");
         if (m.last_pop_t >= T0 + W) fail("I1: grant uses a response word popped at or after the deadline");
         if (m.corrupt) fail("grant for a wrong signature");
+        if (m.alg != ROM_ALG) fail("grant for a response of another algorithm");
     }
     if (want == 1 && !m.unlocked) fail("I3: valid response in time did not unlock");
     if (want == 0 && m.unlocked) fail("unlocked where the schedule requires locked");
@@ -158,8 +190,46 @@ static uint64_t rnd(uint64_t n) {
     return rnd_state % n;
 }
 
+#ifdef HOST_SHA3
+/* Known answers from Python's hashlib (sha3_256). */
+static void check_digest(const char *what, const uint8_t *msg, size_t len, const char *hex) {
+    uint8_t d[32];
+    char got[65];
+    sha3_256(d, msg, len);
+    for (unsigned i = 0; i < 32; i++) sprintf(got + 2 * i, "%02x", d[i]);
+    if (strcmp(got, hex)) { printf("FAIL SHA3-256 known answer %s: %s, want %s\n", what, got, hex); exit(1); }
+}
+static void sha3_known_answers(void) {
+    uint8_t msg[200];
+    for (unsigned i = 0; i < sizeof msg; i++) msg[i] = (uint8_t)i;
+    check_digest("empty", msg, 0, "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a");
+    check_digest("abc", (const uint8_t *)"abc", 3, "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+    check_digest("bytes 0..135 (one full block)", msg, 136, "cf3ccff92480a29160c2d38317c430e14749bfee1788106957dfe73f8c4930e5");
+    check_digest("bytes 0..199", msg, 200, "5f728f63bf5ee48c77f453c0490398fa645b8d4c4e56be9a41cfec344d6ca899");
+    /* The MAC as authlib.py computes it, for the public test key, challenge
+       word i = (i << 24) | i and granted mask 1:
+       hashlib.sha3_256(key + b"karudbg-auth-v1" + struct.pack("<20I", *c) + bytes([1])) */
+    static const uint32_t mac[8] = { 0x68a1ae95u, 0x3daa0a5cu, 0xdb59a09du, 0x0d568587u,
+                                     0x67656e26u, 0xf783e709u, 0x1a372b98u, 0xe12f03c6u };
+    for (unsigned i = 0; i < CHALLENGE_WORDS; i++) challenge[i] = (i << 24) | i;
+    for (unsigned i = 0; i < 8; i++) {
+        m.alg = ALG_SHA3;
+        if (sha3_response_word(2 + i) != mac[i]) { printf("FAIL 0x04 MAC word %u differs from hashlib\n", i); exit(1); }
+#ifdef AUTH_ALG_SHA3
+        uint32_t rom[8];
+        sha3_mac_signature(1, rom);
+        if (rom[i] != mac[i]) { printf("FAIL window.c 0x04 MAC word %u differs from hashlib\n", i); exit(1); }
+#endif
+    }
+    printf("SHA3-256 known answers (4) and the 0x04 MAC against hashlib: PASS\n");
+}
+#endif
+
 int main(void) {
     unsigned cases = 0, unlocked = 0;
+#ifdef HOST_SHA3
+    sha3_known_answers();
+#endif
 
     reset_model("response well inside the window"); respond_at(W / 2, 3); run(1); cases++;
     reset_model("wrong signature"); respond_at(W / 2, 3); m.corrupt = 1; run(0); cases++;
@@ -200,6 +270,14 @@ int main(void) {
         if (rnd(4) == 0) storm(rnd(W), W - 600 + rnd(700), 3 + rnd(40));
         run(-1); cases++; unlocked += m.unlocked;
     }
+#ifdef HOST_SHA3
+    /* The other algorithm's response, correct for that algorithm. */
+    reset_model("response of the other algorithm"); m.alg = ROM_ALG == ALG_SHA3 ? ALG_TEST : ALG_SHA3;
+    respond_at(W / 2, 3); run(0); cases++;
+    reset_model("own algorithm again, as a control"); respond_at(W / 2, 3); run(1); cases++;
+    printf("auth ROM host model, ROM algorithm 0x%02x: %s response rejected\n", ROM_ALG,
+           ROM_ALG == ALG_SHA3 ? "TEST (0x80)" : "SHA3 (0x04)");
+#endif
     printf("auth ROM host model: PASS (%u schedules, %u of the boundary/random ones unlocked, "
            "window %llu cycles)\n", cases, unlocked, (unsigned long long)W);
     if (unlocked == 0) { printf("FAIL: no boundary schedule unlocked; the sweep is vacuous\n"); return 1; }

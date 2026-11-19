@@ -11,9 +11,16 @@ VCU118_DBG_EXT_DEFINES ?= KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR
 
 # The authentication island ROM of the FPGA image: the window routine of
 # test/dbg/auth_rom with the contract's 2^30-cycle window, handing over to
-# the boot ROM at 0x1000. It still verifies with the simulation-only TEST
-# algorithm: the production verifier awaits decision D3, and this image is
-# functional validation only.
+# the boot ROM at 0x1000. It verifies algorithm 0x04, the SHA3-256
+# shared-secret MAC chosen on 2026-11-18 for FPGA validation (contract 5.1);
+# the production verifier still awaits decision D3. VCU118_AUTH_ROM_ALG=
+# (empty) builds the simulation-only TEST algorithm instead.
+#
+# The 32-byte key is VCU118_AUTH_KEY, 64 hex digits. If the file is missing
+# it is generated from Python's secrets module; an existing file is never
+# overwritten. The board client reads the same file (KARU_BOARD_AUTH_KEY).
+# The key ends up in the ROM image and the bitstream: anyone holding either,
+# or the key file, can authenticate. It is not printed.
 #
 # Where the nonce comes from follows the image. With KARU_ZKR the ROM reads
 # seed and waits long enough for the entropy source's start-up test (about
@@ -21,9 +28,22 @@ VCU118_DBG_EXT_DEFINES ?= KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR
 # trap with no trap vector set: the ROM then reads mdbgrng, whose port the
 # board top ties to DEAD, so a request is refused and the boot goes on.
 VCU118_AUTH_ROM_RNG = $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),-DCSR_RNG=0x015 -DTRNG_TRIES=200000,)
+VCU118_AUTH_KEY ?= $(BUILD)/vcu118_auth_key.txt
+VCU118_AUTH_KEY_H = $(BUILD)/vcu118_auth_key.h
+VCU118_AUTH_RECORD = $(BUILD)/vcu118_auth_record.json
+VCU118_AUTH_ROM_ALG ?= -DAUTH_ALG_SHA3 -DAUTH_KEY_HEADER=\"$(abspath $(VCU118_AUTH_KEY_H))\"
 VCU118_AUTH_ROM_FLAGS ?= $(VCU118_AUTH_ROM_RNG) -DWINDOW_CYCLES=1073741824ull \
-	-DAUTH_ROM_NEXT=0x1000 -DAUTH_ROM_NO_MTVEC
+	-DAUTH_ROM_NEXT=0x1000 -DAUTH_ROM_NO_MTVEC $(VCU118_AUTH_ROM_ALG)
 VCU118_AUTH_ROM_HEX = $(BUILD)/vcu118_auth_rom.hex
+$(VCU118_AUTH_KEY): | $(BUILD)
+	@test -e $@ || { umask 077; python3 -c 'import secrets;print(secrets.token_hex(32))' > $@.tmp && mv -n $@.tmp $@ && \
+	  echo "generated a new debug authentication key in $@ (not shown)"; }
+# The header is checked on every make: a different key file (another
+# VCU118_AUTH_KEY, or an older file) rewrites it even when it is not newer.
+.PHONY: FORCE_AUTH_KEY_H
+FORCE_AUTH_KEY_H:
+$(VCU118_AUTH_KEY_H): $(VCU118_AUTH_KEY) test/dbg/auth_rom/key_header.py FORCE_AUTH_KEY_H | $(BUILD)
+	python3 test/dbg/auth_rom/key_header.py $(VCU118_AUTH_KEY) $@
 # The flags are kept beside the ROM, so that a build with other flags, or
 # with another set of image defines, rebuilds it.
 VCU118_AUTH_ROM_STAMP = $(BUILD)/vcu118_auth_rom.flags
@@ -32,11 +52,15 @@ vcu118-auth-rom-hex: $(VCU118_AUTH_ROM_HEX)
 FORCE_AUTH_ROM_FLAGS:
 $(VCU118_AUTH_ROM_STAMP): FORCE_AUTH_ROM_FLAGS | $(BUILD)
 	@printf '%s\n' '$(strip $(VCU118_AUTH_ROM_FLAGS))' | cmp -s - $@ || printf '%s\n' '$(strip $(VCU118_AUTH_ROM_FLAGS))' > $@
-$(VCU118_AUTH_ROM_HEX): $(DBG_AUTH_ROM_SRCS) dbg/fpga.mk $(VCU118_AUTH_ROM_STAMP) | $(BUILD)
-	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) $(VCU118_AUTH_ROM_FLAGS) -T test/dbg/auth_rom/rom.ld \
-	  -o $(BUILD)/vcu118_auth_rom.elf test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c
-	$(XCHAIN)objcopy -O binary -j .text $(BUILD)/vcu118_auth_rom.elf $(BUILD)/vcu118_auth_rom.bin
-	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vcu118_auth_rom.bin > $@
+$(VCU118_AUTH_ROM_HEX): $(DBG_AUTH_ROM_SRCS) $(DBG_AUTH_SHA3_SRCS) dbg/fpga.mk $(VCU118_AUTH_ROM_STAMP) \
+  $(if $(VCU118_AUTH_ROM_ALG),$(VCU118_AUTH_KEY_H)) | $(BUILD)
+	@# The ROM image holds the key: create its files readable by the owner only.
+	umask 077; $(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) $(VCU118_AUTH_ROM_FLAGS) -T test/dbg/auth_rom/rom.ld \
+	  -o $(BUILD)/vcu118_auth_rom.elf test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c \
+	  $(if $(VCU118_AUTH_ROM_ALG),test/dbg/auth_rom/sha3.c)
+	umask 077; $(XCHAIN)objcopy -O binary -j .text $(BUILD)/vcu118_auth_rom.elf $(BUILD)/vcu118_auth_rom.bin
+	umask 077; hexdump -v -e '1/8 "%016x\n"' $(BUILD)/vcu118_auth_rom.bin > $@
+	chmod 600 $(BUILD)/vcu118_auth_rom.elf $(BUILD)/vcu118_auth_rom.bin $@
 	$(XCHAIN)size $(BUILD)/vcu118_auth_rom.elf
 
 .PHONY: vcu118-ddr-sgmii-rom-rva23s64-dbg
@@ -49,6 +73,10 @@ vcu118-ddr-sgmii-rom-rva23s64-dbg: $(VCU118_AUTH_ROM_HEX)
 	  FUBOOT_RVA23_DTB='$(KARUDEB)/build/karu64/karu64-$(VCU118_DBG_DTB_VARIANT).dtb' \
 	  VCU118_NETBOOT_FILE_RVA23='$(KARUDEB)/build/karu64/tftp/$(VCU118_DBG_DTB_VARIANT)/uboot-netboot-one-line.txt' \
 	  KARU_REPORT_TAG='$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_rva23s64_dbg_sgmii_75_rom)'
+	@# What the bitstream authenticates with, tied to its hash: packing the
+	@# programming bundle checks this record before it adds a key.
+	python3 flow/auth_record.py write --bit $(BUILD)/vcu118_ddr.bit --flags $(VCU118_AUTH_ROM_STAMP) \
+	  --rom $(VCU118_AUTH_ROM_HEX) $(if $(VCU118_AUTH_ROM_ALG),--key $(VCU118_AUTH_KEY)) --out $(VCU118_AUTH_RECORD)
 
 # ---- The debug image's composition in simulation ----
 # The SoC as the board has it, without the JTAG transport and the DDR
@@ -115,6 +143,73 @@ image-boot-sim: $(VCU118_AUTH_ROM_HEX)
 image-boot-test: image-boot-sim $(IMAGE_BOOT_DIR)/zkr.rom.hex $(IMAGE_BOOT_DIR)/zkr-off.rom.hex $(IMAGE_BOOT_DIR)/no-zkr.rom.hex
 	: > $(IMAGE_BOOT_DIR)/empty.hex
 	python3 test/dbg/image_boot_test.py --sim $(IMAGE_BOOT_SIM) --dir $(IMAGE_BOOT_DIR) -- $(IMAGE_BOOT_RUN)
+
+# The same chain with the real U-Boot in its ROM slot (test/dbg/
+# uboot_boot_test.py): the release and configuration of flow/build_uboot.sh,
+# built in its own tree with a boot command for the simulation
+# (test/dbg/uboot_sim_bootcmd.txt) in place of the network boot; the ROM is
+# put together by the rule above, in $(IMAGE_BOOT_DIR). It shows
+# that this U-Boot starts from the ROM on this device tree, that its Zkr
+# random-number driver delivers, that the driver gives up when the entropy
+# source is held off (the released driver would hang), and that U-Boot's
+# reset goes through SBI to the system-control register. U-Boot moves
+# itself to the top of the memory that the device tree names, which is 2 GiB
+# on the board. The simulator takes at most 1 GiB as one array, and an
+# access above the model's memory faults, so this ROM carries a copy of
+# the device tree with the memory node set to 1 GiB; nothing else in it
+# differs. The model is built once more for that size. Not part of
+# make dbg-test.
+UBOOT_BOOT_DIR = $(BUILD)/uboot-boot
+UBOOT_BOOT_SIM = $(UBOOT_BOOT_DIR)/obj/Vfpga_ddr_tb
+UBOOT_BOOT_REF ?= v2026.10
+UBOOT_BOOT_TREE ?= $(BUILD)/u-boot-sim-$(UBOOT_BOOT_REF)
+UBOOT_BOOT_RUN = +hex=$(UBOOT_BOOT_DIR)/empty.hex +tohost=300000 +max_cycles=400000000
+.PHONY: uboot-boot-sim uboot-boot-test FORCE_UBOOT_SIM
+FORCE_UBOOT_SIM:
+# Rebuilt on every run (the boot command may have changed); the binary is
+# copied only when it differs, so that the ROM is repacked only then.
+$(IMAGE_BOOT_DIR)/uboot-sim.bin: FORCE_UBOOT_SIM
+	mkdir -p $(UBOOT_BOOT_DIR)
+	UBOOT_DIR='$(abspath $(UBOOT_BOOT_TREE))' UBOOT_REF=$(UBOOT_BOOT_REF) UBOOT_NETBOOT_CMD="$$(cat test/dbg/uboot_sim_bootcmd.txt)" \
+		flow/build_uboot.sh > $(UBOOT_BOOT_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_BOOT_DIR)/uboot-build.log; exit 1; }
+	mkdir -p $(IMAGE_BOOT_DIR)
+	cmp -s $(UBOOT_BOOT_TREE)/u-boot.bin $(IMAGE_BOOT_DIR)/uboot-sim.bin || cp $(UBOOT_BOOT_TREE)/u-boot.bin $(IMAGE_BOOT_DIR)/uboot-sim.bin
+$(IMAGE_BOOT_DIR)/uboot-1g.dtb: $(IMAGE_BOOT_ZKR_DTB)
+	mkdir -p $(IMAGE_BOOT_DIR)
+	cp $< $@
+	fdtput -t x $@ /memory@80000000 reg 0 0x80000000 0 0x40000000
+$(eval $(call IMAGE_BOOT_ROM,uboot,$(IMAGE_BOOT_DIR)/uboot-1g.dtb,uboot-sim))
+uboot-boot-sim: $(VCU118_AUTH_ROM_HEX)
+	$(MAKE) DDR_SIM_DIR=$(UBOOT_BOOT_DIR)/obj \
+		KARU_DEFINES='$(filter-out KARU_ICACHE,$(RVA23_SHIP_SYN_DEFINES)) KARU_DBG $(VCU118_DBG_EXT_DEFINES)' \
+		DDR_VFLAGS_EXTRA='-Idbg -GRAM_XADR=30 -GRESET_PC=65536 -GCPU_CLK_HZ=1000000 -GZKR_SAMPLE_DIV=8 -GZKR_INTERVAL=1 -GAUTH_ROM_HEX=\"$(abspath $(VCU118_AUTH_ROM_HEX))\"' \
+		DDR_RTL='$(DDR_RTL) $(ZVK_RTL) $(ZKR_RTL) $(IMAGE_BOOT_DBG_RTL)' \
+		$(UBOOT_BOOT_SIM)
+uboot-boot-test: uboot-boot-sim $(IMAGE_BOOT_DIR)/uboot.rom.hex
+	: > $(UBOOT_BOOT_DIR)/empty.hex
+	python3 test/dbg/uboot_boot_test.py --sim $(UBOOT_BOOT_SIM) --dir $(UBOOT_BOOT_DIR) --rom $(IMAGE_BOOT_DIR)/uboot.rom.hex --release $(UBOOT_BOOT_REF) -- $(UBOOT_BOOT_RUN)
+
+# U-Boot's network path, which is how the board loads Linux: the same
+# release and configuration without a baked boot command, at its prompt on
+# the U-Boot network simulation (make uboot-net-sim's model, with the packet
+# backend answering ARP and TFTP). test/dbg/uboot_tftp_test.py types the
+# commands: two files fetched by TFTP and checked by U-Boot's crc32, and a
+# missing file. The device tree is karudeb's simulation tree. Not part of
+# make dbg-test.
+UBOOT_TFTP_DIR = $(BUILD)/uboot-tftp
+UBOOT_TFTP_TREE ?= $(BUILD)/u-boot-prompt-$(UBOOT_BOOT_REF)
+UBOOT_TFTP_DTB ?= $(KARUDEB)/build/karu64/karu64-sim.dtb
+.PHONY: uboot-tftp-test
+uboot-tftp-test:
+	mkdir -p $(UBOOT_TFTP_DIR)
+	UBOOT_DIR='$(abspath $(UBOOT_TFTP_TREE))' UBOOT_REF=$(UBOOT_BOOT_REF) UBOOT_NETBOOT_CMD= \
+		flow/build_uboot.sh > $(UBOOT_TFTP_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_TFTP_DIR)/uboot-build.log; exit 1; }
+	: > $(UBOOT_TFTP_DIR)/flat.img
+	dd if=$(KARUDEB_OPENSBI) of=$(UBOOT_TFTP_DIR)/flat.img bs=1M conv=notrunc status=none
+	dd if=$(UBOOT_TFTP_TREE)/u-boot.bin of=$(UBOOT_TFTP_DIR)/flat.img bs=1M seek=2 conv=notrunc status=none
+	$(MAKE) $(UBOOT_NET_BIN)
+	python3 test/dbg/uboot_tftp_test.py --sim $(UBOOT_NET_BIN) --img $(UBOOT_TFTP_DIR)/flat.img --dtb $(UBOOT_TFTP_DTB) \
+		--dir $(UBOOT_TFTP_DIR) --release $(UBOOT_BOOT_REF)
 
 DBG_BSCAN_MODEL = $(BUILD)/dbg/obj_bscan/Vtb_bscan_remote
 DBG_BSCAN_CORE_DIR ?= $(BUILD)/dbg/obj_bscan_core

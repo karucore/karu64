@@ -1,0 +1,1 @@
+rng 0 10; echo "[uboot-test] rng rc=$?"; if itest.q *0x80310000 == 0x1234; then echo "[uboot-test] second boot"; mw.q 0x80300000 1; else mw.q 0x80310000 0x1234; echo "[uboot-test] resetting"; reset; fi

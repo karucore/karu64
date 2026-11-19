@@ -121,7 +121,7 @@ FUBOOT_ROM_DTB ?= $(KARUDEB)/build/karu64/karu64-rv64imac-ddr.dtb
 #	  0x030000..0x11efff   OpenSBI (956 KiB; v1.9 is 271 KiB)
 #	  0x11f000..0x11ffff   empty: core 0x12_0000 is the Debug Module's
 #	                       private page
-#	  0x120000..0x1fbfff   U-Boot (880 KiB; v2025.01 is 579 KiB)
+#	  0x120000..0x1fbfff   U-Boot (880 KiB; v2026.10 is 783 KiB)
 #	  0x1fc000..0x1fffff   control DTB (16 KiB)
 #	build_fuboot_rom.sh checks every region, the empty ones included.
 FUBOOT_ROM_BYTES   = 0x200000
@@ -1780,7 +1780,7 @@ DDR_RTL =	flow/fpga/fpga_ddr_top.v flow/fpga/karu_ddr_xbar.v flow/fpga/assert/ka
 			flow/fpga/eth/karu_eth.v flow/fpga/eth/liteeth_core.v \
 			flow/fpga/eth/eth_mii_loopback.v flow/fpga/eth/eth_sim_prims.v \
 			flow/fpga/uart_tx.v flow/fpga/uart_rx.v flow/fpga/reset_ctrl.v \
-			flow/fpga/karu_soft_reset.v
+			flow/fpga/karu_soft_reset.v flow/fpga/karu_sysmon.v
 
 DDR_SIM_DIR =	$(BUILD)/Vfpga_ddr
 DDR_SIM_BIN =	$(DDR_SIM_DIR)/Vfpga_ddr_tb
@@ -2008,8 +2008,12 @@ mdio-test:	| $(BUILD)
 #	fw_jump payload address instead of the Linux Image, the karudeb DTB, and the
 #	linux_tb harness. U-Boot reads the DT, brings up ns16550 + CLINT + LiteEth, and
 #	reaches its prompt (`Net: eth0: ethernet@11001000`). flow/build_uboot.sh builds
-#	u-boot.bin (clones U-Boot if ../u-boot is absent).
-UBOOT_DIR      ?= ../u-boot
+#	u-boot.bin (clones U-Boot if the directory is absent). The directory carries
+#	the release in its name, and the script refuses a tree of another release, so
+#	that a tree left from an earlier one is never built under the new name.
+UBOOT_REF      ?= v2026.10
+export UBOOT_REF
+UBOOT_DIR      ?= ../u-boot-$(UBOOT_REF)
 UBOOT_BIN      ?= $(UBOOT_DIR)/u-boot.bin
 OPENSBI_FWJUMP ?= $(KARUDEB_OPENSBI)
 UBOOT_FLAT      = $(BUILD)/uboot_flat.img
@@ -2022,7 +2026,7 @@ UBOOT_NETBOOT_DIR ?= $(UBOOT_DIR)-netboot
 UBOOT_NETBOOT_BIN  = $(UBOOT_NETBOOT_DIR)/u-boot.bin
 
 $(UBOOT_BIN):
-	flow/build_uboot.sh
+	UBOOT_DIR="$(UBOOT_DIR)" flow/build_uboot.sh
 
 #	The netboot U-Boot has no standalone build rule -- the per-target *-rom-{gc,vec}
 #	recipes build it (each with its OWN bootcmd) into UBOOT_NETBOOT_DIR before the
@@ -2708,8 +2712,21 @@ vcu118-program-bundle: | $(BUILD)
 		else \
 			echo "NOTE: $(VCU118_FUBOOT_HEX) is not a packed boot ROM -- no ROM manifest or DTB in the bundle"; \
 		fi; \
-		tar -czf "$(VCU118_PROGRAM_TGZ)" $$files; \
-		echo "Wrote $(VCU118_PROGRAM_TGZ): $$files"
+		if test -e "$(VCU118_AUTH_RECORD)"; then \
+			auth=$$(python3 flow/auth_record.py verify --record "$(VCU118_AUTH_RECORD)" --bit "$(BUILD)/vcu118_ddr.bit" \
+				--rom "$(VCU118_AUTH_ROM_HEX)" --key "$(VCU118_AUTH_KEY)") || exit 1; \
+			files="$$files $(VCU118_AUTH_RECORD)"; \
+			if test "$$auth" = key; then \
+				files="$$files $(VCU118_AUTH_KEY)"; \
+				echo "NOTE: the bundle holds the debug authentication key ($(VCU118_AUTH_KEY)): keep it as private as the bitstream, which holds it too"; \
+			fi; \
+		else \
+			echo "NOTE: no $(VCU118_AUTH_RECORD): no authentication record or key in the bundle"; \
+		fi; \
+		rm -f "$(VCU118_PROGRAM_TGZ).tmp"; \
+		(umask 077; tar -czf "$(VCU118_PROGRAM_TGZ).tmp" $$files); \
+		chmod 600 "$(VCU118_PROGRAM_TGZ).tmp"; mv -f "$(VCU118_PROGRAM_TGZ).tmp" "$(VCU118_PROGRAM_TGZ)"; \
+		echo "Wrote $(VCU118_PROGRAM_TGZ) (mode 600): $$files"
 
 prog_vcu118_ddr:
 	@test -f "$(VIVADO_BUILD_DIR)/vcu118_ddr.bit" || { echo "ERROR: $(VIVADO_BUILD_DIR)/vcu118_ddr.bit not found -- run make vcu118-ddr first"; exit 1; }
@@ -2950,7 +2967,13 @@ stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/
 #	  zkr-test-spike	the access table on Spike, as a cross-check
 #	  zkr-loop-test	no combinational loop between the CSR file and the
 #			entropy block (Yosys), with a control
-ZKR_RTL		=	rtl/karu_entropy.v flow/fpga/karu_rosc_rng.v flow/fpga/karu_entropy_src.v
+#	  noise-burst-test	the FPGA entropy source with its burst capture
+#			(flow/fpga/karu_noise_burst.v): sampling period, captures and
+#			what test mode confines, and one-mechanism mutants
+#			(test/noise_burst_mutants.py)
+#	  ddr-noise-burst-test	the capture's registers through the DDR SoC:
+#			the decode in the system-control block, with its mutants
+ZKR_RTL		=	rtl/karu_entropy.v flow/fpga/karu_rosc_rng.v flow/fpga/karu_noise_burst.v flow/fpga/karu_entropy_src.v
 ZKR_SPIKE_ISA	=	rv64gch_zkr
 .PHONY: entropy-test zkr-test zkr-test-spike
 entropy-test: | $(BUILD)
@@ -2995,10 +3018,97 @@ zkr-loop-test: | $(BUILD)
 	grep -q 'found logic loop' $(BUILD)/zkr-loop/zkr_loop_strict_mutant.log
 	@echo 'zkr-loop-test: PASS (no logic loop: karu_csr with karu_entropy, and karu_entropy with its outputs fed back; the control is found by both)'
 
+#	The burst capture of the FPGA entropy source. The bench drives
+#	karu_entropy_src (noise model, entropy block, capture block) and records
+#	every symbol of the source, so a burst is compared with what the source
+#	emitted. The mutants are built without the modules' own assertions.
+.PHONY: noise-burst-test
+noise-burst-test: | $(BUILD)
+	mkdir -p $(BUILD)/noise-burst
+	verilator --binary --timing -Wno-fatal --top-module tb_noise_burst -Mdir $(BUILD)/noise-burst/obj -o tb \
+		test/tb_noise_burst.sv $(ZKR_RTL) > $(BUILD)/noise-burst/build.log 2>&1 || { tail -20 $(BUILD)/noise-burst/build.log; exit 1; }
+	$(BUILD)/noise-burst/obj/tb > $(BUILD)/noise-burst/run.log 2>&1 || { tail -5 $(BUILD)/noise-burst/run.log; exit 1; }
+	grep 'noise burst test: PASS' $(BUILD)/noise-burst/run.log
+	python3 test/noise_burst_mutants.py --out $(BUILD)/noise-burst/mut > $(BUILD)/noise-burst/mutants.log 2>&1 || { cat $(BUILD)/noise-burst/mutants.log; exit 1; }
+	tail -1 $(BUILD)/noise-burst/mutants.log
+
+#	The capture's registers in the SoC: 0x1000_0840 in the system-control
+#	block of flow/fpga/karu_ddr_xbar.v, which passes on privileged 64-bit
+#	accesses only. The firmware (test/fw/noise_burst_test.c) runs on the DDR
+#	simulation top with the entropy source; a capture block of 4096 symbols
+#	and a source period of 8 clocks keep the runs short. The mutants of the
+#	decode (test/fw/noise_burst_mutants.txt: name, sed expression, expected
+#	failure) must each fail with their own message. NB_SIM is also the bench
+#	of dbg-getnoise-burst-test (dbg/board.mk).
+NB_DIR		=	$(BUILD)/ddr-noise-burst
+NB_SIM		=	$(NB_DIR)/obj/Vfpga_ddr_tb
+NB_VFLAGS	=	-GZKR_SAMPLE_DIV=8 -GZKR_INTERVAL=1 -GZKR_BURST_LOG2=8
+NB_BUILD	=	$(MAKE) --no-print-directory DDR_DEFINES='KARU_ICACHE KARU_ZKR' DDR_VFLAGS_EXTRA='$(NB_VFLAGS)'
+NB_TEST_SRCS =	test/fw/htif_start.S test/fw/irq_trap.S test/fw/ns16550.c test/fw/noise_burst_test.c
+NB_RUN		=	+hex=$(BUILD)/noise_burst_test.hex +tohost=1000 +max_cycles=4000000
+.PHONY: ddr-noise-burst-sim
+ddr-noise-burst-sim:
+	mkdir -p $(NB_DIR)
+	$(NB_BUILD) DDR_SIM_DIR=$(NB_DIR)/obj DDR_RTL='$(DDR_RTL) $(ZKR_RTL)' $(NB_SIM) > $(NB_DIR)/build.log 2>&1 \
+		|| { tail -20 $(NB_DIR)/build.log; exit 1; }
+$(BUILD)/noise_burst_test.elf:	$(NB_TEST_SRCS) flow/spike.ld | $(BUILD)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -Os -march=rv64gc_zicsr -T flow/spike.ld -o $@ $(NB_TEST_SRCS)
+$(BUILD)/noise_burst_test.hex:	$(BUILD)/noise_burst_test.elf
+	$(XCHAIN)objcopy -O binary $< $(BUILD)/noise_burst_test.bin
+	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/noise_burst_test.bin > $@
+
+.PHONY: ddr-noise-burst-test
+ddr-noise-burst-test:	ddr-noise-burst-sim $(BUILD)/noise_burst_test.hex
+	mkdir -p $(NB_DIR)
+	$(NB_SIM) $(NB_RUN) > $(NB_DIR)/run.log 2>&1 || { tail -8 $(NB_DIR)/run.log; exit 1; }
+	grep '\[noise-burst-test\] PASS' $(NB_DIR)/run.log
+	! grep -Eq 'ERROR|FATAL|ASSERT' $(NB_DIR)/run.log
+	@set -e; while IFS='|' read -r name expr expect; do \
+		mkdir -p $(NB_DIR)/$$name; \
+		sed -e "$$expr" flow/fpga/karu_ddr_xbar.v > $(NB_DIR)/$$name/karu_ddr_xbar.v; \
+		test "$$(diff flow/fpga/karu_ddr_xbar.v $(NB_DIR)/$$name/karu_ddr_xbar.v | grep -c '^>')" = 1 \
+			|| { echo "noise-burst mutant $$name did not apply to exactly one line"; exit 1; }; \
+		$(NB_BUILD) DDR_SIM_DIR=$(NB_DIR)/$$name/obj \
+			DDR_RTL='$(subst flow/fpga/karu_ddr_xbar.v,$(NB_DIR)/'$$name'/karu_ddr_xbar.v,$(DDR_RTL)) $(ZKR_RTL)' \
+			$(NB_DIR)/$$name/obj/Vfpga_ddr_tb > $(NB_DIR)/$$name/build.log 2>&1 \
+			|| { tail -5 $(NB_DIR)/$$name/build.log; exit 1; }; \
+		if $(NB_DIR)/$$name/obj/Vfpga_ddr_tb $(NB_RUN) > $(NB_DIR)/$$name/run.log 2>&1 \
+			&& grep -q '\[noise-burst-test\] PASS' $(NB_DIR)/$$name/run.log; then \
+			echo "noise-burst mutant $$name NOT detected"; exit 1; fi; \
+		grep -q "$$expect" $(NB_DIR)/$$name/run.log \
+			|| { echo "noise-burst mutant $$name failed for another reason:"; tail -4 $(NB_DIR)/$$name/run.log; exit 1; }; \
+		echo "detected noise-burst mutant $$name: $$expect"; \
+	done < test/fw/noise_burst_mutants.txt
+
+#	The temperature readout (flow/fpga/karu_sysmon.v) against Xilinx's own
+#	SYSMONE4 model, in Vivado's simulator: the monitor reads its analog values
+#	from test/sysmon_design.txt, and the decoded readout must follow them. The
+#	control swaps the temperature and VCCAUX registers and must fail. Needs
+#	Vivado (flow/with_vivado.sh), so it is not in make dbg-test; about two
+#	minutes.
+SYSMON_XSIM_DIR = $(BUILD)/sysmon-xsim
+SYSMON_XSIM_RUN = xvlog $(abspath test/tb_sysmon_xsim.v) karu_sysmon.v $$XILINX_VIVADO/data/verilog/src/glbl.v > xvlog.log 2>&1 \
+	&& xelab -L unisims_ver tb_sysmon_xsim glbl -s tb > xelab.log 2>&1 && xsim tb -R > xsim.log 2>&1
+.PHONY: sysmon-xsim-test
+sysmon-xsim-test: | $(BUILD)
+	mkdir -p $(SYSMON_XSIM_DIR)/good $(SYSMON_XSIM_DIR)/swapped
+	cp test/sysmon_design.txt $(SYSMON_XSIM_DIR)/good/design.txt
+	cp test/sysmon_design.txt $(SYSMON_XSIM_DIR)/swapped/design.txt
+	cp flow/fpga/karu_sysmon.v $(SYSMON_XSIM_DIR)/good/karu_sysmon.v
+	sed 's/A_TEMP = 8.h00, A_VCCINT = 8.h01, A_VCCAUX = 8.h02;/A_TEMP = 8'"'"'h02, A_VCCINT = 8'"'"'h01, A_VCCAUX = 8'"'"'h00;/' \
+		flow/fpga/karu_sysmon.v > $(SYSMON_XSIM_DIR)/swapped/karu_sysmon.v
+	test "$$(diff flow/fpga/karu_sysmon.v $(SYSMON_XSIM_DIR)/swapped/karu_sysmon.v | grep -c '^>')" = 1
+	cd $(SYSMON_XSIM_DIR)/good && $(abspath flow/with_vivado.sh) sh -c '$(SYSMON_XSIM_RUN)'
+	grep 'sysmon xsim test: PASS' $(SYSMON_XSIM_DIR)/good/xsim.log
+	cd $(SYSMON_XSIM_DIR)/swapped && $(abspath flow/with_vivado.sh) sh -c '$(SYSMON_XSIM_RUN)'
+	grep -q 'FAIL sysmon xsim' $(SYSMON_XSIM_DIR)/swapped/xsim.log
+	@echo "sysmon-xsim-test: PASS (the readout follows the SYSMONE4 model; the swapped-register control fails)"
+
 #	One HTIF bench per configuration; ZKR_TB_SRC lets the mutant runs swap karu_csr.v.
 ZKR_TB_SRC	=	$(HTIF_SRC)
 define ZKR_BENCH
 $(1)/Vhtif_tb.mk: $$(ZKR_TB_SRC) $$(ZVK_RTL) $$(ZKR_RTL) $$(wildcard rtl/*.vh) flow/sim_tb.cpp Makefile
+	@mkdir -p $(1)
 	verilator $$(VFLAGS) -Mdir $(1) --cc --exe \
 		--top-module htif_tb -DSIM_TB -DHTIF_TB_XADR=22 -DKARU_ZKR $(2) \
 		-Wno-WIDTH -Wno-UNUSED -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \

@@ -20,6 +20,7 @@ module fpga_ddr_top #(
 	//	Zkr (KARU_ZKR): the entropy source with its behavioural noise model
 	parameter integer ZKR_SAMPLE_DIV = 256,		//	clk cycles per raw symbol
 	parameter [15:0]  ZKR_INTERVAL = 16'd15,	//	reset decimation k, less one
+	parameter integer ZKR_BURST_LOG2 = 11,		//	burst capture: 2^n words of 16 symbols
 	parameter		ZKR_EN = 1,					//	the platform strap (board: DIP switch 4, inverted)
 	//	Debug authentication (KARU_DBG with KARU_DBG_AUTH): the board's straps
 	parameter [1:0]	AUTH_LC = 2'd0,				//	0 OPEN, 1 AUTH, 2/3 DISABLED
@@ -80,19 +81,38 @@ module fpga_ddr_top #(
 	wire [1:0]	trng_opst;
 	wire [15:0]	trng_data;
 	wire		trng_ack;
+	//	The registers of its burst capture, in the xbar's system-control
+	//	block, and at register 4 the temperature readout (a model of it
+	//	here: fixed codes, an update every 1024 clocks). +zkr_burst=0 takes
+	//	them all away: the range then reads zero, as in an image built
+	//	before they existed.
+	wire		sysreg_re, sysreg_we;
+	wire [2:0]	sysreg_raddr, sysreg_waddr;
+	wire [63:0]	sysreg_rdata, sysreg_wdata, burst_rdata, sysmon_value;
+	reg			strap_burst = 1'b1;
+	// synthesis translate_off
+	initial if ($value$plusargs("zkr_burst=%d", strap_arg)) strap_burst = strap_arg[0];
+	// synthesis translate_on
+	karu_sysmon #(.SIM(1), .PERIOD_LOG2(10)) u_sysmon (.clk(clk), .rst(rst), .value_o(sysmon_value));
+	assign sysreg_rdata = !strap_burst ? 64'b0 : (sysreg_raddr == 3'd4) ? sysmon_value : burst_rdata;
 `ifdef KARU_EN_ZKR
 	wire [63:0]	zkr_rdata, zkr_wdata;
 	wire		zkr_fire, zkr_we;
 	wire [1:0]	zkr_sel;
-	karu_entropy_src #(.SIM(1), .SAMPLE_DIV(ZKR_SAMPLE_DIV), .INTERVAL_RESET(ZKR_INTERVAL)) u_entropy (
+	karu_entropy_src #(.SIM(1), .SAMPLE_DIV(ZKR_SAMPLE_DIV), .INTERVAL_RESET(ZKR_INTERVAL),
+					   .BURST_LOG2_WORDS(ZKR_BURST_LOG2)) u_entropy (
 		.clk(clk), .rst(soc_rst), .en_i(strap_zkr_en),
 		.csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
 		.csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack)
+		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack),
+		.reg_re_i(sysreg_re && strap_burst), .reg_raddr_i(sysreg_raddr), .reg_rdata_o(burst_rdata),
+		.reg_we_i(sysreg_we && strap_burst), .reg_waddr_i(sysreg_waddr), .reg_wdata_i(sysreg_wdata)
 	);
 `else
 	assign trng_opst = 2'd3;
 	assign trng_data = 16'b0;
+	assign burst_rdata = 64'b0;
+	wire		_unused_sysreg = &{sysreg_re, sysreg_we, sysreg_waddr, sysreg_wdata, 1'b0};
 `endif
 `ifndef KARU_DBG
 	assign dbg_ndmreset = 1'b0;
@@ -199,6 +219,8 @@ module fpga_ddr_top #(
 	karu_ddr_xbar #(.CPU_CLK_HZ(CPU_CLK_HZ)) xbar (
 		.clk(clk), .rst(soc_rst),
 		.sys_reset_req_o(soft_reset_req),
+		.sysreg_re_o(sysreg_re), .sysreg_raddr_o(sysreg_raddr), .sysreg_rdata_i(sysreg_rdata),
+		.sysreg_we_o(sysreg_we), .sysreg_waddr_o(sysreg_waddr), .sysreg_wdata_o(sysreg_wdata),
 		.imem_arid(imem_arid), .imem_araddr(imem_araddr),
 		.imem_arlen(imem_arlen), .imem_arsize(imem_arsize),
 		.imem_arburst(imem_arburst), .imem_arprot(imem_arprot),

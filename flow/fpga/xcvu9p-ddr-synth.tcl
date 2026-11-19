@@ -209,6 +209,10 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 	source [karu_repo_path flow fpga rosc_constraints.tcl]
 	karu_constrain_rosc
 }
+#	The system monitor of the temperature readout (karu_sysmon.v): in the SLR
+#	of the ring oscillators when there are rings, so that it reads their die.
+source [karu_repo_path flow fpga sysmon_constraints.tcl]
+karu_constrain_sysmon
 #	Combinational loops are refused at bitstream generation, two hours from
 #	here. Look for them now. The ring oscillators are loops by design and are
 #	marked as allowed, so they are not among these violations.

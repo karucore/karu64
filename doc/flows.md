@@ -213,6 +213,7 @@ make keccak-sponge-pbmt-test
 make irq-test ddr-irq-test
 make sv39-auth-pma-test
 make entropy-test zkr-test zkr-loop-test zkr-test-spike
+make noise-burst-test ddr-noise-burst-test
 ```
 
 `sv39-auth-pma-test` is `sv39-test` built as a core with the Debug Module
@@ -223,6 +224,13 @@ opt-in `KARU_ZKR`: `entropy-test` the entropy block with driven symbols and
 and VU with `mseccfg` and the custom CSRs on the core (14 mutants),
 `zkr-loop-test` the absence of a combinational loop between the CSR file and
 the block (Yosys), and `zkr-test-spike` the same access table on Spike.
+`noise-burst-test` is the FPGA entropy source with its burst capture
+(`flow/fpga/karu_noise_burst.v`): the sampling period, bursts against a
+record of every symbol of the simulated source, and what the entropy
+block's test mode confines, with 34 one-mechanism mutants.
+`ddr-noise-burst-test` reaches the capture's registers through the DDR
+SoC's bus decode, from M-mode and, refused, from U-mode and with narrower
+accesses, with eight decode mutants.
 
 `csr-test` covers implemented CSR masks, WARL behavior, privilege, pending
 interrupts, MPRV and Sstc's six CSR forms, permissions, 64-bit comparison and
@@ -463,6 +471,8 @@ responder's MSIP output independently of the core.
     make linux-v-irfs-sim    # self-contained busybox initramfs; userspace RVV [VECTEST] PASS
     make eth-sim         # bare-metal LiteEth MAC TX->RX loopback smoke
     make uboot-net-sim   # U-Boot netboot over the modeled NIC (ARP/ICMP/TFTP responder)
+    make uboot-tftp-test # the ROM's U-Boot release at its prompt: two TFTP downloads checked by CRC
+    make uboot-boot-test # that U-Boot from the boot ROM, entropy source on and off, with a reset
 
 `make linux-axi-test linux-axi-negative-test` directly exercises the Linux
 SoC AXI responder. The positive suite checks independent AW/W arrival,

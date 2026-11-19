@@ -250,6 +250,11 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
   through the same raw interface (`rng_en`, `rng_fips`, a one-cycle
   `rng_val`, four `rng_b` lanes, no back-pressure), which is the one
   OpenTitan's entropy block expects from its analog sensor top.
+  The FPGA source has one more input, `rng_div_i`, the sampling period,
+  which only the FPGA's burst capture drives (`flow/fpga/
+  karu_noise_burst.v`, a characterisation aid that works in test mode
+  only). It is not part of the interface: an ASIC source has its own fixed
+  rate, and the capture block is left out.
 - **`rtl/karu_entropy.v` unchanged in front of it**, so that the bits the
   health tests see, the bits `seed` delivers and the bits the GetNoise
   interface shows stay the same bits. Add `rtl/karu_entropy.v` to the file
@@ -262,7 +267,9 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
 - **A policy for the test interface.** `mnoise` gives M-mode raw samples
   and holds `seed` in `BIST` meanwhile. Firmware should set the lock bit of
   `mentropycfg` before leaving M-mode; a production device may want the
-  interface tied off.
+  interface tied off. `rtl/karu_entropy.v` has two status outputs for a
+  platform block that must work only in test mode, `test_o` and `lock_o`
+  (both registers); they may be left open.
 - **A power-on reset value for the platform strap** (`en_i`), and, as for
   the debug block, scan must not expose or drive the source.
 - **No path from the written value back to the read value.** A CSR set or

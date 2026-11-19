@@ -31,7 +31,7 @@ module zkr_loop_strict (
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(fb), .csr_sel_i(sel), .csr_we_i(fb),
         .csr_wdata_i(rdata ^ {4{data}} ^ {32{opst}}), .csr_rdata_o(rdata),
-        .opst_o(opst), .data_o(data), .trng_ack_i(fb));
+        .opst_o(opst), .data_o(data), .trng_ack_i(fb), .test_o(), .lock_o());
 endmodule
 
 module zkr_loop_wrap (
@@ -66,5 +66,5 @@ module zkr_loop_wrap (
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
         .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-        .opst_o(trng_opst), .data_o(trng_data), .trng_ack_i(trng_ack));
+        .opst_o(trng_opst), .data_o(trng_data), .trng_ack_i(trng_ack), .test_o(), .lock_o());
 endmodule

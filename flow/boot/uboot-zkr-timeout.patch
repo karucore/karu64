@@ -1,0 +1,112 @@
+diff --git a/drivers/rng/riscv_zkr_rng.c b/drivers/rng/riscv_zkr_rng.c
+index 48a52519..f03c367f 100644
+--- a/drivers/rng/riscv_zkr_rng.c
++++ b/drivers/rng/riscv_zkr_rng.c
+@@ -10,9 +10,18 @@
+ #include <interrupt.h>
+ #include <log.h>
+ #include <rng.h>
++#include <time.h>
++#include <linux/errno.h>
+ 
+ #define DRIVER_NAME "riscv_zkr"
+ 
++/*
++ * How long to wait for a word. The seed CSR may stay in BIST or WAIT for
++ * good: an entropy source that is held off, or one that is kept in its test
++ * mode, never leaves BIST. A caller must then get an error, not a hang.
++ */
++#define ZKR_TIMEOUT_MS 100
++
+ enum opst {
+ 	/** @BIST: built in self test running */
+ 	BIST = 0b00,
+@@ -33,29 +42,47 @@ static unsigned long read_seed(void)
+ 	return ret;
+ }
+ 
++/**
++ * zkr_word() - poll the seed CSR for one word of entropy
++ *
++ * @val:	the value read, with status ES16, on success
++ * Return:	0 on success, -ENOENT if the source is dead, -ETIMEDOUT if it
++ *		stayed in BIST or WAIT for ZKR_TIMEOUT_MS
++ */
++static int zkr_word(u32 *val)
++{
++	ulong start = get_timer(0);
++
++	for (;;) {
++		*val = read_seed();
++
++		switch (*val >> 30) {
++		case ES16:
++			return 0;
++		case DEAD:
++			return -ENOENT;
++		}
++		if (get_timer(start) > ZKR_TIMEOUT_MS)
++			return -ETIMEDOUT;
++	}
++}
++
+ static int riscv_zkr_read(struct udevice *dev, void *data, size_t len)
+ {
+ 	u8 *ptr = data;
+ 
+ 	while (len) {
+ 		u32 val;
++		int ret;
+ 
+-		val = read_seed();
++		ret = zkr_word(&val);
++		if (ret)
++			return ret;
+ 
+-		switch (val >> 30) {
+-		case BIST:
+-			continue;
+-		case WAIT:
+-			continue;
+-		case ES16:
+-			*ptr++ = val & 0xff;
+-			if (--len) {
+-				*ptr++ = val >> 8;
+-				--len;
+-			}
+-			break;
+-		case DEAD:
+-			return -ENOENT;
++		*ptr++ = val & 0xff;
++		if (--len) {
++			*ptr++ = val >> 8;
++			--len;
+ 		}
+ 	}
+ 
+@@ -97,7 +124,7 @@ static int riscv_zkr_bind(struct udevice *dev)
+  *
+  * The bind method already checked that the seed register can be read without
+  * excpetiong. Here we wait for the self test to finish and entropy becoming
+- * available.
++ * available, but not without bound.
+  *
+  * @dev:	RNG device
+  * Return:	0 if successfully probed
+@@ -106,15 +133,7 @@ static int riscv_zkr_probe(struct udevice *dev)
+ {
+ 	u32 val;
+ 
+-	do {
+-		val = read_seed();
+-		val >>= 30;
+-	} while (val == BIST || val == WAIT);
+-
+-	if (val == DEAD)
+-		return -ENOENT;
+-
+-	return 0;
++	return zkr_word(&val);
+ }
+ 
+ static const struct dm_rng_ops riscv_zkr_ops = {

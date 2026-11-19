@@ -1,0 +1,25 @@
+Negative control for dbg-auth-sba-revoke-test (dbg/auth.mk): the SBA
+engine is gated by dmactive only, not by the authentication gate, so it
+keeps launching after debug_enable falls. The DM's own locked-output
+assertion is disabled; the bench's bus monitor must report [LAUNCH].
+
+--- a/dbg/karudbg.v
++++ b/dbg/karudbg.v
+@@ -221,7 +221,7 @@
+ 
+     generate if (SBA && SBA_ENABLE) begin : g_sba
+         karudbg_sba #(.SBASIZE(SBASIZE)) sba (
+-            .clk(clk), .rst(rst), .active_i(dmactive_q && dbg_en),
++            .clk(clk), .rst(rst), .active_i(dmactive_q),
+             .bus_reset_i(hart_reset_i || ndmreset_o),
+             .dmi_valid_i(dmi_fire), .dmi_op_i(req_op_i),
+             .dmi_addr_i(req_addr_i), .dmi_data_i(req_data_i),
+@@ -616,7 +616,7 @@
+     always @(posedge clk) begin
+         if (!rst && !dbg_en && (halt_req_o || resume_req_o || resume_authorized_o ||
+                                 ndmreset_o || sba_req_valid_o))
+-            $fatal(1, "karudbg: DM output asserted while locked");
++            $display("disabled karudbg: DM output asserted while locked");
+         if (!rst && !dbg_en && dmi_fire && req_op_i == 1 && dmactive_q &&
+             req_addr_i != 7'h10 && req_addr_i != 7'h11 && req_addr_i != 7'h30 &&
+             dmi_read != 0)

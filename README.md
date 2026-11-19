@@ -407,5 +407,10 @@ the board: Linux uses `seed` without crediting it (`random.trust_cpu=off`).
 The first raw-noise captures are in the
 [acceptance record](dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture); no
 entropy figure has been established, and the parameters are provisional.
+To characterise the rings, the FPGA source now has a burst capture that
+samples them every 1 to 256 clocks in its test mode. It is in bitstream
+`85f07e58…` and ran on the board on 2026-11-19
+([record](dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)): the
+noise model can now be fitted, and lanes 2 and 3 show a dependence.
 See [the FPGA guide](doc/fpga.md) and the
 [Zkr follow-up plan](doc/zkr-followup-plan.md).

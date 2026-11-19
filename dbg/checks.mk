@@ -60,6 +60,7 @@ dbg-functional-gates: lsu-aw-w-test nomem-aw-w-isa-test dbg-bscan-truncate-test 
 # Debug authentication (doc/debug-auth-plan.md A1, contract
 # doc/debug-auth-contract.md).
 dbg-functional-gates: dbg-auth-test
+dbg-functional-gates: dbg-auth-sba-revoke-test
 # The access permissions of a core with authentication: the island SRAM and
 # the Debug Module's page are inside the boot ROM's span and are not ROM.
 # Checked through the address translator, HLVX included, with a control.
@@ -87,6 +88,12 @@ dbg-functional-gates: entropy-test zkr-test zkr-loop-test
 # The GetNoise capture payload on the same bench, the offline analysis on
 # synthetic model data, and the capture phase against a stand-in debugger.
 dbg-functional-gates: dbg-getnoise-test
+# Burst capture of the FPGA entropy source (doc/zkr-followup-plan.md, Z1 to
+# Z3): the capture block with the noise source and the entropy block, and
+# its one-mechanism mutants; its registers through the DDR SoC's bus decode,
+# with decode mutants; the burst payload and phase on that SoC simulation;
+# and the analysis of burst captures on generated data with known parameters.
+dbg-functional-gates: noise-burst-test ddr-noise-burst-test dbg-getnoise-burst-test dbg-burst-analysis-test
 
 DBG_GATE_JOBS ?= 3
 dbg-test:

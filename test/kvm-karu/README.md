@@ -20,23 +20,23 @@ Pinned inputs:
 | Input | SHA-256 |
 | --- | --- |
 | Linux 7.1.2 source archive | `37198c93727be247c9fb5309bb86cd5e496c61e5322cd8c4eca9476bb0b5883f` |
-| Karudeb OpenSBI v1.8.1 `fw_jump.bin` | `307ff4379bb146646a0825b510e5f16b664c669e7b24390b381350a5a914fc21` |
+| Karudeb OpenSBI v1.9 `fw_jump.bin` | `cbbbe5ce24941375d83540daac866c3f728e1c78a60f1e6a7cfb408303f1a638` |
 
 The default paths are respectively
 `../karudeb/build/kernel-source/linux-7.1.2.tar.xz` and
 `../karudeb/build/karu64/opensbi/fw_jump.bin`. The OpenSBI source commit is
-`74434f255873d74e56cc50aa762d1caf24c099f8`; its generic configuration includes
+`cbf9f6734dd85a982c63e3cb5db7ffe09da839ca` (v1.9); its generic configuration includes
 SBI TIME and RFENCE and uses `FW_JUMP_FDT_OFFSET=0x1c00000`.
 Different input contents are rejected rather than silently changing the oracle.
 
-Since 2026-11-17 karudeb builds OpenSBI v1.9 at that default path (the
-boot ROM moved to it for the software reboot), so the default no longer
-matches this pin and the build stops with a fingerprint mismatch. Pass a
-v1.8.1 `fw_jump.bin` with the hash above through `KVM_OPENSBI`. karudeb's
-`scripts/build-karu64-opensbi.sh` takes `OPENSBI_REF=v1.8.1` with a
-separate `SRC_DIR` and `BUILD_DIR`; whether such a rebuild reproduces the
-pinned hash has not been checked. The fixture has not been re-pinned to
-v1.9: that changes the oracle and needs its own validation run.
+The pin moved from v1.8.1 (`307ff437…fc21`, source commit
+`74434f25…99f8`) to v1.9 on 2026-11-18. Since 2026-11-17 karudeb builds
+v1.9 at the default path, because the boot ROM needs it for the software
+reboot, and the fixture's build had stopped there with a fingerprint
+mismatch. It is the binary that the board image has in its ROM. Changing
+the firmware changes the oracle, so the fixture was run again with it:
+see [Results with OpenSBI v1.9](#results-with-opensbi-v19). The results
+recorded further down for 2026-09-13 are with v1.8.1.
 
 From the Karu repository root:
 
@@ -210,6 +210,19 @@ The breakpoint selftest's executable `.text` is byte-identical to the pristine
 baseline. Evidence is in `_build/kvm-karu-debugfix-qemu{,-max}.log` and
 `_build/kvm-karu-timer-controls-v2/{1,2}/qemu.log`, each with run metadata.
 These are fixture-control results, not an RTL KVM verdict.
+
+## Results with OpenSBI v1.9
+
+Rebuilt on 2026-11-18 from the unchanged fixture sources and the new pin.
+The kernel Image and the initramfs are byte-identical to those of the
+v1.8.1 fixture (`3bb54fd2…2492` and `de787fb8…909b` above), so the
+firmware is the only difference. The flat image is
+`08dafd3f16b10e92960252dc688774228c9008c087a1ab8a2f70f642423ad7da`.
+
+| Run | Result |
+| --- | --- |
+| Corrected fixture, default Sv39 QEMU CPU (QEMU 11.1.2, `89463277…d71e`) | Both guests exit 0; strict completion PASS |
+| RTL: `_build/Vlinux_kvm_profile/Vlinux_tb` built from the tree of 2026-11-18 with the `LINUX_DEFS` above (`309d32c1…`), `python3 test/kvm-karu/run.py --model …` | Both guests exit 0; strict completion PASS after about 245 million cycles (95 minutes) |
 
 ## Checkpoint and waveform replay
 

@@ -753,11 +753,13 @@ module htif_tb (input wire clk);
     wire [1:0]  zkr_sel;
     reg         zkr_en;
     initial if (!$value$plusargs("zkr_en=%d", zkr_en)) zkr_en = 1'b1;
-    karu_entropy_src #(.SIM(1), .SAMPLE_DIV(8), .INTERVAL_RESET(16'd1)) zkr_src (
+    //  The burst capture's registers are not mapped in this bench.
+    karu_entropy_src #(.SIM(1), .SAMPLE_DIV(8), .INTERVAL_RESET(16'd1), .BURST_LOG2_WORDS(4)) zkr_src (
         .clk(clk), .rst(rst), .en_i(zkr_en),
         .csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
         .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0));
+        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0),
+        .reg_re_i(1'b0), .reg_raddr_i(3'd0), .reg_rdata_o(), .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
 `endif
 
     //  The actual core under test.

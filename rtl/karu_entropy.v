@@ -108,7 +108,13 @@ module karu_entropy #(
     //  the same words for the debug authentication block (its trng_* port)
     output wire [1:0]  opst_o,
     output wire [15:0] data_o,
-    input  wire        trng_ack_i
+    input  wire        trng_ack_i,
+
+    //  status, for a platform block that works only in test mode (the burst
+    //  capture of flow/fpga/karu_noise_burst.v): noise_test is set, and the
+    //  configuration is locked. Both are registers. May be left open.
+    output wire        test_o,
+    output wire        lock_o
 );
     localparam [1:0] SEL_SEED = 2'd0, SEL_NOISE = 2'd1, SEL_CFG = 2'd2;
     localparam [1:0] OPST_BIST = 2'd0, OPST_WAIT = 2'd1, OPST_ES16 = 2'd2, OPST_DEAD = 2'd3;
@@ -326,6 +332,8 @@ module karu_entropy #(
     //  what one needs to find out why it died. seed stays DEAD regardless.
     assign rng_en_o   = en_i && (state_q != S_DEAD || test_q);
     assign rng_fips_o = 1'b0;
+    assign test_o     = test_q;
+    assign lock_o     = lock_q;
 
 `ifndef KARU_NO_ASSERT
     // synthesis translate_off

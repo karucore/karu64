@@ -57,7 +57,8 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
         .clk(clk), .rst(dut.core_rst), .en_i(1'b1),
         .csr_fire_i(zkr_fire_o), .csr_sel_i(zkr_sel_o), .csr_we_i(zkr_we_o),
         .csr_wdata_i(zkr_wdata_o), .csr_rdata_o(zkr_rdata_i),
-        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0));
+        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0),
+        .reg_re_i(1'b0), .reg_raddr_i(3'd0), .reg_rdata_o(), .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
 `endif
     // Which source the ROM used for its nonces: words taken from mdbgrng, and
     // words taken from seed.

@@ -368,11 +368,28 @@ hardware never parses them. Every frame starts with one header word:
 | `0x01` | Ed25519 | 64 |
 | `0x02` | ML-DSA-44 | 2420 |
 | `0x03` | Hybrid: ML-DSA-44 followed by Ed25519; both must verify | 2484 |
+| `0x04` | `SHA3`: SHA3-256 shared-secret MAC; FPGA validation only (below) | 32 |
 | `0x80` | `TEST`: simulation-only; must not be accepted by a production ROM image | 32 |
 | others | Reserved; rejected | — |
 
 The production ROM accepts the one identifier chosen under D3 and rejects every
 other identifier. This is the only part of D3 fixed here.
+
+*`0x04`, added 2026-11-18.* A shared-secret scheme, chosen on 2026-11-18 to
+validate the FPGA image with something better than `TEST`; it is not the D3
+production algorithm, and D3 stays open. With a 32-byte key `K` shared by
+the ROM and the debugger, the signature is
+
+    SHA3-256( K || "karudbg-auth-v1" || CHALLENGE words 0–19 || granted )
+
+where the label is 15 ASCII bytes, the challenge is its 80 bytes with each
+word little-endian, and `granted` is the granted-mask byte; the 32 digest
+bytes are sent as 8 little-endian words. In Python:
+`hashlib.sha3_256(K + b"karudbg-auth-v1" + struct.pack("<20I", *challenge) + bytes([granted])).digest()`.
+The ROM (`test/dbg/auth_rom/window.c` built with `-DAUTH_ALG_SHA3`) accepts
+only `0x04`, and its `TEST` build only `0x80`. Since this ROM holds a
+secret, it clears island SRAM before it leaves (D1). The key is in the ROM
+image and so in the bitstream: anyone who has either can authenticate.
 
 ### 5.2 Layouts
 
@@ -449,7 +466,7 @@ The plan's recommended defaults are adopted.
 | --- | --- |
 | D1 | No scrub of island SRAM is required at `boot_done`. The reference ROM handles only public data: the verification key, challenge and signature. A ROM that ever holds secrets must scrub before `boot_done`. |
 | D2 | No locked-DM "reset into window" command. Re-entry is by POR with the physical strap. |
-| D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (Ed25519, ML-DSA-44 or hybrid) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). |
+| D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (Ed25519, ML-DSA-44 or hybrid) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). Interim, 2026-11-18: the FPGA image uses the shared-secret `SHA3` (`0x04`, §5.1) for validation; this does not settle D3. |
 | D4 | One permission bit, `perm[0]`, granting full debug: run control, abstract commands, Program Buffer and SBA. Mask bits 1–7 are reserved, and `REQUEST` and the ROM reject them. |
 | D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3; a hard cutoff is not provided. |
 | D6 | The scan controller must force `debug_enable=0` and reset `karudbg_auth` on scan entry and exit. This is a platform obligation, recorded for A7. |

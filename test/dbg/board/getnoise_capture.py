@@ -25,6 +25,11 @@
 #   KARU_BOARD_GETNOISE_WAIT     seconds to wait for one capture (from count and k)
 #   KARU_BOARD_GETNOISE_NOTE     free text for the sidecar: bitstream, board, temperature
 #
+# The sidecar also holds the FPGA's die temperature and supply voltages (the
+# readout at 0x1000_0860, in images built after 2026-11-18; older images read
+# 0 there) before and after the capture. A capture's files replace the
+# previous ones only when they are complete.
+#
 # Analysis is offline: getnoise_analyze.py.
 # SPDX-License-Identifier: BSD-2-Clause
 from boardlib import *
@@ -39,6 +44,21 @@ NOTE=os.environ.get('KARU_BOARD_GETNOISE_NOTE','')
 BUF=LOAD+0x10000
 RAW_SECONDS=256/75e6                                # one raw symbol: 256 clocks at 75 MHz
 SYMS={p[2]:int(p[0],16) for line in (OUT/'getnoise.symbols').read_text().splitlines() if len(p:=line.split())==3}
+SYSMON=0x10000860                                   # temperature and supplies (flow/fpga/karu_sysmon.v)
+def sysmon():
+    """The readout word, raw and decoded; on an image without it the word reads 0."""
+    v=b.read(SYSMON,64,1,'progbuf')[0];b.cmd('riscv mem_access progbuf')
+    rec={'raw':hex(v),'updates':v>>48}
+    if v&0xffffffffffff:
+        rec.update(temp_c=round((v&0xffff)*509.3140064/65536-280.2308787,2),
+                   vccint_v=round(((v>>16)&0xffff)*3/65536,4),vccaux_v=round(((v>>32)&0xffff)*3/65536,4))
+    return rec
+def publish(files,data,side):
+    """Write a capture's files under temporary names and rename them only when both are
+    complete, so that a failed or interrupted capture leaves the previous one in place."""
+    tmp=[f.with_name(f.name+'.tmp') for f in files]
+    tmp[0].write_bytes(data);tmp[1].write_text(side)
+    tmp[0].replace(files[0]);tmp[1].replace(files[1])
 PARAMS,RESULT,STOP=(LOAD+SYMS[s] for s in ('getnoise_params','getnoise_result','getnoise_stop'))
 FIELDS=['status','stored','runs','losses','polls','cfg_before','cfg_used','cfg_after','noise_after','mcause','mepc']
 STATUS={0:'OK',1:'RUNNING: the payload did not reach its end',
@@ -75,8 +95,8 @@ def read_bytes(addr,n,chunk=4096):
 def capture(k):
     b.require(1<=k<=65536,'k is 1..65536')
     files=[OUT/f'getnoise-k{k}.bin',OUT/f'getnoise-k{k}.json']
-    for f in files: f.unlink(missing_ok=True)
     bm.prep()
+    before=sysmon()
     idle=64*k+4096                                  # polls; an idle poll takes more than 4 clocks, a symbol 256*k
     b.write(PARAMS,64,[k-1,COUNT,BUF,COUNT,idle,-1]+[0]*(len(FIELDS)-1),'sysbus')
     b.cmd('riscv mem_access progbuf')
@@ -85,6 +105,7 @@ def capture(k):
     seconds=time.monotonic()-start;pc=b.rr('pc')
     r=dict(zip(FIELDS,b.read(RESULT,64,len(FIELDS),'sysbus')))
     b.cmd('riscv mem_access progbuf')
+    after=sysmon()
     hexed={f:hex(r[f]) for f in ('cfg_before','cfg_used','cfg_after','noise_after','mcause','mepc')}
     if r['status']: raise AssertionError(f"payload status {r['status']:#x}, {STATUS.get(r['status'],'unknown')}; pc={pc:#x} {hexed}")
     b.checks+=1
@@ -99,13 +120,13 @@ def capture(k):
     b.equal(len(runs),r['runs'],'run flags in the buffer against the payload run count')
     b.require(r['runs']<=r['losses']+1,'no more runs than losses allow')
     digest=hashlib.sha256(data).hexdigest()
-    files[0].write_bytes(data)
-    files[1].write_text(json.dumps(dict(format='karu64-getnoise-1',
+    publish(files,data,json.dumps(dict(format='karu64-getnoise-1',
         encoding='one byte per symbol: bits [3:0] symbol, lane i in bit i; bit 7 first symbol of a run',
         k=k,interval=k-1,requested=COUNT,stored=r['stored'],runs=len(runs),run_lengths=runs,longest_run=max(runs),min_run=MIN_RUN,
         losses=r['losses'],polls=r['polls'],cfg_before=hexed['cfg_before'],cfg_used=hexed['cfg_used'],cfg_after=hexed['cfg_after'],
         rct_cutoff=(r['cfg_before']>>16)&0x3ff,apt_cutoff=(r['cfg_before']>>26)&0x7ff,noise_after=r['noise_after'],
         load=hex(LOAD),buffer=hex(BUF),seconds=round(seconds,3),sha256=digest,payload_sha256=hashlib.sha256(payload).hexdigest(),
+        sysmon_before=before,sysmon_after=after,
         time=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),note=NOTE),indent=1)+'\n')
     b.require(max(runs)>=MIN_RUN,f'longest run {max(runs)} of {len(runs)} is shorter than {MIN_RUN}: the capture loop loses symbols at k={k}')
     return {'k':k,'file':files[0].name,'symbols':COUNT,'runs':len(runs),'longest_run':max(runs),'losses':r['losses'],'seconds':round(seconds,2),'sha256':digest}

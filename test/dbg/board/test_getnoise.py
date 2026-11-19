@@ -595,6 +595,8 @@ class FakeOpenOCD(threading.Thread):
         if name == "riscv": return "0x0" if a[0] == "dmi_read" else ""
         if name == "reg": self.regs[a[0]] = int(a[1], 0); return ""
         if name == "get_reg": return f"{a[-1]} {self.regs.get(a[-1], 0):#x}"
+        if name == "read_memory" and int(a[0], 0) == 0x10000860:     # the temperature readout
+            return "0x0005999a4888a0f6"
         if name in ("write_memory", "read_memory"):
             addr, size = int(a[0], 0) - BASE, int(a[1]) // 8
             count = len(a[2].split()) if name == "write_memory" else int(a[2])

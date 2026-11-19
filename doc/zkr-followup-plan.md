@@ -1,10 +1,23 @@
 # Zkr follow-up plan
 
-Status: **plan, 2026-11-18.** Nothing here is implemented. It follows the
+Status: **plan, 2026-11-18.** When it was written nothing here was
+implemented. It follows the
 first board session of the Zkr image (bitstream `d7ff00dc…`), whose
 GetNoise captures are summarised in
 [the acceptance record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture)
 and kept in `_build/dbg/board-accept-20261118-rom2m-auth/` on the lab host.
+
+*Status, 2026-11-18, later the same day.* Z1 and Z2 are implemented in RTL,
+Z3 in the board scripts and the analysis, Z4's temperature and supply
+readout in RTL, and Z5 in the U-Boot build. All of it is tested in
+simulation and is in VCU118 bitstream `85f07e58…`, built at 23:40 UTC with
+timing met. **It ran on the board on 2026-11-19**
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)): the burst capture fits
+the noise model for the first time, and shows a dependence between lanes 2
+and 3. Section 7 of
+[the board test plan](../dbg/BOARD_TEST_PLAN.md) has the steps. The notes
+under each item say what was built, what was decided where the plan left a
+choice, and what is not done.
 
 ## 1. Why
 
@@ -36,6 +49,34 @@ somewhere between 64 and 128 clocks per sample.
   source may ignore, and the field then reads back the fixed rate.
 - A change of P restarts the start-up test, as a change of k does.
 
+*Status, 2026-11-18: implemented, simulated.*
+- **Where the field lives: in the capture block of Z2, not in
+  `mentropycfg`, and it works only in test mode.** The period register is
+  one of the capture block's registers. Outside the entropy block's test
+  mode (`mnoise` `noise_test` clear), and whenever `mentropycfg` is locked,
+  the noise source runs at the build's period (`SAMPLE_DIV`, 256) and the
+  register cannot be written. So `seed`, the health tests and the
+  authentication ROM see the source exactly as in the accepted image, by
+  construction and not by a reset value; the CSR contract is unchanged;
+  and an ASIC entropy block is not touched: `rtl/karu_entropy.v` gained
+  only two status outputs (test mode, lock).
+- The cost of that choice: a period other than the build's cannot be used
+  for `seed`. That is deliberate while the source is uncharacterised (§4).
+  If the characterisation calls for another production period, it becomes
+  the build parameter, or the field moves into `mentropycfg` then.
+- The noise source (`flow/fpga/karu_rosc_rng.v`) takes the period as an
+  input, `rng_div_i`, in place of the parameter. The rings are not affected
+  by it; it selects which values of the sampling flip-flops become symbols.
+  At a period of one clock the valid signal stays high.
+- A change of the period needs no restart: it can only happen in test mode,
+  where no health test runs and `seed` is in `BIST`. Leaving test mode puts
+  the build's period back in the same cycle and restarts the start-up test,
+  as before. In test mode the period applies to `mnoise` as well, so
+  `getnoise_capture.py` can be pointed at a period below 256 too.
+- Tests: `make noise-burst-test` (periods 1, 2, 3, 5, 8 and 256 against a
+  record of every symbol of the source; the first symbol after test mode
+  comes a full build period after the one before it; 33 mutants).
+
 ### Z2. Burst capture for characterisation
 
 - An FPGA-only block that records N consecutive raw 4-bit samples at period
@@ -53,6 +94,39 @@ somewhere between 64 and 128 clocks per sample.
   for four times finer time resolution, with the buffer in that domain.
 - Not part of the ASIC entropy block; `rtl/karu_entropy.v` stays as it is.
 
+*Status, 2026-11-18: implemented, simulated; block RAM and loops checked in
+an out-of-context synthesis, then in bitstream `85f07e58…`, where the
+routed paths into the four RAMs have at least +2.88 ns setup and +0.053 ns
+hold. On the board on 2026-11-19: eight runs of 9 periods × 32 bursts,
+all complete.*
+- `flow/fpga/karu_noise_burst.v`, instantiated next to the noise source in
+  `flow/fpga/karu_entropy_src.v`. A burst is 32,768 consecutive raw symbols
+  (2,048 words of 16), in four 36 Kb block RAMs. Out of context, Vivado
+  2026.1 infers the four RAMB36E2 and adds 104 LUTs and 96 flip-flops for
+  the block; the loop check finds only the four rings.
+- **The registers are in the system-control block, at `0x1000_0840`, not in
+  a window of their own.** The plan assumed that a new memory-mapped window
+  needs no change to the core. It does: the core's physical access
+  permissions (`rtl/karu_pma.vh`) list the device ranges, and an address
+  outside them faults. The system-control block is in the UART's page,
+  which the core already allows, so the four registers (status and control,
+  period, index, data) went there, and the recording is read through the
+  index and data registers instead of being mapped. The bus decode
+  (`flow/fpga/karu_ddr_xbar.v`) passes on privileged 64-bit accesses only.
+- Test mode confines everything, as planned, and a little more: the period
+  register, the status and the index return to their reset values when
+  test mode ends or the configuration is locked, and the data register
+  reads zero unless a capture completed in the current test-mode session.
+  The RAM is not wiped; its contents are unreachable, because a new capture
+  overwrites every word before it reports done.
+- Not done: sampling on the 300 MHz `ui_clk`. One sample per 75 MHz clock is
+  what this block gives.
+- Tests: `make noise-burst-test` (the block with the noise model and the
+  entropy block), `make ddr-noise-burst-test` (the registers through the
+  SoC's bus decode from M-mode and, refused, from U-mode and with narrower
+  accesses; eight decode mutants), `make zkr-loop-test` (unchanged, still
+  no loop). All are in `make dbg-test`.
+
 ### Z3. Analysis and procedure
 
 - A board script (`getnoise_burst.py`) that runs many bursts per period, for
@@ -68,6 +142,45 @@ somewhere between 64 and 128 clocks per sample.
   (`karu_rosc_rng` with `SIM = 1`), whose F and sigma^2 are known: the fit
   must recover them. Mutants as for the current tests.
 
+*Status, 2026-11-18: implemented, validated on generated data and on the
+simulated source.* *2026-11-19: eight board runs analysed with it
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).*
+- `test/dbg/board/getnoise_burst.S` and `getnoise_burst.py`: 32 bursts by
+  default at each of the periods 1, 2, 4, …, 256, written in the capture
+  format with one run per burst; the sidecar has the period and a
+  clock-cycle stamp at the start and end of every burst. The payload is
+  one more hart program like `getnoise.S`: it enters test mode, sets the
+  period, and copies each burst out of the capture block.
+- `getnoise_analyze.py` reads both kinds of capture and compares them by
+  the spacing of their samples in clocks (period times k). New for small
+  sigma^2: a fit per burst at lags up to an eighth of the burst; the same
+  fit pooled over bursts, and the ratio of the two as a sign of frequency
+  wander between bursts; the sigma^2 by lag range; a spectrum per lane
+  with the lines the model explains and any spurs; the coherence of each
+  lane pair, for locking; the correlation of the lanes' per-burst
+  frequencies, for shared wander; and agreement between captures of equal
+  spacing. The sigma^2 that feeds the per-bit model figure is never the
+  pooled one when the per-burst fits exist, and its lower end is the
+  smallest of all the fits' lower ends.
+- Validation. On the Python copy of the simulated source in its
+  known-parameter mode, decimated to periods of 1 to 256, sigma^2 comes
+  out within 3% where more than half the bursts can be fitted, and
+  proportional to the period (log-log slope 0.99 to 1.01). On generated
+  model data with 16 bursts of 32,768 symbols the value used is within
+  about 5% of the truth at sigma^2 = 1e-2 per sample and 25% at 1e-5.
+  `make dbg-getnoise-burst-test` ties the Verilog model to the Python copy
+  through the real payload and bus decode, and
+  `make dbg-burst-analysis-test` has the rest, with negative controls.
+- Limits that matter for the board data
+  ([harness README](../test/dbg/board/README.md#noise-capture-getnoise)
+  has the list): a lane whose correlation outlasts an eighth of a burst
+  gets F and sigma^2 but no per-bit figure; wander inside a burst raises
+  sigma^2 and is only partly kept out; coherence and shared wander need
+  the 32 bursts. On the board (2026-11-19) the model fits each lane, but
+  the fitted jitter variance grows faster than in proportion to the
+  spacing, so the real rings' jitter is not purely the model's white
+  noise.
+
 ### Z4. Repeat captures
 
 Still open from the board test plan (stage D), and worth doing with Z2:
@@ -75,6 +188,38 @@ Still open from the board test plan (stage D), and worth doing with Z2:
 - after several cold starts (reconfiguration) and several CPU resets;
 - under different activity, at least Ethernet link up and down;
 - with the FPGA temperature recorded (SYSMON) next to each capture.
+
+*Status, 2026-11-18: readout implemented and simulated; the captures are
+a procedure for the board session.* *2026-11-19: captured on the board
+after three reconfigurations, two CPU resets, one software reset, with the
+link up and down, and with the die temperature and supplies read before
+and after every capture
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).
+The temperature stayed between 23.9 and 24.9 °C, so the behaviour over a
+wider temperature range is still open.*
+- `flow/fpga/karu_sysmon.v` reads the FPGA's die temperature, VCCINT and
+  VCCAUX from the system monitor (SYSMONE4, in its default mode) every
+  14 ms and shows them, with an update count, in one 64-bit register at
+  `0x1000_0860`, readable by privileged 64-bit loads in any image built
+  from this tree, in or out of test mode. The monitor is placed in the SLR
+  of the ring oscillators (`flow/fpga/sysmon_constraints.tcl`); the Vivado
+  hardware manager can still read it over JTAG.
+- Both capture scripts read the register just before and just after each
+  capture and store it in the sidecar, raw and decoded. They also keep a
+  free-text note (`KARU_BOARD_GETNOISE_NOTE`, `KARU_BOARD_BURST_NOTE`) for
+  the reset history and the link state, and the burst sidecar has a
+  clock-cycle stamp per burst, so drift within a capture can be seen.
+- Tests: `make sysmon-xsim-test` runs the readout against Xilinx's own
+  SYSMONE4 model in Vivado's simulator, with a stimulus file that steps
+  from 41.5 to 55.0 deg C; the readout decodes to the stimulus within
+  0.6 deg C and 3 mV, and a control with two registers swapped fails.
+  `make ddr-noise-burst-test` reads the register through the SoC from a
+  model with fixed codes, and from U-mode, where it reads zero. An
+  out-of-context Vivado run placed the monitor in the rings' SLR.
+- Limits: the formula is the one for the on-chip reference (about 0.3 deg C
+  from the external-reference one near 40 deg C); the register reads zero
+  for the first update period after reset and in images built before it.
+  The board test plan has the steps.
 
 ### Z5. U-Boot
 
@@ -88,6 +233,26 @@ Still open from the board test plan (stage D), and worth doing with Z2:
   device" before booting Linux; a driver that cannot time out stays off.
 - Rebuild the ROM, check its manifest, and rerun stage A of the board test
   plan.
+
+*Status, 2026-11-18: build and simulation done; in the ROM of bitstream
+`85f07e58…` (802,453 bytes with the lab's baked boot command,
+`0e560318…`). On the board on 2026-11-19: with the source on, `rng 0 10`
+prints 16 bytes and U-Boot supplies a `kaslr-seed`; with it off, `rng`
+answers "No RNG device" at once and the boot goes on.* `flow/build_uboot.sh` now builds v2026.10
+(801,805 bytes with the configuration below and no boot command, of the
+slot's 901,120) and refuses a tree that holds another release, instead of
+building it under the new name.
+- The Zkr driver of v2026.10 still waits without bound in `BIST` and
+  `WAIT`, in its probe and in every read. It is enabled with a local patch,
+  `flow/boot/uboot-zkr-timeout.patch`, that bounds each wait at 100 ms and
+  returns an error; the script checks the driver's hash before and after.
+  Without a word U-Boot prints "No RNG device" and boots on, as today.
+- What the driver is used for: the `kaslr-seed` property that U-Boot adds
+  to the device tree. Linux does not count it as entropy. `rng-seed`, which
+  Linux would count, is not passed (`BOARD_RNG_SEED` stays off), so §4
+  holds. The `rng` command is enabled, to try the driver from the prompt.
+- `make uboot-boot-test` boots this U-Boot from the ROM in simulation, with
+  the entropy source on and off, through one SBI reset each.
 
 ## 3. Order
 

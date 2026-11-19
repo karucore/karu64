@@ -644,6 +644,34 @@ checks for its invariants.
   challenge ([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). It still
   verifies with `TEST`; the production verifier awaits D3.
 
+  *Status, 2026-11-19: the SHA3 ROM on the board.* Image `85f07e58…`
+  passed `locked`, `authenticate` (unlock 0.20 s after the REQUEST),
+  `wrong-response`, `replay`, `expiry` (closed between 14.28 and 14.33 s)
+  and `entropy-off` with algorithm `0x04` and the build's key, each after a
+  JTAG reconfiguration as its power-on. The cases that depend only on the
+  unchanged authentication RTL were not repeated
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#authentication-stage-e)).
+
+  *Status, 2026-11-18 (later): interim D3 decision for the FPGA image.* The
+  FPGA ROM now verifies algorithm `0x04`, a SHA3-256 shared-secret MAC
+  over the challenge and the granted mask (contract §5.1), in place of
+  `TEST`. D3 for production stays open. The key is 32 random bytes
+  generated once per build tree (`VCU118_AUTH_KEY` in `dbg/fpga.mk`,
+  default `_build/vcu118_auth_key.txt`, never overwritten), compiled into
+  the island ROM; `authlib.py` reads the same file. What it protects: a
+  board whose bitstream, ROM image and key file are not shared; there,
+  only a debugger with the key unlocks, a response is bound to its nonce
+  (replay fails), and a one-bit change is rejected. What it does not
+  protect: the key is in the ROM image and the bitstream, so anyone who
+  has either can authenticate, and one key serves every board built from
+  that tree. The island ROM also stays readable by software on the hart
+  after the window, so code running in M-mode, or wherever PMP lets it
+  reach `0x1_0000`, can read the key. The ROM clears island SRAM before
+  it leaves (D1). The simulation builds keep `TEST`; the SHA3 build is
+  covered by `dbg-auth-rom-host-test` (known answers, cross-algorithm
+  rejection, two mutants) and `dbg-board-auth-sha3-rehearsal-test`
+  (with a public test key, `test/dbg/auth_rom/test_key.txt`).
+
   *Status, 2026-11-17: FPGA variant written, simulated, not on a board.* It
   is the same source built with other constants (`VCU118_AUTH_ROM_FLAGS` in
   `dbg/fpga.mk`), 784 bytes:
@@ -770,6 +798,88 @@ checks for its invariants.
     - C6 covers the three debug modules and the core's `debug_mode`, not
       every flop in the core cones of C4 and C8;
     - the property and assumption blocks have had one external review.
+
+  *Status, 2026-11-18: C3 implemented, C8 strengthened.* Both are in
+  `dbg-auth-formal-test`.
+  - **C3**, unbounded (k = 6): `test/dbg/formal/c3_miter.v` instantiates
+    `karudbg` twice with the same DMI inputs (K1), the same mailbox side of
+    the authentication block and the gate closed since POR, and free,
+    separate hart, debug-page and SBA inputs. In every cycle after reset,
+    the first one included, the two give the debugger the same handshake
+    (`req_ready`), the same responses and the same words to the mailbox.
+    For the induction the proof uses a formal-only copy of `dbg/karudbg.v`
+    with one extra output carrying `dmactive_q`, `deact_pending_q` and
+    `cmd_state_q`; their equality across the copies, and an idle command
+    engine, are asserted and proved too (the repository file is unchanged).
+    Controls: the locked DMI view removed; hart state put into the locked
+    `dmstatus`; and `data0` made a channel, which needs all three of the
+    write gate, the locked-state clearing and the read gate removed — any
+    one of them alone keeps it shut.
+  - **C8** also proves, in every cycle and not only on a commit, that the
+    issue signal reaching `karudbg_auth` is the core's and, on every issue,
+    that the PC is the issuing instruction's: the window closes on any
+    issue outside the ROM. Two more controls (issue reported only for CSR
+    instructions; the PC taken from fetch).
+  - The runner now refuses a model in which Yosys declared a name
+    implicitly: a hierarchical reference into a submodule becomes a free
+    wire, and an assertion over it would prove nothing.
+
+  *Status, 2026-11-18: C1 implemented, as a structural check only.*
+  `dbg-auth-bypass-test` (`test/dbg/check_auth_bypass.py`, part of
+  `dbg-functional-gates`, about 80 s) closes the C1 item above.
+  - **Model.** Yosys flattens `karudbg_top` from `dbg/karudbg.f` with
+    `KARU_DBG KARU_DBG_AUTH KARU_DBG_FULL KARU_NO_V`. The script computes
+    bit-level cones of influence over that netlist. Bitwise cells and
+    flip-flops connect bit *i* to bit *i*, plus select, enable, clock and
+    reset; every other cell, memories included, connects all inputs to all
+    outputs. Yosys `select` cones work on whole wires and cells, which is too
+    coarse here.
+  - **Crossing a cut.** A cut signal is a port of a named instance. Going
+    backward from a protected element, a path crosses an input-port cut when
+    it leaves a cell inside the instance for a bit of that port, and an
+    output-port cut when it leaves a cell outside the instance. The
+    traversal stops there, at another protected element's state, or at a
+    top-level input; what it reaches is the element's frontier.
+  - **Cuts as implemented** refine §5.1:
+    - K1 gains K1.mbox, the DM's outputs to the mailbox. The DM passes the
+      `authdata` word through as a wire, so its K1 port alone does not
+      separate the mailbox from JTAG.
+    - K2 includes `core_in_reset_i`.
+    - K3 has a hart side and an external (selector) side.
+    - K4 adds the DM's hart-side inputs, all free in C2, C3 and C7.
+    - K5 is the set and clear terms of the `debug_mode` flop.
+  - **Checked.** Each protected element's frontier must equal an
+    allowlist: 118 entries in all, each with its reason. The elements are
+    `debug_mode`, the `karudbg_auth` state, the DM state, island SRAM, other
+    island state, and the island's response outputs. A new entry fails, and
+    so does a vanished one. An entry is a source (an input, a cut signal or
+    another protected element) that reaches the element: a further path
+    from a source already allowed changes no entry and is not reported.
+    - Every K2 signal is the hart's own sideband signal, and every island
+      request input is the hart's own port.
+    - Only handshakes, never external data, reach island state.
+    - Two adversary inputs reach protected state without crossing K1–K5,
+      and both are allowlisted: `hold_strap_i` reaches the auth state (C5),
+      and `hart_reset_i` reaches `debug_mode`, island state and
+      `core_in_reset_i` through the hart reset (C4, C5, C6cone, C9). So
+      "nothing other than the hart's CSR file reaches K2" is not true of
+      `core_in_reset_i`, and §5.1 lists no reset cut.
+  - **Controls.** Five mutants must each fail with their expected
+    violation: SBA writes routed into the island (§5.4), the DMI word ORed
+    into the K2 write data, a DMI request resetting the hart, the DM halt
+    request setting `debug_mode` beside K5, and a stale-inventory control.
+  - **Limits.** The check is structural only: a path counts whether or not
+    it can carry a value, and the gate functions are C2–C9's. `virt_i` is
+    constant without `KARU_H`, and the configuration above has neither H nor
+    Zkr.
+  - **The image's configuration**, added the same day:
+    `dbg-auth-bypass-image-test` (`--image`, also in the gate, about three
+    minutes) elaborates the VCU118 debug image's defines, H, the vector unit
+    and `KARU_ZKR` included. It passes with exactly two additions, both
+    stated in the script: `K2.virt_i`, live with H, reaches the
+    authentication and DM state through K2 and is driven only by the hart's
+    `auth_virt_o`; and the new top-level input `zkr_rdata_i`, classified as
+    adversary, reaches no protected element directly.
 - [ ] **A4 — simulation.**
   - DM and mailbox unit tests, including the protocol's empty/full, error,
     `CLOSED` and `authbusy` rules.
@@ -808,7 +918,8 @@ checks for its invariants.
     - `OPEN` regression (`dbg-core-auth-open-test`).
   - **Open:**
     - four-state runs;
-    - revocation with an SBA transaction in flight;
+    - revocation with an SBA transaction in flight (closed 2026-11-18,
+      below);
     - a trap during the window on the real core (covered at unit level).
   - **Closed 2026-11-17:** pristine OpenOCD against the framed C ROM of A2.
     `dbg-auth-openocd-test` still uses the earlier one-word ROM stub, but
@@ -817,6 +928,41 @@ checks for its invariants.
     (`test/dbg/board/authlib.py`): locked examine, a correct response, a
     wrong one, a replay, a fresh nonce after another power-on reset, expiry
     and the straps, with four client mutants.
+  - **Closed 2026-11-18:** revocation with an SBA transaction in flight,
+    on the real core (`dbg-auth-sba-revoke-test`, in
+    `dbg-functional-gates`; Icarus four-state with `KARU_ASIC`, 24
+    scenarios in about 6 s). The hart keeps using the data bus. The bench
+    holds part of an authorized SBA access on the dmem port and revokes:
+    - with the R beat of a read or the B beat of a RAM write held, released
+      from one edge before the fall to 40 after (`revoke_i`), and once with
+      the fall produced by the hart setting `fw_lock`;
+    - with the AR or AW still stalled at the fabric;
+    - with a request the bus has not yet accepted, which is withdrawn;
+    - with the hart in Debug Mode and the R beat withheld for good: the
+      relock reset, one cycle after the fall, cancels the transfer (§3.5
+      item 3).
+
+    The checks are on the dmem port and the DMI. The accepted transfer
+    completes with exactly one address and one response, and the AXI
+    handshakes hold. No sbcs, sbaddress0 or sbdata access after the fall
+    reaches the bus. Every later DMI read returns the locked view and none
+    carries the read data. The hart's own loads and stores complete
+    afterwards. Three RTL mutants are each caught by the intended check:
+    the SBA engine gated by `dmactive` alone, the drained data returned over
+    DMI (four layers removed), and the response not absorbed after the fall,
+    which leaves the hart without the bus.
+  - **Still not covered there:** a responder that withholds its beat while
+    the hart runs. No bounded cancel exists for it (§3.5 item 2), so this is
+    a liveness limit, not a test gap. Also not covered:
+    - responders other than the test RAM model, such as `karu_ddr_xbar`;
+    - the JTAG and OpenOCD path, since the bench drives the DMI directly;
+    - a two-state Verilator build, and the `KARU_ICACHE` and vector
+      configurations;
+    - acceptance by the bus on the falling edge itself, which C7 covers at
+      DM level.
+
+    This is a four-state run of this scenario only; the general four-state
+    item stays open.
 - [x] **A5 — FPGA.**
   - Map DIP switches to `lc` and the boot-hold strap.
   - Extend the existing `KARU_DDR_HOST_DBG` exclusion check

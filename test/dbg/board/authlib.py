@@ -1,20 +1,30 @@
 # Host side of the debug authentication exchange (doc/debug-auth-contract.md):
 # the mailbox on the Debug Module's authdata register, the CHALLENGE and
 # RESPONSE frames of the window ROM (test/dbg/auth_rom/window.c), and the
-# TEST response.
+# responses of its two algorithms. The response follows the algorithm that
+# the challenge names.
+#
+# SHA3 (algorithm 0x04) is the shared-secret MAC of the FPGA image, chosen
+# on 2026-11-18 for FPGA validation (contract 5.1; D3 is still open):
+#   sig = SHA3-256(key[32] || "karudbg-auth-v1" || challenge words 0-19 as
+#                  80 bytes little-endian || granted-mask byte)
+# sent as 8 little-endian words. The key is read from the file named by
+# KARU_BOARD_AUTH_KEY (64 hex digits; default _build/vcu118_auth_key.txt,
+# which dbg/fpga.mk generates for the image). Anyone with that file, the ROM
+# image or the bitstream can authenticate.
 #
 # TEST (algorithm 0x80) is the simulation-only algorithm of the contract. It
 # protects nothing: the "signature" is a fold of the challenge with a key
 # that is printed below and in the ROM source, so anyone can compute it. It
-# exists to exercise the exchange until the production algorithm is chosen
-# (decision D3).
+# exists to exercise the exchange.
 #
 # The first part is plain arithmetic on words and needs no board; the
 # self-test checks it against the ROM source. Mailbox runs the protocol
 # through OpenOCD's `riscv authdata_read` and `riscv authdata_write`, over
 # the Tcl RPC connection of a boardlib.Board.
 # SPDX-License-Identifier: BSD-2-Clause
-import time
+import hashlib, os, re, struct, time
+from pathlib import Path
 
 # ---- contract constants ----
 DMCONTROL, DMSTATUS, AUTHDATA = 0x10, 0x11, 0x30            # DMI addresses
@@ -26,7 +36,10 @@ LIFECYCLES = {0: 'OPEN', 1: 'AUTH', 2: 'DISABLED', 3: 'DISABLED'}
 STATES = {0: 'IDLE', 1: 'HOLD', 2: 'REQUESTED', 3: 'CLOSED'}
 ERRORS = {0: None, 1: 'OVERFLOW', 2: 'UNDERFLOW', 3: 'BAD_OP', 4: 'BAD_STATE'}
 CHALLENGE, RESPONSE, RESULT, FRAME_VERSION = 0x01, 0x02, 0x03, 1               # section 5, header [31:24] and [23:16]
-ALG_TEST = 0x80
+ALG_TEST, ALG_SHA3 = 0x80, 0x04
+ALGORITHMS = {ALG_TEST: 'TEST', ALG_SHA3: 'SHA3'}
+MAC_LABEL = b'karudbg-auth-v1'
+KEY_FILE = Path(__file__).resolve().parents[3] / '_build/vcu118_auth_key.txt'
 CHALLENGE_WORDS, CHALLENGE_BODY_BYTES, TEST_SIG_WORDS = 20, 72, 8
 # The public test key and the device digest of the simulation ROM (window.c).
 TEST_KEY = (0x6b617275, 0x64626761, 0x75746821, 0x54455354, 0x2d6f6e6c, 0x792d6e6f, 0x742d6372, 0x7970746f)
@@ -55,13 +68,23 @@ def parse_status(word):
                 error=ERRORS.get((word >> 18) & 7, 'reserved'), send_remaining=(word >> 11) & 0x1f,
                 rx_free=(word >> 5) & 0x1f, tx_available=word & 0x1f)
 
+def algorithm(words):
+    """The algorithm a CHALLENGE names. Raises ValueError for a header that
+    is not a CHALLENGE, or an algorithm this client cannot answer."""
+    if words[0] & ~0xff00 != frame_header(CHALLENGE, 0):
+        raise ValueError(f'challenge header {words[0]:#010x}: not a version-{FRAME_VERSION} CHALLENGE')
+    alg = (words[0] >> 8) & 0xff
+    if alg not in ALGORITHMS:
+        raise ValueError(f'the ROM asks for algorithm {alg:#04x}, which this client does not know '
+                         f'(it answers SHA3 {ALG_SHA3:#04x} and TEST {ALG_TEST:#04x})')
+    return alg
+
 def parse_challenge(words):
-    """Fields of a CHALLENGE frame. Raises ValueError when it is not the
-    TEST challenge of the contract."""
+    """Fields of a CHALLENGE frame. Raises ValueError when it is not a
+    challenge of the contract with an algorithm this client knows."""
     if len(words) != CHALLENGE_WORDS:
         raise ValueError(f'a challenge has {CHALLENGE_WORDS} words, not {len(words)}')
-    if words[0] != frame_header(CHALLENGE, ALG_TEST):
-        raise ValueError(f'challenge header {words[0]:#010x}: not a version-{FRAME_VERSION} CHALLENGE with algorithm TEST')
+    algorithm(words)
     if words[1] & 0xffff != CHALLENGE_BODY_BYTES or words[1] >> 26:
         raise ValueError(f'challenge length word {words[1]:#010x}: the body is {CHALLENGE_BODY_BYTES} bytes')
     return dict(perm_req=(words[1] >> 16) & 0xff, lc=LIFECYCLES[(words[1] >> 24) & 3], digest=list(words[2:10]),
@@ -82,9 +105,33 @@ def test_signature(challenge, granted=1):
         sig.append(a & 0xffffffff)
     return sig
 
+def load_key(path=None):
+    """The 32-byte SHA3 key from a file of 64 hex digits: path, else
+    KARU_BOARD_AUTH_KEY, else KEY_FILE. Never shows the file's content."""
+    path = Path(path or os.environ.get('KARU_BOARD_AUTH_KEY') or KEY_FILE)
+    if not path.is_file():
+        raise ValueError(f'the ROM asks for SHA3 ({ALG_SHA3:#04x}) and there is no key file {path}: set KARU_BOARD_AUTH_KEY '
+                         'to the key the image was built with (dbg/fpga.mk VCU118_AUTH_KEY)')
+    text = path.read_text().strip()
+    if not re.fullmatch(r'[0-9a-fA-F]{64}', text):
+        raise ValueError(f'{path} is not a key of 64 hex digits (content not shown)')
+    return bytes.fromhex(text)
+
+def sha3_signature(challenge, granted=1, key=None):
+    """The SHA3 (0x04) MAC of a challenge and a granted-mask byte, as 8 little-endian words."""
+    key = load_key() if key is None else key
+    digest = hashlib.sha3_256(key + MAC_LABEL + struct.pack('<20I', *challenge) + bytes([granted])).digest()
+    return list(struct.unpack('<8I', digest))
+
 def response(challenge, granted=1):
-    """The RESPONSE frame for a challenge: header, length and mask, signature."""
-    return [frame_header(RESPONSE, ALG_TEST), (granted << 16) | (4 * TEST_SIG_WORDS)] + test_signature(challenge, granted)
+    """The RESPONSE frame for a challenge: header, length and mask, then
+    the signature of the algorithm that the challenge's header names. A
+    word 0 that is no CHALLENGE header gets TEST, as before SHA3 existed
+    (the harness self-test sends random words); auth_phase.py has checked
+    the challenge with parse_challenge before it asks for a response."""
+    alg = algorithm(challenge) if challenge[0] & ~0xff00 == frame_header(CHALLENGE, 0) else ALG_TEST
+    sig = sha3_signature(challenge, granted) if alg == ALG_SHA3 else test_signature(challenge, granted)
+    return [frame_header(RESPONSE, alg), (granted << 16) | (4 * len(sig))] + sig
 
 # ---- the mailbox, through OpenOCD ----
 class Mailbox:

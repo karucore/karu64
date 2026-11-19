@@ -99,7 +99,7 @@ dbg-board-rehearsal-test: dbg-full-model $(DBG_BOARD_MUTANT_DIR)/obj/Vtb_jtag_co
 DBG_GETNOISE_TEST  = $(BUILD)/dbg/getnoise-test
 DBG_GETNOISE_FLAGS = -march=rv64gc_zicsr -mabi=lp64d -nostdlib -static -Wl,-Ttext=0,--no-relax,-e,getnoise
 .PHONY: dbg-getnoise-fixture
-dbg-getnoise-fixture: $(DBG_BOARD_OUT)/getnoise.symbols
+dbg-getnoise-fixture: $(DBG_BOARD_OUT)/getnoise.symbols $(DBG_BOARD_OUT)/payload.symbols
 $(DBG_BOARD_OUT)/getnoise.symbols $(DBG_GETNOISE_TEST)/getnoise.symbols: %/getnoise.symbols: $(DBG_BOARD_SRC)/getnoise.S dbg/board.mk
 	mkdir -p $(@D)
 	$(XCHAIN)gcc $(DBG_GETNOISE_FLAGS) -o $(@D)/getnoise.elf $<
@@ -115,6 +115,38 @@ dbg-getnoise-test: $(DBG_GETNOISE_TEST)/getnoise.symbols $(ZKR_DIR)/Vhtif_h/Vhti
 	python3 $(DBG_BOARD_SRC)/test_getnoise.py --out $(DBG_GETNOISE_TEST) --bench $(ZKR_DIR)/Vhtif_h/Vhtif_tb \
 	  --xchain $(XCHAIN) > $(BUILD)/dbg/getnoise-test.log 2>&1 || { tail -5 $(BUILD)/dbg/getnoise-test.log; exit 1; }
 	@grep 'getnoise self-test: PASS' $(BUILD)/dbg/getnoise-test.log
+
+# Burst capture: raw noise with the rings sampled every 1 to 256 clocks, from
+# the capture block next to the noise source (getnoise_burst.py, needs an
+# image with KARU_ZKR built after 2026-11-18). getnoise_burst.S is position
+# independent and is linked at 0, like getnoise.S.
+DBG_GETBURST_TEST  = $(BUILD)/dbg/getnoise-burst-test
+DBG_GETBURST_FLAGS = -march=rv64gc_zicsr -mabi=lp64d -nostdlib -static -Wl,-Ttext=0,--no-relax,-e,getburst
+.PHONY: dbg-getnoise-burst-fixture
+# The phase also needs the bare-metal fixture of baremetal_phase.py.
+dbg-getnoise-burst-fixture: $(DBG_BOARD_OUT)/getnoise_burst.symbols $(DBG_BOARD_OUT)/payload.symbols
+$(DBG_BOARD_OUT)/getnoise_burst.symbols $(DBG_GETBURST_TEST)/getnoise_burst.symbols: %/getnoise_burst.symbols: $(DBG_BOARD_SRC)/getnoise_burst.S dbg/board.mk
+	mkdir -p $(@D)
+	$(XCHAIN)gcc $(DBG_GETBURST_FLAGS) -o $(@D)/getnoise_burst.elf $<
+	$(XCHAIN)objcopy -O binary -j .text $(@D)/getnoise_burst.elf $(@D)/getnoise_burst.bin
+	$(XCHAIN)nm -n $(@D)/getnoise_burst.elf > $@
+
+# Offline self-test of the burst payload, the burst phase and the analysis of
+# their files (test_getnoise_burst.py): the payload runs on the DDR SoC
+# simulation with the entropy source (ddr-noise-burst-sim), the phase against
+# a stand-in for OpenOCD that runs the same bench, and the analysis on the
+# files that the phase wrote. test_burst_analysis.py validates the analysis
+# itself on generated data with known parameters.
+.PHONY: dbg-getnoise-burst-test dbg-burst-analysis-test
+dbg-getnoise-burst-test: $(DBG_GETBURST_TEST)/getnoise_burst.symbols ddr-noise-burst-sim
+	python3 $(DBG_BOARD_SRC)/test_getnoise_burst.py --out $(DBG_GETBURST_TEST) --bench $(NB_SIM) \
+	  --xchain $(XCHAIN) > $(BUILD)/dbg/getnoise-burst-test.log 2>&1 || { tail -5 $(BUILD)/dbg/getnoise-burst-test.log; exit 1; }
+	@grep 'burst capture self-test: PASS' $(BUILD)/dbg/getnoise-burst-test.log
+dbg-burst-analysis-test:
+	mkdir -p $(BUILD)/dbg
+	python3 $(DBG_BOARD_SRC)/test_burst_analysis.py --out $(BUILD)/dbg/burst-analysis-test \
+	  > $(BUILD)/dbg/burst-analysis-test.log 2>&1 || { tail -5 $(BUILD)/dbg/burst-analysis-test.log; exit 1; }
+	@grep 'burst analysis self-test: PASS' $(BUILD)/dbg/burst-analysis-test.log
 
 # Debug authentication phase (auth_phase.py), rehearsed without a board:
 # pristine OpenOCD and the phase with its own client against the simulated
@@ -166,6 +198,37 @@ dbg-board-auth-rehearsal-test: $(DBG_BOARD_AUTH)/obj/Vtb_jtag_core
 	grep -q 'locked-target server: examined=0 defer=true' $(DBG_BOARD_AUTH)/board-config.log
 	@echo "PASS board authentication rehearsal: exchange, straps, 4 client mutants, 5 wrong setups, board configuration parsed"
 
-# The authentication rehearsal is one of the functional gates. dbg/checks.mk
-# lists the others; this one is declared here, with its target.
-dbg-functional-gates: dbg-board-auth-rehearsal-test
+# The same rehearsal on the SHA3 build of the window ROM (algorithm 0x04,
+# the FPGA image's verifier), with the PUBLIC simulation key: the exchange
+# with a power-on reset before each "por" step; then a client with a wrong
+# key, one without a key file, and one that expects TEST must each fail
+# with their own message. The model differs from the one above only in its
+# ROM.
+DBG_BOARD_AUTH_SHA3 = $(BUILD)/dbg/board-auth-sha3
+$(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/remote_bitbang.cc \
+  dbg/karudbg.f $(filter %.v,$(shell cat dbg/karudbg.f)) $(wildcard rtl/*.vh rtl/*.sv dbg/*.vh) $(DBG_AUTH_SHA3_DIR)/rom.hex dbg/board.mk
+	mkdir -p $(DBG_BOARD_AUTH_SHA3)
+	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_NO_V \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_SHA3_DIR)/rom.hex)"' --top-module tb_jtag_core --Mdir $(DBG_BOARD_AUTH_SHA3)/obj \
+	  -CFLAGS -DKARUDBG_CORE_TARGET $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv -f dbg/karudbg.f \
+	  $(abspath test/dbg/remote_bitbang.cc) > $(DBG_BOARD_AUTH_SHA3)/build.log 2>&1 || { tail -20 $(DBG_BOARD_AUTH_SHA3)/build.log; exit 1; }
+DBG_BOARD_AUTH_SHA3_RUN = python3 $(DBG_BOARD_SRC)/auth_rehearse.py --openocd $(OPENOCD) --out $(DBG_BOARD_AUTH_SHA3) \
+	--model $(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core
+DBG_BOARD_AUTH_SHA3_KEY = KARU_BOARD_AUTH_KEY=$(abspath $(DBG_AUTH_TEST_KEY))
+.PHONY: dbg-board-auth-sha3-rehearsal-test
+dbg-board-auth-sha3-rehearsal-test: $(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core
+	$(DBG_BOARD_AUTH_SHA3_KEY) KARU_BOARD_AUTH_ALG=SHA3 $(DBG_BOARD_AUTH_SHA3_RUN) --tag sha3 \
+	  locked authenticate por wrong-response por replay por fresh-nonce
+	grep -q '"algorithm": "SHA3"' $(DBG_BOARD_AUTH_SHA3)/auth-results.json
+	printf '%064d\n' 0 > $(DBG_BOARD_AUTH_SHA3)/wrong_key.txt
+	KARU_BOARD_AUTH_KEY=$(abspath $(DBG_BOARD_AUTH_SHA3)/wrong_key.txt) $(DBG_BOARD_AUTH_SHA3_RUN) --tag wrong-key \
+	  --expect-fail 'did not rise after a correct SHA3 response' authenticate
+	KARU_BOARD_AUTH_KEY=$(abspath $(DBG_BOARD_AUTH_SHA3)/no_such_key.txt) $(DBG_BOARD_AUTH_SHA3_RUN) --tag no-key \
+	  --expect-fail 'there is no key file' authenticate
+	$(DBG_BOARD_AUTH_SHA3_KEY) KARU_BOARD_AUTH_ALG=TEST $(DBG_BOARD_AUTH_SHA3_RUN) --tag expect-test \
+	  --expect-fail 'KARU_BOARD_AUTH_ALG=TEST' authenticate
+	@echo "PASS board authentication rehearsal, SHA3 (0x04): exchange; wrong key, no key and TEST-only clients refused"
+
+# The authentication rehearsals are functional gates. dbg/checks.mk lists
+# the others; these are declared here, with their targets.
+dbg-functional-gates: dbg-board-auth-rehearsal-test dbg-board-auth-sha3-rehearsal-test

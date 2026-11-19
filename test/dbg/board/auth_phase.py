@@ -2,9 +2,12 @@
 # straps, the locked view of the Debug Module, and the challenge and
 # response exchange with the window ROM. Run it against auth-server.cfg.
 #
-# The ROM verifies with the simulation-only TEST algorithm, which protects
-# nothing: anyone can compute the response (authlib.py). These cases check
-# that the mechanism works, not that it keeps anyone out.
+# The client answers the algorithm that the challenge names (authlib.py):
+# SHA3 (0x04), the shared-secret MAC of the FPGA image since 2026-11-18,
+# with the key in KARU_BOARD_AUTH_KEY; or TEST (0x80), the simulation-only
+# algorithm, which protects nothing. SHA3 keeps out only those without the
+# key, and the key is in the bitstream. These cases check that the
+# mechanism works.
 #
 # One case per run, named by KARU_BOARD_AUTH_CASE, because the operator sets
 # DIP switch SW12 and presses the CPU reset button between cases; the
@@ -17,7 +20,7 @@
 #   case            switches (1 2 3 4)   reset     what must be seen
 #   open            off off -  on        button    debugger works; mdbgauth: OPEN, no hold; seed stays in BIST
 #   locked          on  off on -         button    examine refused; every DM register hidden; window left unused
-#   authenticate    on  off on off       button    challenge, TEST response, authenticated; attach, halt, register, resume
+#   authenticate    on  off on off       button    challenge, response, authenticated; attach, halt, register, resume
 #   fresh-nonce     on  off on off       button    as authenticate; its nonce differs from every earlier one on record
 #   wrong-response  on  off on off       button    one signature bit wrong: stays locked, window closed
 #   replay          on  off on off       button    the response of an earlier authenticate: stays locked
@@ -33,6 +36,8 @@
 # compared with the earlier nonces.
 #
 #   KARU_BOARD_AUTH_CASE          the case to run (one name; no default)
+#   KARU_BOARD_AUTH_KEY           SHA3 key file, 64 hex digits                 (_build/vcu118_auth_key.txt)
+#   KARU_BOARD_AUTH_ALG           SHA3 or TEST: stop if the ROM asks for the other one   (either)
 #   KARU_BOARD_AUTH_TIMEOUT       seconds allowed for the ROM to answer        (30)
 #   KARU_BOARD_AUTH_WINDOW_MIN, _MAX  seconds after REQUEST at which the window
 #                                 must still be open, and must be closed       (12, 17; 2^30 cycles at 75 MHz are 14.3 s)
@@ -65,6 +70,7 @@ SEED = setting('KARU_BOARD_AUTH_SEED', '1') != '0'
 HISTORY = Path(setting('KARU_BOARD_AUTH_HISTORY', OUT/'auth-history.json'))
 KEEP = setting('KARU_BOARD_AUTH_KEEP_SERVER', '0') != '0'
 STALE = setting('KARU_BOARD_AUTH_STALE', '0') != '0'
+ALG = setting('KARU_BOARD_AUTH_ALG', '').upper()
 SWITCHES = 'Lifecycle is switches 1 and 2 (both off OPEN, 1 on AUTH, 2 on DISABLED), switch 3 holds the hart for a REQUEST; all are read at the CPU reset button.'
 
 b = Board('auth')
@@ -160,9 +166,16 @@ def open_window():
     b.equal((s['state'], s['error']), ('REQUESTED', None), 'REQUEST accepted')
     try:
         words = m.receive(authlib.CHALLENGE_WORDS, TIMEOUT)
-        c = authlib.parse_challenge(words)
-    except (TimeoutError, ValueError) as e:
+    except TimeoutError as e:
         raise AssertionError(f'no challenge: {e}. With the entropy source off (switch 4 on) the ROM cannot build one')
+    try:
+        c = authlib.parse_challenge(words)
+    except ValueError as e:
+        raise AssertionError(f'unusable challenge: {e}')
+    name = authlib.ALGORITHMS[authlib.algorithm(words)]
+    if ALG and ALG != name:
+        raise AssertionError(f'the ROM asks for algorithm {name}, but KARU_BOARD_AUTH_ALG={ALG}: '
+                             'is the board running the bitstream you meant?')
     b.checks += 1
     b.equal((c['lc'], c['perm_req'], c['por_counter']), ('AUTH', 1, 0), 'challenge: lifecycle, requested permission, counter')
     b.equal(c['digest'], list(authlib.DEVICE_DIGEST), 'challenge: device digest of the ROM')
@@ -203,14 +216,15 @@ def authenticate(case='authenticate', want_earlier=False):
     m.send(sent)
     ok = m.wait_decision(TIMEOUT)
     remember(case, words, sent, ok)
-    b.require(ok, 'dmstatus.authenticated did not rise after a correct TEST response')
+    alg = authlib.ALGORITHMS[authlib.algorithm(words)]
+    b.require(ok, f'dmstatus.authenticated did not rise after a correct {alg} response')
     seconds = round(time.monotonic() - start, 2)
     used = use_debugger()
     b.equal(m.status()['state'], 'CLOSED', 'window closed after the decision')
     # A reconnecting debugger pulses dmactive; the grant must outlast it.
     m.activate(0); m.activate()
     b.require(m.authenticated(), 'the grant survives a dmactive pulse')
-    return dict(examine_while_locked=examine, nonce=[f'{w:#010x}' for w in words[10:18]], earlier_nonces=earlier,
+    return dict(examine_while_locked=examine, algorithm=alg, nonce=[f'{w:#010x}' for w in words[10:18]], earlier_nonces=earlier,
                 seconds_to_authenticated=seconds, **used)
 
 def wrong_response():

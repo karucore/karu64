@@ -163,6 +163,57 @@ dbg-auth-core-test: $(DBG_AUTH_CORE_DIR)/Vtb_auth_core
 	grep -q 'forged island response cannot unlock' $(DBG_AUTH_CORE_DIR)/mut-island/run.log
 	@echo "detected real-core island+router mutant: forged island response cannot unlock"
 
+# A4, revocation with an SBA transaction in flight (plan 3.5): the real
+# karudbg_core with SBA and the ROM stub, four-state (Icarus, with
+# KARU_ASIC). The hart keeps using the data bus. The bench holds the R or B
+# beat of an accepted SBA read or write and revokes (revoke_i, or the hart's
+# fw_lock), releasing the beat from fall-1 to fall+40; it also revokes with
+# the SBA address stalled at the fabric, with a request not yet accepted,
+# and with the hart in Debug Mode and the R beat withheld (relock reset).
+# Checks on the dmem port and the DMI only (test/dbg/tb_auth_sba_revoke.sv);
+# about 6 s per run, 35 s with the mutants. Each mutant disables the RTL
+# assertion that would see it first, and must be reported by the named
+# bench check and by none of the excluded ones.
+DBG_AUTH_SBA_REVOKE_DIR ?= $(BUILD)/dbg/auth-sba-revoke
+DBG_AUTH_SBA_REVOKE_IV = iverilog -g2012 -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_DBG_SBA \
+  -DKARU_NO_V -DKARU_NO_F -DKARU_ASIC -s tb_auth_sba_revoke \
+  -Ptb_auth_sba_revoke.ROM_HEX='"$(abspath $(DBG_AUTH_CORE_DIR)/rom.hex)"'
+DBG_AUTH_SBA_REVOKE_PASS = karudbg auth SBA revocation: PASS
+# $(call dbg_auth_sba_revoke_mutant,name,patched files,expected check,excluded checks ERE)
+define dbg_auth_sba_revoke_mutant
+	rm -rf $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1) && mkdir -p $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/dbg
+	cp $(2) $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/dbg/
+	patch -s -N --fuzz=0 --no-backup-if-mismatch -r - -p1 -d $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1) \
+	  < test/dbg/auth_sba_revoke_mut_$(1).patch || { echo 'mutant $(1) no longer applies'; exit 1; }
+	for f in $(2); do ! cmp -s $$f $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/$$f || { echo "mutant $(1) left $$f unchanged"; exit 1; }; done
+	timeout 300 $(DBG_AUTH_SBA_REVOKE_IV) -o $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/tb.vvp test/dbg/tb_auth_sba_revoke.sv \
+	  test/dbg/karudbg_test_ram.sv $(filter-out $(2),$(DBG_CORE_RTL)) $(addprefix $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/,$(2))
+	@if timeout 600 vvp -n $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/tb.vvp > $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log 2>&1 || \
+	  grep -q '$(DBG_AUTH_SBA_REVOKE_PASS)' $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log; then \
+	  echo 'mutant $(1) NOT detected'; exit 1; fi
+	@grep -q 'FAIL \[$(3)\]' $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log || \
+	  { grep -v readmemh $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log | tail -20; echo 'mutant $(1): no [$(3)] failure'; exit 1; }
+	@! grep -Em3 'FAIL \[($(4))\]' $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log || \
+	  { echo 'mutant $(1) was caught by an excluded check'; exit 1; }
+	@echo "detected mutant $(1): $$(grep -c 'FAIL \[$(3)\]' $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log) [$(3)] failures, first: $$(grep -m1 'FAIL \[$(3)\]' $(DBG_AUTH_SBA_REVOKE_DIR)/mut-$(1)/run.log)"
+endef
+
+.PHONY: dbg-auth-sba-revoke-test
+dbg-auth-sba-revoke-test: $(DBG_AUTH_CORE_DIR)/rom.hex
+	mkdir -p $(DBG_AUTH_SBA_REVOKE_DIR)
+	timeout 300 $(DBG_AUTH_SBA_REVOKE_IV) -o $(DBG_AUTH_SBA_REVOKE_DIR)/tb.vvp test/dbg/tb_auth_sba_revoke.sv \
+	  test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL)
+	timeout 600 vvp -n $(DBG_AUTH_SBA_REVOKE_DIR)/tb.vvp > $(DBG_AUTH_SBA_REVOKE_DIR)/run.log 2>&1 || \
+	  { grep -v readmemh $(DBG_AUTH_SBA_REVOKE_DIR)/run.log | tail -30; exit 1; }
+	grep '^scenario' $(DBG_AUTH_SBA_REVOKE_DIR)/run.log
+	grep '$(DBG_AUTH_SBA_REVOKE_PASS)' $(DBG_AUTH_SBA_REVOKE_DIR)/run.log
+	# The SBA engine is gated by dmactive only: it launches after the fall.
+	$(call dbg_auth_sba_revoke_mutant,launch,dbg/karudbg.v,LAUNCH,LEAK|AXI)
+	# The drained read data reaches the debugger (four layers removed).
+	$(call dbg_auth_sba_revoke_mutant,leak,dbg/karudbg.v dbg/karudbg_sba.v,LEAK,LAUNCH|AXI)
+	# The response is not absorbed after the fall: the hart loses the bus.
+	$(call dbg_auth_sba_revoke_mutant,no_drain,dbg/karudbg_sba.v,HART,LEAK|LAUNCH|AXI)
+
 # KARU_DBG_AUTH with lc=OPEN on the full real-core debug bench must match the
 # build without authentication cycle for cycle: same checks, cycles and
 # retirements (contract 7).
@@ -205,6 +256,26 @@ DBG_AUTH_WIN_DIR ?= $(BUILD)/dbg/auth-window
 DBG_AUTH_ROM_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 -Os -ffreestanding -nostdlib -static -mcmodel=medany -fno-pic
 DBG_AUTH_ROM_BYPASS = s/if (expired()) return 0;/if (expired() \&\& !(csr_read(CSR_RX) >> 32)) return 0;/
 DBG_AUTH_ROM_SRCS = test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c test/dbg/auth_rom/rom.ld
+# Algorithm 0x04, the SHA3-256 shared-secret MAC (contract 5.1), which the
+# FPGA image verifies: window.c built with -DAUTH_ALG_SHA3, sha3.c and a key
+# header written by key_header.py. Simulation builds use the PUBLIC test key
+# test/dbg/auth_rom/test_key.txt; dbg/fpga.mk generates the board's key.
+DBG_AUTH_SHA3_SRCS = test/dbg/auth_rom/sha3.c test/dbg/auth_rom/sha3.h test/dbg/auth_rom/key_header.py
+DBG_AUTH_TEST_KEY = test/dbg/auth_rom/test_key.txt
+DBG_AUTH_TEST_KEY_H = $(BUILD)/dbg/auth-test-key/test_key.h
+$(DBG_AUTH_TEST_KEY_H): $(DBG_AUTH_TEST_KEY) test/dbg/auth_rom/key_header.py
+	mkdir -p $(@D)
+	python3 test/dbg/auth_rom/key_header.py $< $@
+DBG_AUTH_SHA3_FLAGS = -DAUTH_ALG_SHA3 -DAUTH_KEY_HEADER=\"$(abspath $(DBG_AUTH_TEST_KEY_H))\"
+# The simulation SHA3 ROM: the TEST ROM's constants, algorithm 0x04.
+DBG_AUTH_SHA3_DIR ?= $(DBG_AUTH_WIN_DIR)/sha3
+$(DBG_AUTH_SHA3_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS) $(DBG_AUTH_SHA3_SRCS) $(DBG_AUTH_TEST_KEY_H)
+	mkdir -p $(DBG_AUTH_SHA3_DIR)
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) $(DBG_AUTH_SHA3_FLAGS) -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_SHA3_DIR)/rom.elf \
+	  test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c test/dbg/auth_rom/sha3.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_SHA3_DIR)/rom.elf $(DBG_AUTH_SHA3_DIR)/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_SHA3_DIR)/rom.bin > $@
+	$(XCHAIN)size $(DBG_AUTH_SHA3_DIR)/rom.elf
 $(DBG_AUTH_WIN_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS)
 	mkdir -p $(DBG_AUTH_WIN_DIR)
 	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_WIN_DIR)/rom.elf \
@@ -266,8 +337,15 @@ dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test
 # exact deadline boundaries, queued responses, repeated ABORTs, random
 # schedules. Each mutant removes one deadline check and must fail; `bypass`
 # is the reviewed defect (an available RX word skips the deadline).
+#
+# Then algorithm 0x04 (HOST_SHA3): SHA3-256 against known answers and the
+# MAC against its Python definition; the TEST ROM must reject a correct 0x04
+# response, and the SHA3 ROM a correct TEST one, while the SHA3 ROM runs
+# every schedule with 0x04 responses (a wrong one included). Two mutants
+# must fail: a wrong Keccak round constant, and a wrong MAC label in window.c.
 DBG_AUTH_ROM_HOST_DIR ?= $(BUILD)/dbg/auth-rom-host
-dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c
+DBG_AUTH_HOST_SHA3 = $(CC) -O2 -Wall -Wextra -Werror -DHOST_SHA3 -DAUTH_KEY_HEADER=\"$(abspath $(DBG_AUTH_TEST_KEY_H))\" -Itest/dbg/auth_rom
+dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c $(DBG_AUTH_SHA3_SRCS) $(DBG_AUTH_TEST_KEY_H)
 	mkdir -p $(DBG_AUTH_ROM_HOST_DIR)/final $(DBG_AUTH_ROM_HOST_DIR)/rx $(DBG_AUTH_ROM_HOST_DIR)/push $(DBG_AUTH_ROM_HOST_DIR)/bypass
 	$(CC) -O2 -Wall -Wextra -Werror -o $(DBG_AUTH_ROM_HOST_DIR)/host_test test/dbg/auth_rom/host_test.c
 	$(DBG_AUTH_ROM_HOST_DIR)/host_test
@@ -284,6 +362,23 @@ dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c
 	  if $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test > $(DBG_AUTH_ROM_HOST_DIR)/$$m/run.log 2>&1; then \
 	    echo "ROM host mutant $$m NOT detected"; exit 1; fi; \
 	  echo "detected ROM host mutant $$m: $$(tail -1 $(DBG_AUTH_ROM_HOST_DIR)/$$m/run.log)"; done
+	mkdir -p $(DBG_AUTH_ROM_HOST_DIR)/sha3-test-rom $(DBG_AUTH_ROM_HOST_DIR)/sha3-rom $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-rc $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label
+	$(DBG_AUTH_HOST_SHA3) -o $(DBG_AUTH_ROM_HOST_DIR)/sha3-test-rom/host_test test/dbg/auth_rom/host_test.c test/dbg/auth_rom/sha3.c
+	$(DBG_AUTH_ROM_HOST_DIR)/sha3-test-rom/host_test
+	$(DBG_AUTH_HOST_SHA3) -DAUTH_ALG_SHA3 -o $(DBG_AUTH_ROM_HOST_DIR)/sha3-rom/host_test test/dbg/auth_rom/host_test.c test/dbg/auth_rom/sha3.c
+	$(DBG_AUTH_ROM_HOST_DIR)/sha3-rom/host_test
+	sed 's/0x8000000080008008ull/0x8000000080008009ull/' test/dbg/auth_rom/sha3.c > $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-rc/sha3.c
+	sed 's/"karudbg-auth-v1"/"karudbg-auth-v2"/' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label/window.c
+	! cmp -s test/dbg/auth_rom/sha3.c $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-rc/sha3.c
+	! cmp -s test/dbg/auth_rom/window.c $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label/window.c
+	cp test/dbg/auth_rom/host_test.c $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label/host_test.c
+	$(DBG_AUTH_HOST_SHA3) -DAUTH_ALG_SHA3 -o $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-rc/host_test test/dbg/auth_rom/host_test.c $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-rc/sha3.c
+	$(DBG_AUTH_HOST_SHA3) -DAUTH_ALG_SHA3 -o $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label/host_test $(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-label/host_test.c test/dbg/auth_rom/sha3.c
+	@for m in rc:'SHA3-256 known answer' label:'window.c 0x04 MAC word'; do d=$(DBG_AUTH_ROM_HOST_DIR)/sha3-mut-$${m%%:*}; \
+	  if $$d/host_test > $$d/run.log 2>&1; then echo "SHA3 host mutant $${m%%:*} NOT detected"; exit 1; fi; \
+	  grep -q "$${m#*:}" $$d/run.log || { echo "SHA3 host mutant $${m%%:*}: unexpected failure"; tail -1 $$d/run.log; exit 1; }; \
+	  echo "detected SHA3 host mutant $${m%%:*}: $$(tail -1 $$d/run.log)"; done
+	@echo "PASS auth ROM host model, algorithm 0x04: known answers, both ROMs reject the other algorithm, 2 mutants detected"
 
 # Formal lemmas (plan 5.2) with Yosys + yosys-smtbmc/z3: BMC, k-induction and
 # mutants per lemma; results in $(BUILD)/dbg/auth-formal/results.json. This
@@ -292,3 +387,21 @@ dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c
 dbg-auth-formal-test:
 	timeout 3600 python3 test/dbg/run_auth_formal.py --out $(BUILD)/dbg/auth-formal
 	timeout 900 python3 test/dbg/check_auth_reset.py --self-test
+
+# Lemma C1 (plan 5.2), bypass freedom: Yosys flattens karudbg_top (KARU_DBG
+# KARU_DBG_AUTH KARU_DBG_FULL KARU_NO_V); bit-level cones of influence from
+# each protected element, stopped at the cuts, and the drivers of K2 and of
+# the island's hart ports must match the script's allowlists exactly. Five
+# RTL mutants must fail. Six parallel Yosys runs, about 80 s; inventory in
+# $(BUILD)/dbg/auth-bypass/inventory.txt.
+.PHONY: dbg-auth-bypass-test
+dbg-auth-bypass-test:
+	timeout 900 python3 test/dbg/check_auth_bypass.py --self-test --out $(BUILD)/dbg/auth-bypass
+dbg-functional-gates: dbg-auth-bypass-test
+# The same inventory with the VCU118 debug image's defines: H, the vector
+# unit and Zkr included, and the two allowlist entries they add (see
+# IMAGE_DEFINES in the script). About three minutes, 2.5 GB.
+.PHONY: dbg-auth-bypass-image-test
+dbg-auth-bypass-image-test:
+	timeout 1200 python3 test/dbg/check_auth_bypass.py --image --out $(BUILD)/dbg/auth-bypass-image
+dbg-functional-gates: dbg-auth-bypass-image-test

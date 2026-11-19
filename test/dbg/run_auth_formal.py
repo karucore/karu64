@@ -76,9 +76,14 @@ LEMMAS = {
         claim="provenance at K2: from an arbitrary state, every submodule except the CSR file "
               "free, an authentication-CSR commit is reported only for an issuing CSR "
               "instruction outside reset that takes no trap and no Debug entry in that cycle; "
-              "the PC, privilege and closing signals are the issuing instruction's",
+              "the PC, privilege and closing signals are the issuing instruction's; the issue "
+              "signal and, on every issue, the PC reach karudbg_auth on every cycle",
         mutants=[("csr_request_not_issue", "    assign csr_req  = issue_csr;",
-                  "    assign csr_req  = ex_valid;")]),
+                  "    assign csr_req  = ex_valid;"),
+                 ("issue_not_reported", "    assign auth_issuing_o = issuing;",
+                  "    assign auth_issuing_o = issuing && ex_unit == `UNIT_CSR;"),
+                 ("pc_from_fetch", "    assign auth_ex_pc_o = ex_pc;",
+                  "    assign auth_ex_pc_o = ifu_pc;")]),
     "C10": dict(
         module="karu64", src="rtl/karu64.v", block="test/dbg/formal/c10_karu64.vh",
         extra="CORE_RTL", defines=["KARU_DBG", "KARU_DBG_AUTH", "KARU_DBG_TRIGGERS", "KARU_NO_V"],
@@ -147,6 +152,34 @@ LEMMAS = {
               "closed is reset on the next cycle (k=1); revocation is monotone",
         mutants=[("no_relock_reset", "assign relock_d = !debug_enable_o && debug_mode_i && !core_in_reset_i;",
                   "assign relock_d = 1'b0;")]),
+    "C3": dict(
+        module="karudbg_c3", src="test/dbg/formal/c3_miter.v", block="test/dbg/formal/c3_karudbg.vh",
+        extra=["dbg/karudbg.v", "dbg/karudbg_rom.v", "dbg/karudbg_sba.v"],
+        defines=["KARU_DBG_AUTH", "KARU_DBG_SBA", "KARU_DBG_AUTOEXEC"], chparams=[],
+        bmc=10, induct=6, mutate="dbg/karudbg.v",
+        # The two copies' hidden state must be tied together for induction.
+        # The proof uses a formal-only copy of karudbg.v with one extra output,
+        # f_obs_o, carrying these registers; the repository file is unchanged.
+        observe=["dmactive_q", "deact_pending_q", "cmd_state_q"],
+        observe_after="    output wire dmactive_o           // session reset for karudbg_auth\n",
+        claim="DM noninterference: two copies of karudbg with the gate closed since POR, the same "
+              "DMI inputs and the same mailbox, and free, separate hart, debug-page and System Bus "
+              "inputs, give the debugger identical DMI handshakes and responses and pass identical "
+              "words to the mailbox, in every cycle",
+        mutants=[("locked_view_removed", "        if (dmactive_q && !dbg_en) begin",
+                  "        if (1'b0) begin"),
+                 # data0 as a channel: the hart may write it while locked, the
+                 # locked-state clearing is gone, and the locked view shows it.
+                 # The RTL has all three safeguards; any one alone keeps it shut.
+                 ("data0_channel_ungated", [
+                     ("                    data_q <= 0;\n                    for (i = 0; i < 8; i = i + 1) progbuf_q[i] <= 0;",
+                      "                    for (i = 0; i < 8; i = i + 1) progbuf_q[i] <= 0;"),
+                     ("            if (mem_fire && mem_write_i && dbg_en &&\n                mem_aligned_addr == `KARUDBG_DATA) begin",
+                      "            if (mem_fire && mem_write_i &&\n                mem_aligned_addr == `KARUDBG_DATA) begin"),
+                     ("                7'h11: dmi_read = {25'b0, auth_busy, 6'h03};\n                7'h30:",
+                      "                7'h11: dmi_read = {25'b0, auth_busy, 6'h03};\n                7'h04: dmi_read = data_q[31:0];\n                7'h30:")]),
+                 ("hart_state_in_locked_dmstatus", "                7'h11: dmi_read = {25'b0, auth_busy, 6'h03};",
+                  "                7'h11: dmi_read = {22'b0, hart_halted_i, 2'b0, auth_busy, 6'h03};")]),
     "C9": dict(
         module="karudbg_island", src="dbg/karudbg_island.v", block="test/dbg/formal/c9_karudbg_island.vh",
         extra=["dbg/karudbg_axi.v"], defines=[], chparams=["SRAM_END 32'h00020040"],
@@ -162,19 +195,34 @@ LEMMAS = {
 }
 
 
+def observed(cfg, text):
+    """A formal-only copy of a module with f_obs_o = {the registers in cfg["observe"]}."""
+    if not cfg.get("observe"):
+        return text
+    anchor = cfg["observe_after"]
+    if text.count(anchor) != 1:
+        raise RuntimeError(f"observe: anchor not unique in {cfg['mutate']}")
+    # The new port goes after the anchor's port name, before any comment.
+    head, sep, tail = anchor.partition("//")
+    text = text.replace(anchor, head.rstrip() + ",  " + sep + tail.rstrip("\n")
+                        + "\n    output wire [63:0] f_obs_o   // formal-only copy\n")
+    i = text.rindex("endmodule")
+    return text[:i] + "    assign f_obs_o = {" + ", ".join(cfg["observe"]) + "};\n" + text[i:]
+
+
 def splice(text, block):
     i = text.rindex("endmodule")
     return text[:i] + "`ifdef FORMAL\n" + block + "`endif\n" + text[i:]
 
 
-def smt2(lemma, cfg, out, text, tag, defines):
+def smt2(lemma, cfg, out, text, tag, defines, replace=None):
     out.mkdir(parents=True, exist_ok=True)
     copy = out / f"{tag}.v"
     copy.write_text(text)
     flags = " ".join(f"-D{d}" for d in ["FORMAL"] + cfg["defines"] + defines)
     files = (core_rtl() if cfg["extra"] == "CORE_RTL" else
              dbg_core_rtl() if cfg["extra"] == "DBG_CORE_RTL" else cfg["extra"])
-    extra = " ".join(str(ROOT / e) for e in files)
+    extra = " ".join(str((replace or {}).get(e, ROOT / e)) for e in files)
     chp = "\n".join(f"chparam -set {p} {cfg['module']}" for p in cfg["chparams"])
     script = (f"read_verilog -sv -formal {flags} -I{ROOT}/dbg -I{ROOT}/rtl {copy} {extra}\n"
               f"{chp}\n"
@@ -190,6 +238,10 @@ def smt2(lemma, cfg, out, text, tag, defines):
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if r.returncode:
         raise RuntimeError(f"{lemma} {tag}: yosys failed; see {out / (tag + '.yosys.log')}")
+    # A name Yosys does not know, such as a hierarchical reference into a
+    # submodule, becomes a new free wire: an assertion over it proves nothing.
+    if "is implicitly declared" in (out / f"{tag}.yosys.log").read_text():
+        raise RuntimeError(f"{lemma} {tag}: an identifier is implicitly declared; see {out / (tag + '.yosys.log')}")
     return out / f"{tag}.smt2"
 
 
@@ -220,22 +272,37 @@ def main():
         block = (ROOT / cfg["block"]).read_text()
         rec = {"claim": cfg["claim"], "bmc_depth": cfg["bmc"], "induction_depth": cfg["induct"]}
         bounded = [cfg["bounded_define"]] if "bounded_define" in cfg else []
-        model = smt2(name, cfg, out, splice(src, block), "proof_bounded", bounded)
+        replace = None
+        if cfg.get("observe"):
+            out.mkdir(parents=True, exist_ok=True)
+            ofile = out / f"observed_{Path(cfg['mutate']).name}"
+            ofile.write_text(observed(cfg, (ROOT / cfg["mutate"]).read_text()))
+            replace = {cfg["mutate"]: ofile}
+        model = smt2(name, cfg, out, splice(src, block), "proof_bounded", bounded, replace)
         rec["bmc"], rec["bmc_s"] = smtbmc(model, cfg["bmc"], False, out / "bmc.log", args.timeout)
         if cfg["induct"]:
-            model = smt2(name, cfg, out, splice(src, block), "proof", [])
+            model = smt2(name, cfg, out, splice(src, block), "proof", [], replace)
             rec["induction"], rec["induction_s"] = smtbmc(model, cfg["induct"], True,
                                                           out / "induction.log", args.timeout)
         rec["mutants"] = {}
         for mutant in cfg["mutants"]:
             mname = mutant[0]
             edits = mutant[1] if len(mutant) == 2 else [(mutant[1], mutant[2])]
-            msrc = src
+            # A mutant edits the lemma's module, or the file named by "mutate"
+            # (for a miter, the module it instantiates twice).
+            target = cfg.get("mutate", cfg["src"])
+            msrc = src if target == cfg["src"] else (ROOT / target).read_text()
             for before, after in edits:
                 if msrc.count(before) != 1:
-                    raise RuntimeError(f"{name} mutant {mname}: site not unique in {cfg['src']}")
+                    raise RuntimeError(f"{name} mutant {mname}: site not unique in {target}")
                 msrc = msrc.replace(before, after)
-            mmodel = smt2(name, cfg, out / "mutants", splice(msrc, block), mname, [])
+            if target == cfg["src"]:
+                mmodel = smt2(name, cfg, out / "mutants", splice(msrc, block), mname, [])
+            else:
+                (out / "mutants").mkdir(parents=True, exist_ok=True)
+                mfile = out / "mutants" / f"{mname}_{Path(target).name}"
+                mfile.write_text(observed(cfg, msrc))
+                mmodel = smt2(name, cfg, out / "mutants", splice(src, block), mname, [], {target: mfile})
             status, secs = smtbmc(mmodel, cfg["bmc"], False, out / "mutants" / f"{mname}.log", args.timeout)
             rec["mutants"][mname] = {"status": status, "seconds": secs, "detected": status == "FAILED"}
         good = (rec["bmc"] == "PASSED" and (not cfg["induct"] or rec["induction"] == "PASSED") and

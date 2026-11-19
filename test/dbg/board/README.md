@@ -70,6 +70,11 @@ lab's.
 | `KARU_BOARD_GETNOISE_COUNT` | `1000000` | Raw symbols per capture |
 | `KARU_BOARD_GETNOISE_MIN_RUN` | `4096` | A capture fails if its longest run of consecutive symbols is shorter |
 | `KARU_BOARD_GETNOISE_ADDR` | `0x88000000` | Where the capture payload is loaded in DDR; its buffer starts 64 KiB above |
+| `KARU_BOARD_BURST_PERIODS` | `1,2,4,8,16,32,64,128,256` | Sampling periods, in clock cycles, captured by `getnoise_burst.py`, one capture each |
+| `KARU_BOARD_BURST_COUNT` | `32` | Bursts per period |
+| `KARU_BOARD_BURST_ADDR` | `0x88000000` | Where the burst payload is loaded in DDR; its buffer starts 64 KiB above |
+| `KARU_BOARD_BURST_CLOCK_HZ` | `75000000` | The hart's clock, recorded in the sidecar and used for the waits |
+| `KARU_BOARD_BURST_NOTE` | empty | Free text for the sidecar: bitstream, reset history, link state, temperature |
 | `KARU_BOARD_GETNOISE_WAIT` | from count and k | Seconds to wait for one capture before the hart is halted |
 | `KARU_BOARD_GETNOISE_NOTE` | empty | Free text copied into each capture's sidecar: bitstream, board, temperature |
 | `KARU_BOARD_AUTH_CASE` | none | The one case `auth_phase.py` runs; see [Authentication](#authentication) for the names and the other `KARU_BOARD_AUTH_*` settings |
@@ -151,6 +156,7 @@ campaign, for example `export KARU_BOARD_OUT=$PWD/_build/dbg/board-accept-$(date
 | 9 | `crypto_aperture_phase.py` | fixture | |
 | 10 | `soak_phase.py` | fixture | `KARU_BOARD_SOAK_SECONDS` |
 | 10a | `getnoise_capture.py` | fixture; image built with `KARU_ZKR`; DIP switch 4 off; `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: raw noise capture, see [Noise capture](#noise-capture-getnoise). First run on the board 2026-11-18 |
+| 10b | `getnoise_burst.py` | fixture; image with the burst capture block (built after 2026-11-18; `d7ff00dc…` has none); DIP switch 4 off; `make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: bursts of raw noise at sampling periods of 1 to 256 clocks, see [Burst capture](#burst-capture). First run on the board 2026-11-19 |
 | 11 | `clean_detach_boot.py` | `linux-server.cfg` | Restart OpenOCD with `linux-server.cfg` first. Reset-halts, with the DPC at the image kind's reset vector, then reboots normally and shuts OpenOCD down |
 | 12 | `post_linux_host.py` | Linux over SSH | Copies and runs `post-linux.sh` on the board, collects evidence |
 | 13 | `complete_crypto.py` | Linux over SSH | Completes the OpenSSL matrix if step 12 timed out; gives the matrix verdict |
@@ -236,7 +242,7 @@ the hart, the source may be left in test mode until the next reset.
 | File | Content |
 | --- | --- |
 | `getnoise-k<k>.bin` | One byte per symbol, in capture order: bits [3:0] the symbol (lane i in bit i, one sampled ring per lane), bit 7 on the first symbol of a run. No bit is combined with another |
-| `getnoise-k<k>.json` | k, symbols requested and stored, run lengths, losses, polls, `mentropycfg` before, during and after, the two cutoffs, SHA-256 of the `.bin` and of the payload, time, `KARU_BOARD_GETNOISE_NOTE`. The phases record no bitstream identity; put it in the note |
+| `getnoise-k<k>.json` | k, symbols requested and stored, run lengths, losses, polls, `mentropycfg` before, during and after, the two cutoffs, SHA-256 of the `.bin` and of the payload, time, `KARU_BOARD_GETNOISE_NOTE`, and the temperature readout (`0x1000_0860`: die temperature, VCCINT, VCCAUX; zero on images built before 2026-11-19) before and after, raw and decoded. The phases record no bitstream identity; put it in the note |
 | `getnoise-results.json`, `getnoise-commands.jsonl` | Case results and OpenOCD trace, as for every phase |
 
 A capture fails, and the phase exits non-zero, on a payload status other
@@ -272,7 +278,36 @@ sample, and decimation k gives the same process with k sigma^2.
   model at any computed lag, when the serial correlation has not died out
   by the last lag (use more `--lags`), or when the predictor guesses more
   bits than the model allows anyone.
-- Across k: whether the fitted sigma^2 grows in proportion to k.
+- Across captures: whether sigma^2 grows in proportion to the spacing of
+  the samples in clocks, which is the period times k (256 k for the
+  captures through `mnoise`, the period for bursts).
+- For samples close together, where sigma^2 per sample is small and the
+  autocorrelation runs over hundreds of lags (added 2026-11-18 for the
+  burst captures; it applies to every capture):
+  - a fit of (F, sigma^2) per window, at lags up to an eighth of the
+    window, found from short lags outwards. Every run is a window; a run
+    longer than `--window` (32,768) is cut. The report gives the median and
+    the spread of F and of sigma^2 over the windows;
+  - the same fit on the autocorrelation pooled over the windows. A ring's
+    frequency wanders with temperature and supply, and pooling windows of
+    different F makes the correlation die sooner, which looks like more
+    jitter than there is. The ratio of the pooled to the per-window
+    sigma^2 shows it, with the spread of F between windows, its drift
+    against the bursts' time stamps, and sigma^2 by the largest lag used;
+  - the sigma^2 behind the per-bit model figure is the per-window one, from
+    the lag range that gives the smallest well-determined value, and its
+    lower end is the smallest lower end of all the fits. The report says
+    which was used. Wander must not raise the figure;
+  - a spectrum per lane, from the autocorrelation: the lines that the
+    fitted model explains, and any others as spurs;
+  - for each lane pair, the coherence of the two lanes, from their
+    cross-correlation pooled over the windows: a phase relation that
+    repeats in every burst (locking), which the fixed-lag statistics miss;
+    and the correlation of the two lanes' per-window frequencies (shared
+    wander);
+  - between captures with the same spacing, for example a burst capture
+    at 256 clocks and a k = 1 capture: whether ones fraction and
+    autocorrelation agree.
 - Across lanes, kept apart from the per-lane figures: correlation,
   chi-square and mutual information for the six lane pairs at lag 0 and
   small lags, with a z score that allows for each lane's serial
@@ -287,8 +322,30 @@ sample, and decimation k gives the same process with k sigma^2.
 
 What it does not show: that the model holds (a fit that is not refused has
 passed the checks above, no more); independence of the lanes (rings of
-different frequency that share jitter pass the pair statistics); how well a
-word can be predicted by anything better than the lane tables.
+different frequency that share jitter pass the pair statistics; the
+coherence and the shared wander each see one kind of dependence more, not
+all); how well a word can be predicted by anything better than the lane
+tables.
+
+Limits of the long-lag fit, from the self-test on generated data
+(`test_burst_analysis.py` has the measured figures):
+
+- With 16 bursts of 32,768 symbols the sigma^2 used is within about 5 to
+  6% of the truth at 1e-2 and 1e-3 per sample, 12% at 1e-4, 25% at 1e-5
+  and 35% at 1e-6; F within 1e-3 to 1e-5. At 1e-7 nothing is determined, and above
+  about 0.05 F is not.
+- A lane whose correlation outlasts an eighth of a window (sigma^2 below
+  about 4e-5 at 32,768 symbols) gets F and sigma^2 but no per-bit model
+  figure: it is refused, as before, because the lags do not reach.
+- Wander inside a burst raises the all-lag sigma^2; the value used is less
+  exposed, not immune (a frequency ramp of 4e-3 across a burst raised it
+  by a quarter).
+- Coherence and shared wander need many windows: with 16 bursts the
+  coherence threshold is 0.69, with 32 it is 0.46, and shared wander below
+  a correlation of about 0.7 is not flagged with 32.
+- Bursts joined into one run are refused when the sidecar is there. In a
+  bare file with bursts shorter than `--window` they are not noticed and
+  make sigma^2 look larger. Keep the sidecars with the captures.
 
 It gives no verdict on whether the entropy is sufficient unless thresholds
 are passed, and a verdict is made on the lower end of what was measured,
@@ -298,7 +355,7 @@ never on a formula alone:
 | --- | --- |
 | `--min-lane-bits X` | Every lane's model fits, and the lower end of its estimate is at least X. A lane whose bias alone rules X out fails, and the reason names the caps |
 | `--min-word-bits X` | The smaller of the word distribution's figure (99% bound) and the word predictor cap's lower end is at least X |
-| `--require-independent` | Nothing is flagged, and the capture is large enough to have flagged a correlation of `--max-undetected-phi` (0.05) |
+| `--require-independent` | Nothing is flagged, coherence and shared wander included, and the capture is large enough to have flagged a correlation of `--max-undetected-phi` (0.05) |
 
 Before 2026-11-17 the per-lane verdict used the D = 1/2 bound alone and
 passed lanes whose bias made the threshold impossible; the word verdict
@@ -312,6 +369,57 @@ self-test checks this; 64 clocks also worked when measured once). The board
 has 256 clocks per symbol at k = 1; there the loop polled about every 34
 clocks. The run lengths in the sidecar show it either way.
 
+## Burst capture
+
+`getnoise_burst.py` records raw symbols with the rings sampled every 1 to
+256 clock cycles, which `mnoise` is too slow for: the capture block next to
+the noise source (`flow/fpga/karu_noise_burst.v`) sets the sampling period
+and records 32,768 consecutive symbols per burst in block RAM, and the
+payload copies each burst out. It ran on the board on 2026-11-19, eight
+runs ([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2));
+`make dbg-getnoise-burst-test` is its simulation test.
+
+**Needs.** An image with the capture block: `KARU_ZKR`, built from a tree
+after 2026-11-18. Bitstream `d7ff00dc…` has no such block, and the phase
+then stops at its first case with "no capture block in this image". DIP
+switch 4 off. The hart reset-halted with the fixture loaded, as for
+`getnoise_capture.py`. The payload built into the artifact directory:
+`make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`.
+
+**What it does.** The phase first reads the capture block's status register
+(`0x1000_0840`) through the debugger: it must identify the block, be at
+rest, and show the noise source enabled. It then loads `getnoise_burst.S`
+into DDR. For each period in `KARU_BOARD_BURST_PERIODS` the payload, in
+M-mode, enters the entropy source's test mode, writes the period, and for
+each burst starts a capture, waits for it, and copies the 2,048 words to
+the buffer with the clock-cycle count before and after. It leaves test
+mode on every path that entered it; that puts the sampling period back at
+256 clocks, forgets the recording and restarts the start-up test of
+`seed`. `mentropycfg` is not written; a locked source, or one already in
+test mode, is refused untouched. While the payload runs, `seed` is in
+`BIST`.
+
+**Output**, in the artifact directory:
+
+| File | Content |
+| --- | --- |
+| `getnoise-burst-p<P>.bin` | One byte per symbol, as in `getnoise-k<k>.bin`: bits [3:0] the symbol, bit 7 on the first symbol of a burst. One run per burst. Inside a burst the symbols are consecutive samples P clocks apart; nothing is known about the samples between two bursts |
+| `getnoise-burst-p<P>.json` | `kind` `burst`, the period, `k` = 1, the clock, bursts and symbols per burst, the clock-cycle stamps at the start and end of every burst, the status register before and after, `mentropycfg`, SHA-256 of the `.bin`, of the raw records and of the payload, time, `KARU_BOARD_BURST_NOTE`, and the temperature readout before and after, raw and decoded |
+| `getnoise-burst-results.json`, `getnoise-burst-commands.jsonl` | Case results and OpenOCD trace, as for every phase |
+
+A capture's files replace the previous ones only when both are complete;
+a failed capture leaves the earlier files in place. A capture fails, and
+the phase exits non-zero, on a payload status other
+than `OK` (`LOCKED`, `BUSY`, `NOBLOCK`, `ABORTED`, `TIMEOUT`, `TRAP` and so on, named
+in the case detail), if test mode was not left, if the capture block still
+holds something afterwards, if the period read back is not the one asked
+for, and if a burst's stamps are closer together than its symbols take or
+further apart than they need (the source paused).
+
+**Analysis.** The same `getnoise_analyze.py`, on the burst files, alone or
+together with `getnoise-k*.bin` files; it takes the period from the
+sidecar. See [Noise capture](#noise-capture-getnoise) for what it reports.
+
 ## Authentication
 
 `auth_phase.py` runs the debug authentication exchange of
@@ -319,10 +427,19 @@ clocks. The run lengths in the sidecar show it either way.
 of an image built with `KARU_DBG_AUTH` (image kind `rom2m-auth`), through
 OpenOCD's `riscv authdata_read` and `riscv authdata_write`. `authlib.py` is
 the client: the mailbox operations, the CHALLENGE and RESPONSE frames and
-the TEST response.
+the response of the algorithm that the challenge names.
+
+**Algorithm.** Images built from 2026-11-18 on verify `0x04`, a SHA3-256
+shared-secret MAC (contract §5.1). The key is the file
+`_build/vcu118_auth_key.txt` (64 hex digits) that the image build generates
+once and never overwrites; point `KARU_BOARD_AUTH_KEY` at it when the phase
+runs elsewhere. Keep that file, and the bitstream, to yourself: anyone
+with either can authenticate. `KARU_BOARD_AUTH_ALG=SHA3` makes the phase
+stop if the board still runs an image with the older `TEST` ROM.
 
 **The TEST algorithm protects nothing.** It is the contract's
-simulation-only algorithm `0x80`: the response is a fold of the challenge
+simulation-only algorithm `0x80`, which the board images before 2026-11-18
+and the simulation ROM use: the response is a fold of the challenge
 with a key that is printed in the ROM source and in `authlib.py`. Anyone
 can compute it. These cases show that the mechanism works; they say nothing
 about keeping an attacker out, and an image with this ROM is not protected
@@ -331,7 +448,12 @@ in lifecycle `AUTH`. The production algorithm is decision D3 of the plan.
 **Every case passed on the board on 2026-11-18**
 ([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). It is also
 rehearsed on the simulated target with the same ROM source
-(`make dbg-board-auth-rehearsal-test`).
+(`make dbg-board-auth-rehearsal-test`, and with the `0x04` build and a
+public test key `make dbg-board-auth-sha3-rehearsal-test`). The `0x04` ROM
+ran on the board on 2026-11-19 for `locked`, `authenticate`,
+`wrong-response`, `replay`, `expiry` and `entropy-off`
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-19.md#authentication-stage-e));
+the other cases were not rerun with it.
 
 **How a case is run.** One case per run, because DIP switch SW12 is read
 only at the power-on reset of the authentication block, which on the board
@@ -358,7 +480,7 @@ switches if they differ. The phase shuts OpenOCD down at the end.
 | --- | --- | --- | --- |
 | `open` | off off – on | button | The debugger attaches. `mdbgauth` reads lifecycle `OPEN`, no hold (whatever switch 3 says), debug enabled by the lifecycle alone. `seed`, read twenty times through the Program Buffer, stays in `BIST` |
 | `locked` | on off on – | button | OpenOCD's examine is refused. `dmstatus` shows version 3 and nothing else, `dmcontrol` only `dmactive`, every other DM register reads 0, writes do nothing. The window is left unused, so `authenticate` can follow on the same reset |
-| `authenticate` | on off on off | button | REQUEST accepted; a 20-word challenge with the ROM's device digest and a nonce; the TEST response; `dmstatus.authenticated` rises. Then: OpenOCD examines, the hart halts, `mdbgauth` shows the grant, a register round trip, resume; the window reads `CLOSED`; the grant survives a `dmactive` pulse |
+| `authenticate` | on off on off | button | REQUEST accepted; a 20-word challenge with the ROM's device digest and a nonce; the response (SHA3 or TEST, as the challenge names); `dmstatus.authenticated` rises. Then: OpenOCD examines, the hart halts, `mdbgauth` shows the grant, a register round trip, resume; the window reads `CLOSED`; the grant survives a `dmactive` pulse |
 | `fresh-nonce` | on off on off | button | As `authenticate`, after another reset, and its nonce differs from every earlier one on record |
 | `wrong-response` | on off on off | button | A response with one signature bit wrong: stays locked, the window closes and refuses a further SEND |
 | `replay` | on off on off | button | The response of an earlier `authenticate`, sent for the new challenge: stays locked, window closed |
@@ -383,6 +505,8 @@ response it sent. Keep one artifact directory for the whole series.
 | Variable | Default | Used for |
 | --- | --- | --- |
 | `KARU_BOARD_AUTH_CASE` | none | The case to run; without it the phase lists the cases and exits non-zero |
+| `KARU_BOARD_AUTH_KEY` | `_build/vcu118_auth_key.txt` | The SHA3 (`0x04`) key file, 64 hex digits; read only when the ROM asks for SHA3, never printed |
+| `KARU_BOARD_AUTH_ALG` | either | `SHA3` or `TEST`: stop with a message if the ROM's challenge names the other algorithm |
 | `KARU_BOARD_AUTH_TIMEOUT` | `30` | Seconds allowed for the ROM to answer: challenge, decision |
 | `KARU_BOARD_AUTH_WINDOW_MIN`, `_MAX` | `12`, `17` | Seconds after the REQUEST at which an unanswered window must still be open, and must be closed |
 | `KARU_BOARD_AUTH_BOOT` | `1` | `0` leaves out the SSH evidence that the hart booted; the result then says so |
@@ -415,9 +539,11 @@ covered there, and shown only by the 2026-11-18 board run:
 | `make dbg-board-harness-test` | Offline self-test against a stand-in for OpenOCD's Tcl RPC: every script compiles; a phase's exit status follows its case results; the transport phase's own dispatch loop exits non-zero when its restore commands fail; kernel symbol lookup; the image kinds and their overrides, checked against `rtl/karu_bootmap.vh` and the reset vectors in `flow/fpga/vcu118_ddr_top.v`; a fixture for another map, too long, or outside the scratch SRAM is refused before anything is sent; `clean_detach_boot.py` as a process passes for each image kind at that kind's reset vector and fails at another kind's and one instruction further; the authentication client: its constants against the contract, the window ROM source and the window bench, its TEST response against the ROM's own C routine compiled for the host, the exchange against a model of the contract's mailbox; the authentication cases that need Linux, `seed` or a second boot, run against scripted stand-ins |
 | `make dbg-board-rehearsal-test` | Runs the autoexec case through this harness and a real OpenOCD on the simulated full-debug target (`rehearse.py`, `sim-server.cfg`). It must pass, and must fail on a model with each of three injected autoexec defects (`autoexec_mutant.py`), one of them visible only through writes of unselected registers. It then runs the `load` case (reset-halt with the exact DPC, the fixture written to scratch SRAM and read back) on the simulated target's own map, image kind `sim`: it must pass, must fail when the reset vector of the default board image or the next instruction's address is expected, and must fail with the 1 MiB map, whose fixture address is ROM on this target |
 | `make dbg-board-auth-rehearsal-test` | `auth_rehearse.py`: pristine OpenOCD and `auth_phase.py` with its own client against the simulated JTAG target running the window ROM of `test/dbg/auth_rom`. In one model run, with a power-on reset between cases: `locked`, `wrong-response`, `expiry`, `authenticate`, `replay`, `fresh-nonce`. In further runs, with the straps as plusargs: `no-hold`, `entropy-off` (a source in `BIST` and a dead one), `disabled`, `open`. Negative controls: four clients with a wrong TEST computation must fail to unlock, and cases started with the wrong switches must stop with the message that names them |
+| `make dbg-getnoise-burst-test` | `test_getnoise_burst.py`: the burst payload on the DDR SoC simulation with the entropy source, through the real bus decode. Every burst is compared with a Python copy of the simulated noise source (`noise_model.py`): a stretch of every P-th symbol, bursts in order, at distances that agree with the payload's time stamps; for the default model and for the model with known parameters. Refusals (locked, already in test mode, bad parameters, an image without the capture block), a source without symbols, a fault, three payload mutants and three tampered captures. Then the phase against a stand-in for OpenOCD that runs the same simulation, and the analysis on the files the phase wrote |
+| `make dbg-burst-analysis-test` | `test_burst_analysis.py`: the analysis of bursts on generated data with known (F, D, sigma^2): the per-window fit from 1e-5 to 1e-2; the copy of the simulated source decimated to periods of 1 to 256 clocks; proportionality to the spacing and a wrong period label; frequency wander within one lane and shared by two; an injected spur; locked lanes against independent lanes of equal frequency; agreement between a burst capture and a k = 1 capture; joined bursts; five controls that break one step of the analysis |
 | `make dbg-getnoise-test` | `test_getnoise.py`: the capture payload on the Zkr simulation bench, compared symbol by symbol with a copy of the bench's noise model, with refusals, lost symbols, timeouts, a fault and three payload mutants; the capture phase as a process against a stand-in for OpenOCD that runs the loaded memory image on the same bench; the analysis on data generated from the model, with dependent lanes that must be flagged |
 
-All four are part of `make dbg-test`. The
+All six are part of `make dbg-test`. The
 simulated target has the scratch SRAM of `rtl/karu_bootmap.vh` and 64 KiB of
 RAM at `0x80000000`, which are one memory seen at two addresses, and its
 reset vector is `0x80000000`. It has no other DDR and no UART, so only
@@ -439,6 +565,9 @@ a defect that it should catch.
 | `authlib.py`, `auth_phase.py`, `auth-server.cfg` | Debug authentication: client, phase, and the OpenOCD server for a target that may be locked |
 | `auth_rehearse.py`, `auth-sim-server.cfg` | Rehearsal of the authentication phase on the simulated target |
 | `getnoise.S`, `getnoise_capture.py` | GetNoise capture payload (position independent, loaded into DDR) and its phase |
+| `getnoise_burst.S`, `getnoise_burst.py` | Burst capture payload and its phase |
+| `noise_model.py` | Python copy of the simulation's noise source, for the self-tests |
+| `test_getnoise_burst.py`, `test_burst_analysis.py` | Self-tests of the burst capture and of the analysis of bursts, without a board |
 | `getnoise_analyze.py` | Offline analysis of the captures |
 | `test_getnoise.py` | Self-test of the three without a board |
 

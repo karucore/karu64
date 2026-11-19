@@ -98,7 +98,8 @@ module tb_sba_xbar;
     .m_wstrb(m_wstrb),.m_wlast(m_wlast),.m_wvalid(m_wvalid),.m_wready(m_wready),.m_bid(m_bid),.m_bresp(m_bresp),
     .m_bvalid(m_bvalid),.m_bready(m_bready),
     .uart_txd(uart_txd),.uart_rxd(1'b1),.uart_rts(uart_rts),.uart_cts(1'b0),
-    .irq_timer(irq_t),.irq_software(irq_s),.irq_ext_m(irq_m),.irq_ext_s(irq_se),.clint_mtime(mtime));
+    .irq_timer(irq_t),.irq_software(irq_s),.irq_ext_m(irq_m),.irq_ext_s(irq_se),.clint_mtime(mtime),
+    .sysreg_re_o(),.sysreg_raddr_o(),.sysreg_rdata_i(64'b0),.sysreg_we_o(),.sysreg_waddr_o(),.sysreg_wdata_o());
 
   karu_axi4_ram #(.RAM_XADR(16),.MEM_BASE(32'h8000_0000),.RLAT(1),.HEXFILE("")) ram (
     .clk(clk),.rst(rst),

@@ -10,6 +10,8 @@
 //	  +max_cycles=<dec>  watchdog (default 2,000,000)
 //	  +uart_in=<file>    bytes fed to the UART RX
 //	  +rom=<file>        boot ROM image (replaces the xbar's default ROM_HEX)
+//	  +vec_out=<file>    at the HTIF exit, write DRAM words to this file
+//	  +vec_out_start=<dec> +vec_out_words=<dec>   which 64-bit words
 //
 //	Top-level parameters (verilator -G) for runs that boot from the ROM:
 //	RAM_XADR (DRAM size, log2 bytes), RESET_PC and CPU_CLK_HZ (sets how fast
@@ -37,6 +39,7 @@ module fpga_ddr_tb #(
 	//	ROM of a build with debug authentication
 	parameter integer ZKR_SAMPLE_DIV = 256,
 	parameter [15:0] ZKR_INTERVAL	= 16'd15,
+	parameter integer ZKR_BURST_LOG2 = 11,
 	parameter		 AUTH_ROM_HEX	= ""
 ) (input wire clk);
 
@@ -68,7 +71,8 @@ module fpga_ddr_tb #(
 		.RAM_XADR(RAM_XADR),
 		.RESET_PC(RESET_PC),
 		.CPU_CLK_HZ(CPU_CLK_HZ),
-		.ZKR_SAMPLE_DIV(ZKR_SAMPLE_DIV), .ZKR_INTERVAL(ZKR_INTERVAL), .AUTH_ROM_HEX(AUTH_ROM_HEX),
+		.ZKR_SAMPLE_DIV(ZKR_SAMPLE_DIV), .ZKR_INTERVAL(ZKR_INTERVAL), .ZKR_BURST_LOG2(ZKR_BURST_LOG2),
+		.AUTH_ROM_HEX(AUTH_ROM_HEX),
 		.RLAT	 (RLAT)
 	) dut (
 		.clk(clk), .rst(rst),
@@ -91,12 +95,27 @@ module fpga_ddr_tb #(
 	wire [RAM_XADR-4:0]	tohost_idx = tohost_off[RAM_XADR-1:3];
 	reg  [63:0]			tohost_v;
 
+	//	Optional dump of DRAM at the HTIF exit, as in rtl/htif_tb.v.
+	reg [8*256-1:0]	vec_out_file;
+	reg [31:0]		vec_out_start = 32'd0;		//	64-bit word index
+	reg [31:0]		vec_out_words = 32'd0;
+	reg				dump_vec_out = 1'b0;
+	initial if ($value$plusargs("vec_out=%s", vec_out_file)) begin
+		dump_vec_out = 1'b1;
+		pa_ok = $value$plusargs("vec_out_start=%d", vec_out_start);
+		pa_ok = $value$plusargs("vec_out_words=%d", vec_out_words);
+	end
+
 	always @(posedge clk) begin
 		cyc <= cyc + 1;
 		if (!rst) begin
 			tohost_v = dut.dram.ram[tohost_idx];
 			if (tohost_v[0]) begin
 				$display("\n[HTIF] exit %0d @ cyc=%0d", tohost_v >> 1, cyc);
+				if (dump_vec_out) begin
+					$writememh(vec_out_file, dut.dram.ram, vec_out_start, vec_out_start + vec_out_words - 1);
+					$display("[HTIF] dumped %0d words to %0s", vec_out_words, vec_out_file);
+				end
 				$finish;
 			end
 		end

@@ -14,4 +14,9 @@
     end
     always @* begin
         assert(auth_trap_o == trap_req && auth_dbg_enter_o == dbg_enter);
+        // The window must also close when an ordinary instruction issues
+        // outside the ROM, so the issue signal and the PC that karudbg_auth
+        // judges are the core's on every cycle, not only on a commit.
+        assert(auth_issuing_o == issuing);
+        assert(!issuing || auth_ex_pc_o == ex_pc);
     end

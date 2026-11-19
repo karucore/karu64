@@ -84,6 +84,11 @@ module tb_axi_mem_burst;
     wire [1:0] m_arburst, m_awburst, m_rresp, m_bresp;
     wire [63:0] m_rdata, m_wdata, clint_mtime;
     wire sys_reset_req_o;
+    // the burst-capture registers of the system-control block: no device here
+    wire sysreg_re_o, sysreg_we_o;
+    wire [2:0] sysreg_raddr_o, sysreg_waddr_o;
+    wire [63:0] sysreg_wdata_o;
+    wire [63:0] sysreg_rdata_i = 64'b0;
     wire m_arvalid, m_arready, m_rvalid, m_rready, m_rlast;
     wire m_awvalid, m_awready, m_wvalid, m_wready, m_wlast, m_bvalid, m_bready;
     // This transport bench does not read the boot ROM. An empty image is

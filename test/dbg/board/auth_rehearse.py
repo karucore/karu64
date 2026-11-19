@@ -6,6 +6,9 @@ block and the real window ROM (test/dbg/tb_jtag_core.v built with
 KARU_DBG_AUTH and test/dbg/auth_rom as its island ROM), a pristine OpenOCD
 connected to it over remote_bitbang (auth-sim-server.cfg), and runs the
 named cases of auth_phase.py unchanged, with its own client (authlib.py).
+The model's ROM is the TEST build or the SHA3 (0x04) build of window.c;
+for the latter, KARU_BOARD_AUTH_KEY names the key file it was built with
+(the public test_key.txt in simulation), and is passed to the phase as is.
 
 What stands in for the board:
 
@@ -27,7 +30,8 @@ examine check out and says so (KARU_BOARD_AUTH_STALE).
 
   --expect-fail TEXT   succeed only if every case FAILS with TEXT in its
                        detail (negative control)
-  --mutate NAME        break the client's TEST computation before running:
+  --mutate NAME        break the client's TEST computation before running
+                       (a SHA3 client is broken with a wrong key file):
                        key (one key bit), rotation (rotate right), mask
                        (granted mask left out), fold (challenge words 16..19
                        left out)

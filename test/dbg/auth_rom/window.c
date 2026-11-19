@@ -3,8 +3,21 @@
 // algorithm (0x80). TEST is NOT cryptographic: its "signature" is a keyed
 // XOR fold of the challenge with a public test key. A production ROM accepts
 // only the algorithm chosen under D3 and rejects 0x80.
+//
+// Built with -DAUTH_ALG_SHA3 it verifies algorithm 0x04 instead, the
+// SHA3-256 shared-secret MAC chosen for FPGA validation on 2026-11-18
+// (contract 5.1), and rejects 0x80; the default build rejects 0x04. The
+// 32-byte key comes from -DAUTH_KEY_HEADER="file" (static const uint8_t
+// auth_key[32]); start.S clears island SRAM before leaving (contract D1).
 // SPDX-License-Identifier: BSD-2-Clause
 #include <stdint.h>
+#ifdef AUTH_ALG_SHA3
+#include "sha3.h"
+#ifndef AUTH_KEY_HEADER
+#error "AUTH_ALG_SHA3 needs -DAUTH_KEY_HEADER=\"file\" with the 32-byte auth_key"
+#endif
+#include AUTH_KEY_HEADER
+#endif
 
 #define CSR_AUTH 0x7c0
 #define CSR_RX   0x7c1
@@ -30,8 +43,15 @@
 #define MBST_STARTED  (1u << 25)
 
 #define ALG_TEST      0x80u
+#define ALG_SHA3      0x04u
 #define TEST_SIG_WORDS 8u
+#define SIG_WORDS     8u            /* both algorithms: 32 bytes */
 #define CHALLENGE_WORDS 20u
+#ifdef AUTH_ALG_SHA3
+#define ROM_ALG ALG_SHA3
+#else
+#define ROM_ALG ALG_TEST
+#endif
 #ifndef WINDOW_CYCLES
 #define WINDOW_CYCLES 400000ull     /* simulation bound; production 2^30 */
 #endif
@@ -59,9 +79,11 @@ uint64_t mock_cycles(void);
 #define read_cycles() csr_read(mcycle)
 #endif
 
+#ifndef AUTH_ALG_SHA3
 static const uint32_t test_key[TEST_SIG_WORDS] = {
     0x6b617275u, 0x64626761u, 0x75746821u, 0x54455354u,
     0x2d6f6e6cu, 0x792d6e6fu, 0x742d6372u, 0x7970746fu };
+#endif
 static const uint32_t device_digest[8] = {
     0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u,
     0x55555555u, 0x66666666u, 0x77777777u, 0x88888888u };
@@ -78,6 +100,7 @@ static uint32_t challenge[CHALLENGE_WORDS];
 static uint64_t deadline;
 static int expired(void) { return read_cycles() >= deadline; }
 
+#ifndef AUTH_ALG_SHA3
 /* TEST: sig[i] = key[i] ^ XOR of challenge words j with j % 8 == i,
    each rotated left by i, then mixed with the granted-mask byte. */
 static uint32_t rotl(uint32_t x, unsigned r) { return r ? (x << r) | (x >> (32 - r)) : x; }
@@ -88,6 +111,31 @@ static void test_signature(uint32_t granted, uint32_t out[TEST_SIG_WORDS]) {
         out[i] = a;
     }
 }
+#define expected_signature test_signature
+#else
+/* 0x04: digest = SHA3-256(key[32] || "karudbg-auth-v1" || challenge words
+   0-19 as 80 bytes little-endian || granted-mask byte), 128 bytes, one
+   Keccak block. Signature word i is digest bytes 4i..4i+3, little-endian.
+   The message holds the key, so it is wiped here; the caller wipes out[]. */
+static const char mac_label[] = "karudbg-auth-v1";         /* 15 bytes; the NUL is not hashed */
+#define MAC_LABEL_BYTES (sizeof mac_label - 1)
+static void sha3_mac_signature(uint32_t granted, uint32_t out[SIG_WORDS]) {
+    uint8_t msg[32 + MAC_LABEL_BYTES + 4 * CHALLENGE_WORDS + 1], digest[32];
+    unsigned n = 0;
+    for (unsigned i = 0; i < 32; i++) msg[n++] = auth_key[i];
+    for (unsigned i = 0; i < MAC_LABEL_BYTES; i++) msg[n++] = (uint8_t)mac_label[i];
+    for (unsigned i = 0; i < CHALLENGE_WORDS; i++)
+        for (unsigned k = 0; k < 4; k++) msg[n++] = (uint8_t)(challenge[i] >> (8 * k));
+    msg[n++] = (uint8_t)granted;
+    sha3_256(digest, msg, n);
+    for (unsigned i = 0; i < SIG_WORDS; i++)
+        out[i] = (uint32_t)digest[4 * i] | (uint32_t)digest[4 * i + 1] << 8 |
+                 (uint32_t)digest[4 * i + 2] << 16 | (uint32_t)digest[4 * i + 3] << 24;
+    sha3_wipe(msg, sizeof msg);
+    sha3_wipe(digest, sizeof digest);
+}
+#define expected_signature sha3_mac_signature
+#endif
 
 /* One RX word within the window; 0 on expiry or once hardware has closed
    the window. Before the first RESPONSE word (first != 0) a session reset
@@ -151,28 +199,35 @@ void auth_window(void) {
     uint32_t lc = (uint32_t)(a >> 4) & 3;
     deadline = read_cycles() + WINDOW_CYCLES;
 
+#ifdef AUTH_ALG_SHA3
+    challenge[0] = (0x01u << 24) | (1u << 16) | (ALG_SHA3 << 8);
+#else
     challenge[0] = (0x01u << 24) | (1u << 16) | (ALG_TEST << 8);
+#endif
     challenge[1] = 72u | (perm_req << 16) | (lc << 24);
     for (unsigned i = 0; i < 8; i++) challenge[2 + i] = device_digest[i];
     if (!make_nonce(&challenge[10])) return;
     challenge[18] = 0; challenge[19] = 0;           /* no POR counter */
 
     if (!push_challenge()) return;
-    uint32_t hdr, lenw, sig[TEST_SIG_WORDS], want[TEST_SIG_WORDS];
+    uint32_t hdr, lenw, sig[SIG_WORDS], want[SIG_WORDS];
     if (!rx_word(&hdr, 1)) return;
     if (!rx_word(&lenw, 0)) return;
-    for (unsigned i = 0; i < TEST_SIG_WORDS; i++)
+    for (unsigned i = 0; i < SIG_WORDS; i++)
         if (!rx_word(&sig[i], 0)) return;
-    /* Rejection rules (contract 5.3). */
+    /* Rejection rules (contract 5.3). Only this build's algorithm. */
     if ((hdr >> 24) != 0x02u || ((hdr >> 16) & 0xff) != 1u || (hdr & 0xff) != 0) return;
-    if (((hdr >> 8) & 0xff) != ALG_TEST) return;
-    if ((lenw & 0xffff) != TEST_SIG_WORDS * 4u) return;
+    if (((hdr >> 8) & 0xff) != ROM_ALG) return;
+    if ((lenw & 0xffff) != SIG_WORDS * 4u) return;
     uint32_t granted = (lenw >> 16) & 0xff;
     if (granted == 0 || (granted & ~perm_req) || (lenw >> 24)) return;
     if (csr_read(CSR_MBST) & MBST_SESS) return;     /* session reset while parsing */
-    test_signature(granted, want);
-    uint32_t diff = 0;
-    for (unsigned i = 0; i < TEST_SIG_WORDS; i++) diff |= sig[i] ^ want[i];
+    expected_signature(granted, want);
+    uint32_t diff = 0;                              /* constant time: no early exit */
+    for (unsigned i = 0; i < SIG_WORDS; i++) diff |= sig[i] ^ want[i];
+#ifdef AUTH_ALG_SHA3
+    sha3_wipe(want, sizeof want);                   /* key-derived; wiped before either outcome */
+#endif
     if (diff) return;
     if (expired()) return;                          /* decision is inside the window */
     csr_set(CSR_AUTH, AUTH_UNLOCK);                 /* commit predicate: ROM PC, M, window */
