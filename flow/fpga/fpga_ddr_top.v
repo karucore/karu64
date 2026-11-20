@@ -78,9 +78,6 @@ module fpga_ddr_top #(
 	// synthesis translate_on
 
 	//	Zkr: the entropy source behind seed, mnoise and mentropycfg.
-	wire [1:0]	trng_opst;
-	wire [15:0]	trng_data;
-	wire		trng_ack;
 	//	The registers of its burst capture, in the xbar's system-control
 	//	block, and at register 4 the temperature readout (a model of it
 	//	here: fixed codes, an update every 1024 clocks). +zkr_burst=0 takes
@@ -104,13 +101,10 @@ module fpga_ddr_top #(
 		.clk(clk), .rst(soc_rst), .en_i(strap_zkr_en),
 		.csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
 		.csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack),
 		.reg_re_i(sysreg_re && strap_burst), .reg_raddr_i(sysreg_raddr), .reg_rdata_o(burst_rdata),
 		.reg_we_i(sysreg_we && strap_burst), .reg_waddr_i(sysreg_waddr), .reg_wdata_i(sysreg_wdata)
 	);
 `else
-	assign trng_opst = 2'd3;
-	assign trng_data = 16'b0;
 	assign burst_rdata = 64'b0;
 	wire		_unused_sysreg = &{sysreg_re, sysreg_we, sysreg_waddr, sysreg_wdata, 1'b0};
 `endif
@@ -119,7 +113,6 @@ module fpga_ddr_top #(
 `endif
 `ifndef KARU_DBG_AUTH
 	assign auth_reset = 1'b0;
-	assign trng_ack = 1'b0;
 `endif
 
 	//	== imem / dmem AXI4 (core <-> xbar) ==
@@ -174,7 +167,6 @@ module fpga_ddr_top #(
 		.dmi_resp_valid_o(), .dmi_resp_ready_i(1'b1), .dmi_resp_data_o(), .dmi_resp_op_o(),
 `ifdef KARU_DBG_AUTH
 		.lc_i(strap_lc), .hold_strap_i(strap_hold), .revoke_i(1'b0),
-		.trng_opst_i(trng_opst), .trng_data_i(trng_data), .trng_ack_o(trng_ack),
 		.auth_reset_o(auth_reset),
 `endif
 		.trap(trap),

@@ -15,7 +15,12 @@
 // lc==AUTH (authdata is absent otherwise, as Debug 1.0 Security recommends).
 module karudbg_auth #(
     parameter [63:0] AUTH_ROM_BASE = 64'h0000_0000_0001_0000,
-    parameter [63:0] AUTH_ROM_END  = 64'h0000_0000_0002_0000
+    parameter [63:0] AUTH_ROM_END  = 64'h0000_0000_0002_0000,
+    // A limit on the window in hardware: it is open for 2^WINDOW_LOG2 clocks
+    // after an accepted REQUEST and then closes, whatever the ROM does.
+    // 0: no limit here; the ROM's own deadline is then the only one
+    // (contract 5.3).
+    parameter integer WINDOW_LOG2 = 0
 ) (
     input wire clk,
     input wire rst,                  // POR
@@ -23,9 +28,6 @@ module karudbg_auth #(
     input wire [1:0] lc_i,           // 0 OPEN, 1 AUTH, 2 DISABLED, 3 = DISABLED
     input wire hold_strap_i,
     input wire revoke_i,
-    input wire [1:0] trng_opst_i,
-    input wire [15:0] trng_data_i,
-    output wire trng_ack_o,
     // Outputs
     output reg debug_enable_o,       // registered gate (K2/K4 side)
     output wire debug_enable_next_o, // its next state, for ndmreset_q only
@@ -41,7 +43,7 @@ module karudbg_auth #(
     // Hart side (cut K2)
     input wire core_in_reset_i,
     input wire csr_fire_i,
-    input wire [2:0] csr_sel_i,      // 0 auth, 1 rx, 2 tx, 3 rng, 4 mbst
+    input wire [2:0] csr_sel_i,      // 0 auth, 1 rx, 2 tx, 4 mbst
     input wire csr_we_i,
     input wire [63:0] csr_wdata_i,
     output reg [63:0] csr_rdata_o,
@@ -55,7 +57,7 @@ module karudbg_auth #(
 );
     localparam [1:0] LC_OPEN = 2'd0, LC_AUTH = 2'd1;
     localparam [2:0] SEL_AUTH = 3'd0, SEL_RX = 3'd1, SEL_TX = 3'd2,
-                     SEL_RNG = 3'd3, SEL_MBST = 3'd4;
+                     SEL_MBST = 3'd4;
     localparam [2:0] ST_IDLE = 3'd0, ST_HOLD = 3'd1, ST_REQUESTED = 3'd2,
                      ST_CLOSED = 3'd3;
     localparam [2:0] E_NONE = 3'd0, E_OVERFLOW = 3'd1, E_UNDERFLOW = 3'd2,
@@ -91,6 +93,8 @@ module karudbg_auth #(
     wire hold_d, relock_d;
     wire abort_fire, sess_event, sess_ack, sess_close_now;
     wire csr_live, reset_close;
+    wire win_open, win_expire;
+    reg [WINDOW_LOG2:0] win_cnt;     // clocks of the open window so far; the top bit is the limit
     wire [31:0] status_word;
     wire unused_wdata;
     integer i;
@@ -109,6 +113,12 @@ module karudbg_auth #(
     // repeated resets give no extra attempts. The POR boot hold is the only
     // reset before hart_started_q.
     assign reset_close = core_in_reset_i && hart_started_q;
+    // The window timer. The window is open from the edge that accepts the
+    // REQUEST. win_cnt counts its clocks; in the clock after 2^WINDOW_LOG2 of
+    // them no unlock can commit and boot_done is set. It is POR-domain state:
+    // nothing but a POR restarts it, and the window opens once per POR.
+    assign win_open = auth_req_q && lc_auth && !boot_done_q;
+    assign win_expire = (WINDOW_LOG2 != 0) && win_open && win_cnt[WINDOW_LOG2];
     // A CSR access in a reset, trap or Debug-entry cycle is killed with its
     // instruction: it has no effect here, whatever the core reports (C8).
     assign csr_live = csr_fire_i && !core_in_reset_i && !trap_i && !dbg_enter_i;
@@ -144,13 +154,13 @@ module karudbg_auth #(
     assign rom_pop = csr_live && csr_we_i && csr_sel_i == SEL_RX && rx_count != 0;
     assign rom_push = csr_live && csr_we_i && csr_sel_i == SEL_TX && tx_count != 5'd16;
     assign rom_push_drop = csr_live && csr_we_i && csr_sel_i == SEL_TX && tx_count == 5'd16;
-    assign trng_ack_o = csr_live && csr_we_i && csr_sel_i == SEL_RNG;
     // Commit predicate (plan 3.1, contract 3.1) plus a REQUEST in this POR.
     assign unlock_commit = csr_live && csr_we_i && csr_sel_i == SEL_AUTH &&
         csr_wdata_i[0] && pc_in_rom && priv_i == 2'd3 && !virt_i && !debug_mode_i &&
+        !win_expire &&
         lc_auth && auth_req_q && !boot_done_q && !boot_exit_now && !sess_close_now;
     assign fw_lock_set = csr_live && csr_we_i && csr_sel_i == SEL_AUTH && csr_wdata_i[2];
-    assign boot_done_set = boot_exit_now || sess_close_now || reset_close ||
+    assign boot_done_set = boot_exit_now || sess_close_now || reset_close || win_expire ||
         (csr_live && csr_we_i && csr_sel_i == SEL_AUTH && csr_wdata_i[1] && !debug_mode_i);
     assign debug_enable_d =
         (lc_q == LC_OPEN || (lc_auth && (auth_unlock_q || unlock_commit))) &&
@@ -181,8 +191,6 @@ module karudbg_auth #(
                                      fw_lock_q, boot_done_q, auth_unlock_q};
             SEL_RX: csr_rdata_o = {31'b0, rx_count != 0, rx_count != 0 ? rx_mem[rx_rd] : 32'b0};
             SEL_TX: csr_rdata_o = 64'b0;
-            SEL_RNG: csr_rdata_o = {32'b0, trng_opst_i, 14'b0,
-                                    trng_opst_i == 2'd2 ? trng_data_i : 16'b0};
             SEL_MBST: csr_rdata_o = {38'b0, resp_started_q, sess_event_q, perm_req_q,
                                      2'b00, tx_full_q, state, tx_free, rx_count};
             default: csr_rdata_o = 64'b0;
@@ -199,8 +207,10 @@ module karudbg_auth #(
             debug_enable_o <= lc_i == LC_OPEN && !revoke_i;
             sys_reset_o <= hold_strap_i && lc_i == LC_AUTH;
             sess_event_q <= 0; resp_started_q <= 0; hart_started_q <= 0;
+            win_cnt <= {(WINDOW_LOG2+1){1'b0}};
         end else begin
             hold_q <= hold_d;
+            if (win_open && !win_cnt[WINDOW_LOG2]) win_cnt <= win_cnt + 1'b1;
             if (dmi_header && hdr_op == OP_REQUEST && hdr_rsvd_ok && req_arg_ok && req_state_ok) begin
                 auth_req_q <= 1;
                 perm_req_q <= dmi_wdata_i[7:0];
@@ -281,13 +291,15 @@ module karudbg_auth #(
     // - a pending SEND never exceeds RX free space;
     // - outside AUTH, without revocation, the hart is never held or reset;
     // - a session reset after the ROM consumed a response word closes the
-    //   window on that edge (no unlock can follow).
+    //   window on that edge (no unlock can follow);
+    // - so does the window timer, and no unlock commits in its last clock.
     reg chk_valid_q, chk_unlock_q, chk_done_q, chk_lock_q, chk_revoke_q, chk_req_q;
-    reg chk_close_q, chk_reset_close_q;
+    reg chk_close_q, chk_reset_close_q, chk_expire_q;
     always @(posedge clk) begin
         chk_valid_q <= !rst;
         chk_close_q <= !rst && sess_event && (resp_started_q || rom_pop);
         chk_reset_close_q <= !rst && core_in_reset_i && hart_started_q;
+        chk_expire_q <= !rst && win_expire;
         chk_unlock_q <= auth_unlock_q; chk_done_q <= boot_done_q;
         chk_lock_q <= fw_lock_q; chk_revoke_q <= revoke_q; chk_req_q <= auth_req_q;
         if (!rst && chk_valid_q) begin
@@ -309,6 +321,8 @@ module karudbg_auth #(
                 $fatal(1, "karudbg_auth: system reset after boot left the window open");
             if (chk_close_q && !boot_done_q)
                 $fatal(1, "karudbg_auth: session reset after response start left the window open");
+            if (chk_expire_q && (!boot_done_q || (!chk_unlock_q && auth_unlock_q)))
+                $fatal(1, "karudbg_auth: the window timer expired and the window stayed open or unlocked");
             if (rx_count > 16 || tx_count > 16 || send_rem > rx_free ||
                 rx_count[3:0] != rx_wr - rx_rd || tx_count[3:0] != tx_wr - tx_rd)
                 $fatal(1, "karudbg_auth: mailbox FIFO accounting");

@@ -169,6 +169,14 @@ items; a documented design choice alone does not close an implementation item.
   Linux and KVM regression, and all authentication cases pass; translation
   fails with the known OpenOCD walker results. See the
   [acceptance record](BOARD_ACCEPTANCE-2026-11-18.md).
+- [x] Board session with `85f07e58…` (burst capture, temperature readout,
+  SHA3 authentication, U-Boot 2026.10), 2026-11-19: accepted with
+  documented exceptions ([record](BOARD_ACCEPTANCE-2026-11-19.md)).
+- [x] Board session with `ddb168e1…` (health tests on the 4-bit sample,
+  no `mdbgrng`, a hardware window limit), 2026-11-20: accepted with
+  documented exceptions; every interval of the health tests read between
+  resets, about 100 minutes in total, ended with zero failures
+  ([record](BOARD_ACCEPTANCE-2026-11-20.md)).
 
 ### Board transport smoke test — 2026-11-16
 
@@ -235,8 +243,100 @@ PYTHONPATH=test/dbg python3 -m unittest \
 
 The newest entry is first; each entry carries its own date.
 
+**Second review, rebuilt image, 2026-11-19 23:25 UTC (current tree).**
+`make dbg-test` passed in 757.03 seconds with all **456 captured input
+hashes** unchanged, during the build of bitstream `ddb168e1…`
+([measurements](MEASUREMENTS.md#fpga-image--2026-11-20)), whose sources it covers:
+the gate had passed at 22:28 UTC (771.45 s, 455 inputs) on the tree the
+build started from, and the only files that changed between the two runs
+are the proof additions and a comment (below). Changed since the entry
+below:
+- the firmware compiler is taken by absolute path and checked
+  (`make toolchain-check`), and the flow makes the files that hold the
+  authentication key private; `flow/build_uboot.sh` and
+  `flow/rom_manifest.py` record the compilers;
+- `dbg-auth-window-noseed-test`, new, in `dbg-auth-test`: the window bench
+  on a core without Zkr with the `-DAUTH_NO_SEED` ROM, two controls;
+- the proof additions, hashed by the gate and run outside it:
+  C3n with a next-state input for each Debug Module, and lemma C9own, response ownership for the whole transaction ([plan, A3](../doc/debug-auth-plan.md)). `make dbg-auth-formal-test` passed at 23:13 UTC (16 entries, 111 controls) and `make dbg-auth-compose-test` at 23:04 UTC (874 s; no undischarged assumption, two findings open).
+Outside the gate, on these sources and with the pinned compiler:
+`image-boot-test` (lifecycle `OPEN`, `AUTH` with no request, entropy strap
+low; 22:28 UTC), `uboot-tftp-test` (22:33 UTC) and `uboot-boot-test`
+(23:37 UTC, 63 minutes) pass.
+
+**After the first image build: review follow-ups on the test side,
+2026-11-19 21:25 UTC.** `make dbg-test` passed in 771.87 seconds with
+all **455 captured input hashes** unchanged, while Vivado finished the
+image on the same host. No RTL, flow or boot source changed since the
+entry below, which is the tree that the superseded bitstream `f3493b17…`
+was built from.
+Changed since then:
+- `dbg-auth-bypass-image-test`: lemma C1 with the define list and the
+  parameters of the image's synthesis (the instruction cache, the reset
+  vector in the island ROM, the hardware window limit at 2³¹ clocks, an
+  island ROM image), where it had a list of its own that had drifted
+  ([plan, A3](../doc/debug-auth-plan.md)). The result is the same;
+- `test/dbg/board/auth_rehearse.py`: only its description of the model's
+  `seed` CSR;
+- five new files that the gate hashes and does not run: the composition of
+  the authentication lemmas, `make dbg-auth-compose-test`
+  (`test/dbg/run_auth_compose.py` and four files under `test/dbg/formal/`).
+  It passed at 21:31 UTC in 1,025 s beside the gate (718 s alone), reading T1's third bullet from the plan and with the image's corrected define list for its single model. With `--tx-words-only`, the earlier wording, the same results fail on that item. Its summary line still says three findings are open: it counts the T1 finding, which the report body marks closed by the rewording. Two are open.
+
+**Zkr health tests, `mdbgrng` removed, window timer, 2026-11-19 19:29 UTC
+(the tree of the superseded bitstream `f3493b17…`).**
+`make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in 720.41 seconds with
+all **450 captured input hashes** unchanged. The image build started from
+the same sources right after it and ended at 21:20 UTC with timing met
+([measurements](MEASUREMENTS.md#fpga-build--2026-11-19-f3493b17-superseded)). Changed in the
+gate since the entry below:
+- `entropy-test`: 4,062 checks and 83 mutants (were 3,740 and 33), then
+  `rtl/karu_entropy.v` against the Python model of its health tests on the
+  same symbols (`test/entropy_replay.py`, 22 checks with controls) and the
+  criteria of SP 800-90B section 4.5 on that model;
+- `zkr-test`: the read-only `mentropystat` CSR and its access rules; 17
+  mutants (were 14);
+- `noise-burst-test`: a period write ends an `mnoise` run; 37 mutants;
+- `dbg-auth-unit-test`: no `mdbgrng`; the hardware window limit, 413 checks
+  and four more mutants; `dbg-auth-core-test`: `0x7C3` is an illegal
+  instruction; the window benches draw their nonce from `seed`;
+- `dbg-auth-revoke-ext-test`, new: the revocation bench in twelve
+  configurations, with the DDR crossbar as responder and through JTAG (334
+  scenario runs, 12,444 checks, 36 mutant builds);
+- `dbg-getnoise-test`: with the strap low every poll finds the loss flag;
+- `ddr-noise-burst-test`: its firmware is built without unwind tables. As
+  committed in `32c2258` it ran 24 bytes into the `tohost` page with the
+  Linux-targeting compiler.
+Earlier runs of this round, on earlier states of the tree: 14:54 UTC
+(805.28 s, with that firmware linked by hand) and 17:26 UTC (745.97 s);
+one at 18:05 UTC failed in `dbg-getnoise-test`, whose strap-low case had
+not been updated for the GetNoise run break.
+Outside the gate, on the same sources:
+- `dbg-auth-formal-test`: 15 entries pass, with the window-timer lemma C5w
+  and 55 controls (19:08 UTC, about 20 minutes);
+- `image-boot-test`: the island ROM, fu-boot, OpenSBI, an S-mode reader of
+  `seed`, reboot and second boot, in lifecycle `OPEN`, in lifecycle `AUTH`
+  with no request (the hold strap clear and the DMI idle: nothing
+  authenticates in this test), and with the entropy strap low;
+  `uboot-tftp-test`; `uboot-boot-test` (U-Boot 2026.10 from the ROM with
+  the entropy source on and off, through one SBI reset each);
+- `dbg-board-auth-rehearsal-test` and its SHA3 variant, which are where a
+  successful authentication exchange runs (OpenOCD against the JTAG model
+  of the core, the `seed` CSR served by a bench source);
+- the board captures replayed through the RTL and the model
+  (`make entropy-test ENTROPY_DATA=… ENTROPY_RESTART=…`): D18 and D19 raise
+  no failure at the reset cutoffs and end running, and the restart rows,
+  row by row, raise none;
+- an out-of-context synthesis of the entropy source before the last two
+  changes to it (no loop; 721 CLB LUTs and 576 flip-flops for the block).
+The composition of the authentication lemmas came after this run: see
+the entry above.
+`sysmon-xsim-test` passed at 17:50 UTC and reads nothing that changed
+since. **Not run on a board, and no full Linux boot has been simulated
+with these changes.**
+
 **Burst capture, temperature readout and SHA3 authentication, 2026-11-18
-21:32 UTC (current).** `make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in
+21:32 UTC.** `make dbg-test DBG_GATE_JOBS=3 DBG_JOBS=6` passed in
 864.54 seconds on the frozen tree the image was built from, with all **441
 captured input hashes** unchanged. An earlier run of this round, before the
 SHA3 authentication and the review fixes, passed at 18:31 UTC (659.12
@@ -1432,7 +1532,8 @@ with every interface fixed by the
 - `lc_i`: `OPEN`, `AUTH` or `DISABLED`, sampled at POR;
 - `hold_strap_i`: the boot-hold strap, honoured in `AUTH` only;
 - `revoke_i`: an optional trusted revocation input;
-- a 16-bit TRNG port in the Zkr `seed` format, read by the ROM through
+- (until 2026-11-19; removed since, the ROM always reads `seed`) a 16-bit
+  TRNG port in the Zkr `seed` format, read by the ROM through
   `mdbgrng`. A core with `KARU_ZKR` does not need it: the ROM can read
   `seed` instead, as in the VCU118 image, whose port is then unused by the
   ROM.
@@ -1447,7 +1548,7 @@ hart's bus responders with it, as for `ndmreset_o`.
   - the 16-word `authdata` mailbox in each direction;
   - the registered gate `debug_enable`.
 
-  Firmware reaches it only through the M-mode CSRs `0x7C0–0x7C3` and `0xFC0`.
+  Firmware reaches it only through the M-mode CSRs `0x7C0–0x7C2` and `0xFC0`.
 - **`karudbg_island`** serves the island ROM and SRAM on the core's own ports.
   An owner flop per channel keeps external responses from completing island
   requests.
@@ -1474,38 +1575,52 @@ hart's bus responders with it, as for `ndmreset_o`.
 | `dbg-auth-window-test` | The A2 simulation island ROM (`test/dbg/auth_rom/`, simulation-only `TEST` algorithm) on the real core. A correct response unlocks. A wrong signature, algorithm, length or permission mask each stay locked. A challenge is re-pushed after `ABORT`, the window expires on silence, and a replayed response fails on the fresh nonce of an LFSR TRNG stub. Responses that straddle the deadline, a last word after it and continuous ABORTs across it never produce a pop or grant later than the deadline plus 256 cycles (a monitor reads the ROM's deadline variable and `mcycle`). The 256 cycles are the measured software polling tolerance of this ROM and core configuration, not a proven bound or a hard cutoff (contract §5.3). A ROM with the reviewed late-response defect must fail. 107 checks |
 | `dbg-auth-rom-host-test` | The same `window.c` on a host mailbox model with one cycle per CSR access. Exact-deadline, queued, split, repeated-ABORT, stalled-TRNG and 400 random schedules. Four mutants, one the reviewed defect, must fail. Runs as part of `dbg-auth-window-test` |
 | `dbg-core-auth-open-test` | The whole real-core debug bench with `KARU_DBG_AUTH` in `OPEN`. The summary must match the base build: same checks, cycles and retirements. This is benchmark evidence: an authentication build always decodes the island range `[0x1_0000, 0x2_4000)`, so programs using that range differ (contract §7) |
-| `dbg-auth-window-seed-test` | The window bench on a core with `KARU_ZKR` and the entropy block, with a ROM built to read its nonce from `seed`, as the VCU118 image's ROM does. 108 checks; the bench confirms that every nonce word came from `seed` and none from `mdbgrng` |
+| `dbg-auth-window-seed-test` | The window bench with the FPGA entropy source and its noise model behind `seed`, in place of the stand-in (`test/dbg/karudbg_test_seed.v`) that `dbg-auth-window-test` uses since `mdbgrng` was removed on 2026-11-19; both ROMs read their nonce from `seed`. 108 checks; the bench confirms that every nonce is sixteen words taken from `seed` |
+| `dbg-auth-window-noseed-test` | The window bench on a core **without** `KARU_ZKR`, with the ROM that such an image gets (`-DAUTH_NO_SEED`, in the SHA3 build with the public test key): with a `REQUEST` and without one, the ROM pushes no challenge word, grants nothing, takes no illegal-instruction trap, closes the window and issues the first instruction of the next stage (after 41,061 clocks; most of them clear the island SRAM). A `REQUEST` after the hand-over finds the mailbox closed. 19 checks. Two controls must fail, each on its own check: the ROM built without the flag reads `seed`, an illegal instruction with no trap vector set; and a ROM whose `make_nonce()` reports success without a source pushes a challenge with a constant nonce. Added on 2026-11-19 after a reviewer ran this path once in a temporary bench |
 | `sv39-auth-pma-test` | The island SRAM and the Debug Module's page lie inside the boot ROM's span and are not ROM in the access permissions. Checked through the address translator; the control, which makes the island SRAM executable again, is caught by the `HLVX` case |
 | `dbg-board-auth-rehearsal-test` | The board's client (`test/dbg/board/authlib.py`, `auth_phase.py`) and pristine OpenOCD against the simulated target running the real window ROM: locked examine, a correct response, a wrong one, a replay, a fresh nonce after another power-on reset, expiry and the straps; four client mutants and five wrong setups must be refused |
 | `dbg-board-auth-sha3-rehearsal-test` | The same rehearsal with the island ROM built for algorithm `0x04` (SHA3-256 shared secret) and the public test key: locked, authenticate, wrong response, replay, fresh nonce; a wrong key, no key and a TEST-only client are refused |
 | `dbg-auth-sba-revoke-test` | Four-state bench on `karudbg_core` with authentication and SBA (`test/dbg/tb_auth_sba_revoke.sv`): debug revoked while an SBA read or write is outstanding, in 24 timings of the held beat, by `revoke_i` and by the hart's `fw_lock`. The accepted transfer drains exactly once, no SBA access reaches the bus after the fall, DMI shows only the locked view and never the drained data, and the hart's own accesses complete. Three controls (keeps launching, leaks the data, never drains) |
-| `dbg-auth-bypass-test` | Lemma C1, structural: a bit-level inventory of what reaches each protected element of the flattened `karudbg_top` without crossing a cut, against an explicit allowlist; five controls. `dbg-auth-bypass-image-test` runs it with the VCU118 image's defines (H, vectors, Zkr) |
+| `dbg-auth-revoke-ext-test` | The revocation bench of the row above in twelve configurations (`test/dbg/run_auth_revoke_ext.py`): two-state Verilator, instruction cache, RVA23 and vector builds; with `karu_ddr_xbar` as the responder (36 scenarios); and through the JTAG transport (29 scenarios, with an `sbdata0` read in the clock-domain crossing at the fall). 334 scenario runs, 12,444 checks; the three mutants are detected in every configuration |
+| `dbg-auth-bypass-test` | Lemma C1, structural: a bit-level inventory of what reaches each protected element of the flattened `karudbg_top` without crossing a cut, against an explicit allowlist; five controls. `dbg-auth-bypass-image-test` runs it as the VCU118 image is synthesised: its define list (H, vectors, Zkr, the instruction cache) and the parameters its top binds (the reset vector in the island ROM, external time, the window limit at 2³¹) |
 
 Formal lemmas (`dbg-auth-formal-test`, not part of the functional gate):
 
 | Lemma | Proof |
 | --- | --- |
 | C2: locked DM inertness | Unbounded |
+| C3: what a locked debugger reads does not depend on hart, memory or fabric state (two DMs that share the DMI side and the authdata read data) | Unbounded |
 | C4: core entry gate, and `debug_mode=0` after reset | One-step, sound over-approximation |
 | C5: authentication block, including window closing, `REQUEST` and hold | Unbounded |
+| C5w: the hardware window limit, at widths 1, 3 and 31 and switched off | Unbounded |
 | C6: reset values | Four-state reset simulation of each debug module with an allowlist, reset-pin check, five negative controls; C6v and C6cone one-step proofs |
 | C7: revocation | Short BMC from an arbitrary state |
 | C8: CSR provenance | One-step, sound over-approximation |
-| C9: island responses, burst lengths unconstrained | Unbounded for routing and ownership |
+| C9: island responses, burst lengths unconstrained | Unbounded for routing and ownership; six bridge-consistency assertions bounded at depth 12 |
+| C9own: response ownership for the whole transaction, checked against ghost state that reads neither the router's flags nor its decode | Unbounded; 44 assertions, 56 controls, one written for each assertion |
 | C10: the core issues one transaction at a time per channel (C9's assumption) | Unbounded on the core arbiters |
 
-Each lemma has mutants that must fail. These are module-level results under
-each lemma's stated assumptions. C1 (bypass freedom), C3 (noninterference)
-and the composition are open, so the formal milestone A3 is partial; see the
-[plan](../doc/debug-auth-plan.md) for the 2026-11-16 corrections to C5, C6
-and C9.
+Sixteen entries and 111 controls that must fail (2026-11-19, about 23
+minutes). C1, bypass freedom, is the structural inventory in the table
+above and runs in the functional gate. These are module-level results under
+each lemma's stated assumptions. `make dbg-auth-compose-test` (about 12
+minutes, not in the gate) puts them together: C9 and C10 in one model with
+each side's assumptions about the other as assertions, four glue lemmas
+(one of them C3 with the gate's next state free and separate for each DM),
+and a report that matches every assumption of every lemma to what
+discharges it. Two findings stay open there (nothing proves that the word
+executed is the word fetched, and four core lemmas are not run in the
+image's configuration) and eighteen steps of the argument are not
+machine-checked, so the formal milestone A3 is partial; see the
+[plan](../doc/debug-auth-plan.md).
 
 The simulation ROM stub is not a verifier. The signature verifier is
 milestone A2, formal proofs are A3, OpenOCD flows are A4 and VCU118
 integration is A5. A5 is implemented: the default VCU118 debug image has
-the authentication block, the island with a `TEST`-algorithm ROM that reads
-its nonce from `seed`, and the lifecycle and boot hold on DIP switch SW12.
-[The board test plan](BOARD_TEST_PLAN.md) has the runs; none has been made.
+the authentication block, the island with the SHA3-256 shared-secret ROM
+(algorithm `0x04`) that reads its nonce from `seed`, and the lifecycle and
+boot hold on DIP switch SW12. [The board test plan](BOARD_TEST_PLAN.md) has
+the runs, and the acceptance records (`BOARD_ACCEPTANCE*.md`) what was run.
 
 ## Ordinary ISA replay with debug idle
 

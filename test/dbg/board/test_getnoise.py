@@ -137,7 +137,10 @@ d_entry:	.dword 0, 0, 0, 0, 0, 0, 0
 BASE, SIZE = 0x80000000, 0x20000            # the part of the bench RAM that is loaded and dumped
 LOAD = BASE + 0x2000                        # payload; the driver and the tohost page are below it
 BUF = LOAD + 0x10000                        # where getnoise_capture.py puts the buffer
-PRE = (700 << 26) | (37 << 16) | 9          # a configuration the bench does not have by itself
+# A configuration the bench does not have by itself, and that its limits
+# accept: every field stricter than the reset value (calm 25, 2 strikes,
+# symbol cutoffs 100 and 12, lane cutoffs 700 and 37), k = 10.
+PRE = (25 << 57) | (2 << 54) | (100 << 44) | (12 << 37) | (700 << 26) | (37 << 16) | 9
 LOCK = 1 << 63
 FIELDS = ["status", "stored", "runs", "losses", "polls", "cfg_before", "cfg_used", "cfg_after", "noise_after", "mcause", "mepc"]
 
@@ -297,7 +300,8 @@ for name, params in (("count 0", [31, 0, BUF, N, 4096]), ("count over size", [31
 
 # waits are bounded, and the source is put back on the way out
 o, _ = run("sim-strap-low", std_bin, [31, N, BUF, N, 1500], plusargs=["+zkr_en=0"])
-check(o["status"] == 6 and o["stored"] == 0 and o["polls"] == 1500, "no symbols (strap low): TIMEOUT after the idle limit")
+check(o["status"] == 6 and o["stored"] == 0 and o["runs"] == 0 and o["losses"] == 1500 and o["polls"] == 3000,
+      "no symbols (strap low): every poll finds the loss flag of a source that is off, then TIMEOUT after the idle limit")
 check(o["cfg_after"] == PRE and o["d_cfg"] == PRE and o["d_noise"] == 1, "TIMEOUT: configuration restored, test mode left")
 o, _ = run("sim-fast", std_bin, [0, N, BUF, N, 1500])
 check(o["status"] == 6 and o["stored"] == 0 and o["losses"] > 700 and o["runs"] == 0, "a source faster than the loop (8 clocks per symbol): only losses, then TIMEOUT")
@@ -321,7 +325,7 @@ code, clocks, after = simulate("sim-tohost", mem)
 o = outcome(after, sim_sym, BASE)
 runs = split_runs(o["buffer"][:256])
 check(code == 0 and o["status"] == 0 and o["stored"] == 256 and runs is not None and len(runs) == 1, "GETNOISE_SIM build: status 0 through tohost")
-check(source_error(runs, 64, clocks) is None and o["cfg_after"] == o["cfg_before"] == (821 << 26) | (41 << 16) | 1 and o["noise_after"] == 1,
+check(source_error(runs, 64, clocks) is None and o["cfg_after"] == o["cfg_before"] == (24 << 57) | (3 << 54) | (124 << 44) | (15 << 37) | (719 << 26) | (55 << 16) | 1 and o["noise_after"] == 1,
       "GETNOISE_SIM build: symbols from the source, the bench's reset configuration restored")
 struct.pack_into("<5Q", mem, sim_sym["getnoise_params"], 63, 0, BUF, 256, 4096)
 check(simulate("sim-tohost-param", mem)[0] == 4, "GETNOISE_SIM build: an error status is the exit code")
@@ -688,7 +692,8 @@ for k, clocks in zip((32, 64), fake.clocks):
     check(len(data) == 512 and side["sha256"] == hashlib.sha256(data).hexdigest() and side["k"] == k and side["run_lengths"] == [512]
           and side["stored"] == 512 and side["losses"] == 0 and side["note"] == "self-test", f"k={k}: capture file and sidecar agree")
     check(int(side["cfg_before"], 16) == PRE == int(side["cfg_after"], 16) and int(side["cfg_used"], 16) == (PRE & ~0xffff) | (k - 1)
-          and side["rct_cutoff"] == 37 and side["apt_cutoff"] == 700 and side["noise_after"] == 1, f"k={k}: sidecar records the configuration before, during and after")
+          and side["rct_cutoff"] == 37 and side["apt_cutoff"] == 700 and side["symbol_rct_cutoff"] == 12 and side["symbol_apt_cutoff"] == 100
+          and side["strikes"] == 2 and side["calm_log2"] == 25 and side["noise_after"] == 1, f"k={k}: sidecar records the configuration before, during and after")
     check(source_error(split_runs(data), k, clocks) is None, f"k={k}: the file holds consecutive samples of the simulated source")
 check(fake.regs["pc"] == fixture == 0x208000 and fake.state == "halted", "the phase leaves the hart halted at the fixture's entry, as the other phases do")
 code, res, _ = analysis("phase", [str(where / "getnoise-k32.bin"), str(where / "getnoise-k64.bin")])

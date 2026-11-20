@@ -14,8 +14,9 @@
 //	   other bit zero, including the custom bits [23:16].
 //	3. Words arrive: M-mode polls until it has eight; S-mode then collects
 //	   four within the 100 polls that Linux allows itself.
-//	4. The custom M-mode CSRs mnoise (0x7C8, GetNoise) and mentropycfg
-//	   (0x7C9), with -DZKR_TEST_CUSTOM: reset value, restart on a write,
+//	4. The custom M-mode CSRs mnoise (0x7C8, GetNoise), mentropycfg
+//	   (0x7C9) and mentropystat (0x7CA, read-only), with -DZKR_TEST_CUSTOM:
+//	   reset value, restart on a write,
 //	   test mode, raw symbols with the loss flag, and the lock.
 //
 //	-DZKR_TEST_H adds the VS/VU rows (core built with KARU_H).
@@ -33,6 +34,7 @@
 	.equ	CSR_MSECCFG,	0x747
 	.equ	CSR_MNOISE,		0x7C8
 	.equ	CSR_MENTROPYCFG, 0x7C9
+	.equ	CSR_MENTROPYSTAT, 0x7CA
 	.equ	SSEED,			0x200
 	.equ	USEED,			0x100
 	.equ	M_M,			3
@@ -40,8 +42,11 @@
 	.equ	M_U,			0
 	.equ	M_VS,			5
 	.equ	M_VU,			4
-	//	reset value of mentropycfg in the test bench: apt 821, rct 41, k = 2
-	.equ	CFG_RESET,		(821 << 26) | (41 << 16) | 1
+	//	reset value of mentropycfg in the test bench: the default cutoffs
+	//	(calm 24, 3 strikes, 124 and 15 on the symbol, 719 and 55 per lane)
+	//	and k = 2
+	.equ	CFG_CUT,		(24 << 57) | (3 << 54) | (124 << 44) | (15 << 37) | (719 << 26) | (55 << 16)
+	.equ	CFG_RESET,		CFG_CUT | 1
 
 #ifndef ZKR_TEST_H
 #define ZKR_TEST_H 0
@@ -196,11 +201,32 @@ rows_done:
 	srli	t0, a0, 30
 	li		t1, 2
 	bne		t0, t1, fail				//	the buffered word is still there
+	li		s0, 113						//	mentropystat: running, nothing else
+	csrr	t0, CSR_MENTROPYSTAT
+	li		t1, 1
+	bne		t0, t1, fail
+	li		t2, -1						//	read-only: every write form is taken and ignored
+	csrrw	a0, CSR_MENTROPYSTAT, t2
+	bne		a0, t1, fail
+	csrrs	a0, CSR_MENTROPYSTAT, t2
+	bne		a0, t1, fail
+	csrrc	a0, CSR_MENTROPYSTAT, t2
+	bne		a0, t1, fail
+	csrr	t0, CSR_MENTROPYSTAT
+	bne		t0, t1, fail
+	csrr	t0, CSR_MENTROPYCFG			//	and reaches no other register
+	li		t1, CFG_RESET
+	bne		t0, t1, fail
+	csrr	t0, CSR_MNOISE
+	li		t1, 1
+	bne		t0, t1, fail
 	li		s0, 112
-	li		t1, (821 << 26) | (41 << 16) | 0
+	li		t1, CFG_CUT | 0
 	csrw	CSR_MENTROPYCFG, t1
 	csrrw	a0, CSR_SEED, zero
 	bnez	a0, fail					//	BIST, no entropy
+	csrr	t0, CSR_MENTROPYSTAT
+	bnez	t0, fail					//	the start-up test again, no alarm, no failure
 	csrr	t0, CSR_MENTROPYCFG
 	bne		t0, t1, fail
 	jal		ra, m_collect8
@@ -211,7 +237,7 @@ rows_done:
 	csrr	t0, CSR_MNOISE
 	li		t1, 1
 	bne		t0, t1, fail				//	present, not in test mode
-	li		t1, (821 << 26) | (41 << 16) | 255
+	li		t1, CFG_CUT | 255
 	csrw	CSR_MENTROPYCFG, t1			//	k = 256: slow enough to read every symbol
 	csrrw	a0, CSR_MNOISE, s9			//	enter test mode
 	li		t1, 1
@@ -287,14 +313,14 @@ rows_done:
 	csrr	t0, CSR_MNOISE
 	li		t1, 1
 	bne		t0, t1, fail
-	li		t1, (821 << 26) | (41 << 16) | 0
+	li		t1, CFG_CUT | 0
 	csrw	CSR_MENTROPYCFG, t1
 	jal		ra, m_collect8
 	beqz	a0, fail
 
 	//	---- 4: the lock ----
 	li		s0, 130
-	li		t1, (821 << 26) | (41 << 16) | 1
+	li		t1, CFG_CUT | 1
 	li		t2, 1
 	slli	t2, t2, 63
 	or		t1, t1, t2
@@ -383,6 +409,8 @@ p_cfg_w: csrrw	a0, CSR_MENTROPYCFG, zero	//	would zero the cutoffs and the inter
 	ecall
 p_noise_w: csrrw a0, CSR_MNOISE, s9			//	would enter test mode
 	ecall
+p_stat:	csrr	a0, CSR_MENTROPYSTAT
+	ecall
 
 	.macro ROW mode, sec, probe, cause, value=0
 	.dword	\mode, \sec, \probe, \cause, \value
@@ -426,6 +454,9 @@ table:
 	ROW	M_S, SSEED,			p_cfg,	2
 	ROW	M_S, SSEED,			p_noise, 2
 	ROW	M_U, USEED,			p_cfg,	2
+	ROW	M_M, 0,				p_stat,	0
+	ROW	M_S, SSEED,			p_stat,	2
+	ROW	M_U, USEED,			p_stat,	2
 	//	writes from below M trap and change nothing: sections 110 and 120
 	//	find the reset configuration and no test mode
 	ROW	M_S, SSEED,			p_cfg_w, 2
@@ -435,6 +466,8 @@ table:
 	ROW	M_VU, SSEED,		p_noise, 2
 	ROW	M_VS, SSEED,		p_noise_w, 2
 	ROW	M_VU, SSEED|USEED,	p_cfg_w, 2
+	ROW	M_VS, SSEED,		p_stat,	2
+	ROW	M_VU, SSEED|USEED,	p_stat,	2
 #endif
 #endif
 	.dword	-1

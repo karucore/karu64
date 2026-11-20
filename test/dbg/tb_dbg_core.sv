@@ -91,9 +91,7 @@ module tb_dbg_core;
     // lc=OPEN: the whole bench must behave exactly as without authentication.
     reg [1:0] lc_i = 2'd0;
     reg hold_strap_i = 1'b0, revoke_i = 1'b0;
-    reg [1:0] trng_opst_i = 2'd2;
-    reg [15:0] trng_data_i = 16'h0;
-    wire trng_ack_o, auth_reset_o;
+    wire auth_reset_o;
 `endif
     always #5 clk = !clk;
     karudbg_core dut (.*);

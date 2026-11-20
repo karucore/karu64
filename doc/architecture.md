@@ -218,8 +218,9 @@ errors, split accesses, masked/segmented ff loads and posted-store cancellation.
   by the in-order memory drain.
   With the opt-in `KARU_ZKR` the CSR file also decodes `seed` (`0x015`),
   `mseccfg` (`0x747`, `SSEED` and `USEED` only) and the custom M-mode
-  `mnoise` (`0x7C8`) and `mentropycfg` (`0x7C9`). It applies the access
-  rules and holds `mseccfg`; the three entropy CSRs themselves live in
+  `mnoise` (`0x7C8`), `mentropycfg` (`0x7C9`) and `mentropystat` (`0x7CA`,
+  read-only). It applies the access
+  rules and holds `mseccfg`; the four entropy CSRs themselves live in
   `rtl/karu_entropy.v`, outside the core, behind the `zkr_*` ports. The
   value that block returns must not depend combinationally on the value
   being written, because a CSR set or clear instruction computes one from

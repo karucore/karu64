@@ -39,9 +39,7 @@ module tb_auth_core #(parameter ROM_HEX = "rom.hex");
     wire [1:0] dmi_resp_op_o;
     reg [1:0] lc_i = 2'd1;
     reg hold_strap_i = 1'b1, revoke_i = 1'b0;
-    reg [1:0] trng_opst_i = 2'd2;
-    reg [15:0] trng_data_i = 16'h5a5a;
-    wire trng_ack_o, auth_reset_o;
+    wire auth_reset_o;
     karudbg_core #(.RESET_PC(64'h0001_0000), .ISLAND_ROM_HEX(ROM_HEX)) dut (.*);
     wire [31:0] mmio_reads, mmio_writes;
     wire [63:0] mmio_value;
@@ -256,14 +254,16 @@ module tb_auth_core #(parameter ROM_HEX = "rom.hex");
 
         // ---- AUTH, no strap: boots locked without a window. The application
         // probes the CSR instruction-form table (contract 3): three illegal
-        // forms trap with cause 2 and are skipped; a legal read does not. ----
+        // forms and an access to 0x7C3, which was mdbgrng and is no CSR any
+        // more, trap with cause 2 and are skipped; a legal read does not. ----
         @(negedge clk); rst = 1; lc_i = 1; hold_strap_i = 0;
         memory.clear_ram();
         memory.put_insn('h0, 32'h7c102373);                // csrrs t1, mdbgrx, x0 (read-only: illegal)
         memory.put_insn('h4, 32'h7c20e073);                // csrrsi x0, mdbgtx, 1 (set form: illegal)
         memory.put_insn('h8, 32'hfc001073);                // csrrw x0, mdbgmbst, x0 (read-only CSR: illegal)
-        memory.put_insn('hc, 32'hfc002e73);                // csrr t3, mdbgmbst (legal)
-        memory.put_insn('h10, 32'h0000006f);               // j .
+        memory.put_insn('hc, 32'h7c301373);                // csrrw t1, 0x7c3, x0 (formerly mdbgrng: illegal)
+        memory.put_insn('h10, 32'hfc002e73);               // csrr t3, mdbgmbst (legal)
+        memory.put_insn('h14, 32'h0000006f);               // j .
         memory.put_insn('h100, 32'h341023f3);              // handler: csrr t2, mepc
         memory.put_insn('h104, 32'h00438393);              //          addi t2, t2, 4
         memory.put_insn('h108, 32'h34139073);              //          csrw mepc, t2
@@ -271,8 +271,8 @@ module tb_auth_core #(parameter ROM_HEX = "rom.hex");
         repeat (5) @(negedge clk); rst = 0;
         illegal_traps = 0;
         repeat (2000) @(negedge clk);
-        check(illegal_traps == 3, $sformatf("three illegal CSR forms trapped (%0d)", illegal_traps));
-        check(dut.core.ex_pc == RAM + 'h10, "legal mdbgmbst read did not trap");
+        check(illegal_traps == 4, $sformatf("three illegal CSR forms and the removed mdbgrng trapped (%0d)", illegal_traps));
+        check(dut.core.ex_pc == RAM + 'h14, "legal mdbgmbst read did not trap");
         wr(7'h10, 1);
         repeat (500) @(negedge clk);
         check(!auth_reset_o, "no strap, no hold");

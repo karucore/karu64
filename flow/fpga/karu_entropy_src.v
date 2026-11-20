@@ -22,20 +22,32 @@
 //	BIST, which OpenSBI and Linux both handle by falling back; it is the
 //	way to take the source out of the boot if it misbehaves.
 //
-//	The trng_* signals carry the same words in the format of the
-//	karudbg_auth TRNG port, for an integration that still uses mdbgrng.
 //	SPDX-License-Identifier: BSD-2-Clause
 
 module karu_entropy_src #(
 	parameter integer SIM            = 0,		//	1: behavioural noise model (no entropy)
 	parameter integer SAMPLE_DIV     = 256,		//	clk cycles per raw symbol (1..256), outside test mode
 	parameter integer BURST_LOG2_WORDS = 11,	//	burst capture: 2^n words of 16 symbols
+	//	The entropy block's configuration after reset, and the weakest that
+	//	software can set (rtl/karu_entropy.v). A limit follows its reset value
+	//	unless the build says otherwise. The values are for the VCU118 rings at
+	//	75 MHz and SAMPLE_DIV = 256 (doc/sp800-90b-assessment.md): a target of
+	//	3 bits per 4-bit symbol, 0.75 bit per lane bit, false alarms at 2^-40
+	//	per test.
 	parameter [15:0]  INTERVAL_RESET = 16'd15,	//	k-1: raw symbols per kept symbol, less one
-	parameter [15:0]  INTERVAL_MIN   = 16'd0,
-	parameter [9:0]   RCT_RESET      = 10'd41,
-	parameter [9:0]   RCT_MAX        = 10'd1023,
-	parameter [10:0]  APT_RESET      = 11'd821,
-	parameter [10:0]  APT_MAX        = 11'd1024
+	parameter [15:0]  INTERVAL_MIN   = INTERVAL_RESET,
+	parameter [6:0]   SRCT_RESET     = 7'd15,
+	parameter [6:0]   SRCT_MAX       = SRCT_RESET,
+	parameter [9:0]   SAPT_RESET     = 10'd124,
+	parameter [9:0]   SAPT_MAX       = SAPT_RESET,
+	parameter [9:0]   RCT_RESET      = 10'd55,
+	parameter [9:0]   RCT_MAX        = RCT_RESET,
+	parameter [10:0]  APT_RESET      = 11'd719,
+	parameter [10:0]  APT_MAX        = APT_RESET,
+	parameter [2:0]   STRIKE_RESET   = 3'd3,
+	parameter [2:0]   STRIKE_MAX     = STRIKE_RESET,
+	parameter [4:0]   CALM_RESET     = 5'd24,
+	parameter [4:0]   CALM_MIN       = CALM_RESET
 ) (
 	input  wire			clk,
 	input  wire			rst,
@@ -46,10 +58,6 @@ module karu_entropy_src #(
 	input  wire			csr_we_i,
 	input  wire [63:0]	csr_wdata_i,
 	output wire [63:0]	csr_rdata_o,
-
-	output wire [1:0]	trng_opst_o,
-	output wire [15:0]	trng_data_o,
-	input  wire			trng_ack_i,
 
 	//	registers of the burst capture (karu_noise_burst.v)
 	input  wire			reg_re_i,
@@ -62,7 +70,7 @@ module karu_entropy_src #(
 	wire		rng_en, rng_fips, rng_val;
 	wire [3:0]	rng_b;
 	wire [7:0]	rng_div;
-	wire		noise_test, cfg_lock;
+	wire		noise_test, cfg_lock, respace;
 	localparam integer DIV_LESS_ONE = SAMPLE_DIV - 1;
 	localparam [7:0] DIV_RESET = DIV_LESS_ONE[7:0];
 
@@ -72,20 +80,21 @@ module karu_entropy_src #(
 
 	karu_noise_burst #(.LOG2_WORDS(BURST_LOG2_WORDS), .DIV_RESET(DIV_RESET)) burst (
 		.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(cfg_lock),
-		.rng_en_i(rng_en), .rng_val_i(rng_val), .rng_b_i(rng_b), .div_o(rng_div),
+		.rng_en_i(rng_en), .rng_val_i(rng_val), .rng_b_i(rng_b), .div_o(rng_div), .respace_o(respace),
 		.reg_re_i(reg_re_i), .reg_raddr_i(reg_raddr_i), .reg_rdata_o(reg_rdata_o),
 		.reg_we_i(reg_we_i), .reg_waddr_i(reg_waddr_i), .reg_wdata_i(reg_wdata_i));
 
 	karu_entropy #(
 		.INTERVAL_RESET(INTERVAL_RESET), .INTERVAL_MIN(INTERVAL_MIN),
-		.RCT_RESET(RCT_RESET), .RCT_MAX(RCT_MAX), .APT_RESET(APT_RESET), .APT_MAX(APT_MAX)
+		.SRCT_RESET(SRCT_RESET), .SRCT_MAX(SRCT_MAX), .SAPT_RESET(SAPT_RESET), .SAPT_MAX(SAPT_MAX),
+		.RCT_RESET(RCT_RESET), .RCT_MAX(RCT_MAX), .APT_RESET(APT_RESET), .APT_MAX(APT_MAX),
+		.STRIKE_RESET(STRIKE_RESET), .STRIKE_MAX(STRIKE_MAX), .CALM_RESET(CALM_RESET), .CALM_MIN(CALM_MIN)
 	) entropy (
 		.clk(clk), .rst(rst), .en_i(en_i),
 		.rng_en_o(rng_en), .rng_fips_o(rng_fips), .rng_val_i(rng_val), .rng_b_i(rng_b),
 		.csr_fire_i(csr_fire_i), .csr_sel_i(csr_sel_i), .csr_we_i(csr_we_i),
 		.csr_wdata_i(csr_wdata_i), .csr_rdata_o(csr_rdata_o),
-		.opst_o(trng_opst_o), .data_o(trng_data_o), .trng_ack_i(trng_ack_i),
-		.test_o(noise_test), .lock_o(cfg_lock));
+		.respace_i(respace), .test_o(noise_test), .lock_o(cfg_lock));
 
 `ifndef KARU_NO_ASSERT
 	// synthesis translate_off

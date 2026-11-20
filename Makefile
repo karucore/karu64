@@ -4,7 +4,16 @@
 BUILD	=	_build
 VFLAGS	=	-Irtl
 
-XCHAIN	?=	riscv64-unknown-elf-
+#	The bare-metal toolchain, by absolute path when $(RISCV) has one. A lookup
+#	on PATH can find another compiler under the same name: on the build host
+#	a login shell finds ~/.local/bin/riscv64-unknown-elf-gcc first, a link to
+#	the Linux-target GCC, which writes unwind tables by default. The image
+#	f3493b17 (2026-11-19) got its fu-boot and U-Boot from it, with an
+#	.eh_frame section each. `make toolchain-check` prints what is used and
+#	fails if the compiler does not target what its name says; packing a boot
+#	ROM runs it. A Linux-target toolchain chosen by name (XCHAIN=
+#	riscv64-linux-gnu-) still works and is recorded as such.
+XCHAIN	?=	$(if $(wildcard $(RISCV)/bin/riscv64-unknown-elf-gcc),$(RISCV)/bin/,)riscv64-unknown-elf-
 KARUDEB	?=	../karudeb
 
 #	default: build the freestanding hello firmware and run it on spike.
@@ -156,14 +165,42 @@ $(BUILD)/vcu118_fuboot_rom.elf:	$(VCU118_FUBOOT_SRCS) flow/boot/fugzip.h flow/bo
 $(BUILD)/vcu118_fuboot_rom.bin:	$(BUILD)/vcu118_fuboot_rom.elf
 	$(XCHAIN)objcopy -O binary $< $@
 
+#	What compiles the firmware: the path, what `gcc -dumpmachine` says it
+#	targets, and its version. The target must be the one in the compiler's
+#	name (see XCHAIN): a link named riscv64-unknown-elf-gcc that runs a
+#	Linux-target compiler is refused, a compiler named for Linux is noted.
+.PHONY: toolchain-check
+toolchain-check:
+	@p=$$(command -v $(XCHAIN)gcc) || { echo "ERROR: no compiler $(XCHAIN)gcc"; exit 1; }; \
+	m=$$($(XCHAIN)gcc -dumpmachine); v=$$($(XCHAIN)gcc --version | head -1); \
+	want=$$(basename "$(XCHAIN)gcc" -gcc); \
+	echo "toolchain: $$p targets $$m; $$v"; \
+	if [ "$$m" != "$$want" ]; then \
+		echo "ERROR: $$p is named for $$want but targets $$m."; \
+		echo "       Set RISCV to the prefix that has bin/riscv64-unknown-elf-gcc, or XCHAIN to the prefix of the compiler meant."; \
+		exit 1; \
+	fi; \
+	if [ "$$m" != riscv64-unknown-elf ]; then \
+		echo "NOTE: not a bare-metal compiler: it writes unwind tables by default, so the firmware carries an .eh_frame section"; \
+	fi
+
 #	Assemble the ROM image into _build/vcu118_fuboot.hex. Vivado is launched
 #	from _build, so karu_boot_mem reads this file relative to Vivado's cwd.
-vcu118-fuboot-rom-hex:	$(BUILD)/vcu118_fuboot_rom.bin flow/boot/fuboot_blobs.h flow/build_fuboot_rom.sh
+#	$(VCU118_FUBOOT_TOOLCHAIN) records the compilers of fu-boot (this make)
+#	and of U-Boot (flow/build_uboot.sh leaves karu-toolchain.txt beside its
+#	binary); the ROM manifest of the programming bundle repeats it.
+VCU118_FUBOOT_TOOLCHAIN = $(BUILD)/vcu118_fuboot_toolchain.txt
+vcu118-fuboot-rom-hex:	toolchain-check $(BUILD)/vcu118_fuboot_rom.bin flow/boot/fuboot_blobs.h flow/build_fuboot_rom.sh
 	flow/build_fuboot_rom.sh $(BUILD)/vcu118_fuboot_rom.bin \
 		$(FUBOOT_OPENSBI) $(FUBOOT_OPENSBI_OFF) \
 		$(FUBOOT_UBOOT)   $(FUBOOT_UBOOT_OFF) \
 		$(FUBOOT_ROM_DTB) $(FUBOOT_DTB_OFF) \
 		$(VCU118_FUBOOT_HEX) $(FUBOOT_ROM_BYTES)
+	@{ echo "fu-boot: $$(command -v $(XCHAIN)gcc) targets $$($(XCHAIN)gcc -dumpmachine); $$($(XCHAIN)gcc --version | head -1)"; \
+	   if [ -r "$(dir $(FUBOOT_UBOOT))karu-toolchain.txt" ] && [ ! "$(FUBOOT_UBOOT)" -nt "$(dir $(FUBOOT_UBOOT))karu-toolchain.txt" ]; then \
+	     echo "U-Boot:  $$(cat "$(dir $(FUBOOT_UBOOT))karu-toolchain.txt")"; \
+	   else echo "U-Boot:  no compiler record as new as $(FUBOOT_UBOOT)"; fi; } > $(VCU118_FUBOOT_TOOLCHAIN)
+	@cat $(VCU118_FUBOOT_TOOLCHAIN)
 
 #	==========================================================
 #	karu64 (the core) -- iverilog HTIF simulation
@@ -2026,7 +2063,7 @@ UBOOT_NETBOOT_DIR ?= $(UBOOT_DIR)-netboot
 UBOOT_NETBOOT_BIN  = $(UBOOT_NETBOOT_DIR)/u-boot.bin
 
 $(UBOOT_BIN):
-	UBOOT_DIR="$(UBOOT_DIR)" flow/build_uboot.sh
+	UBOOT_DIR="$(UBOOT_DIR)" CROSS_COMPILE="$(XCHAIN)" flow/build_uboot.sh
 
 #	The netboot U-Boot has no standalone build rule -- the per-target *-rom-{gc,vec}
 #	recipes build it (each with its OWN bootcmd) into UBOOT_NETBOOT_DIR before the
@@ -2295,6 +2332,11 @@ VIVADO_REPO_ROOT := $(CURDIR)
 VIVADO_BUILD_DIR := $(abspath $(BUILD))
 VIVADO_ENV := KARU_REPO_ROOT="$(VIVADO_REPO_ROOT)" KARU_BUILD_DIR="$(VIVADO_BUILD_DIR)"
 VIVADO_RUN := cd "$(VIVADO_BUILD_DIR)" && $(VIVADO_ENV)
+#	A design with KARU_DBG_AUTH has the authentication key in its island ROM,
+#	and so in its three checkpoints and in the bitstream. Vivado then runs
+#	with umask 077, and flow/fpga/xcvu9p-ddr-synth.tcl sets those four files
+#	to mode 0600 and checks it (KARU_PRIVATE lines). $(1) is the define list.
+VIVADO_PRIVATE_UMASK = $(if $(filter KARU_DBG_AUTH,$(1)),umask 077;)
 VIVADO_FPGA_SRC := $(VIVADO_REPO_ROOT)/flow/fpga
 
 #	Structural guards against an accidentally inferred runtime divider/modulo.
@@ -2391,7 +2433,7 @@ gen-pcspma:	| $(BUILD)
 			-source "$(VIVADO_FPGA_SRC)/eth/gen_pcspma.tcl"
 
 vcu118_ddr.bit:	mig-vcu118 $(VCU118_FUBOOT_HEX) | $(BUILD)
-	ulimit -v $(VIVADO_VMEM_KB); \
+	$(call VIVADO_PRIVATE_UMASK,$(KARU_DEFINES)) ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" VIVADO_THREADS="$(VIVADO_THREADS)" \
 		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
 		KARU_OPT_DIRECTIVE="$(KARU_OPT_DIRECTIVE)" KARU_PLACE_DIRECTIVE="$(KARU_PLACE_DIRECTIVE)" \
@@ -2492,7 +2534,7 @@ VCU118_NETBOOT_FILE_VEC ?= $(KARUDEB)/build/karu64/tftp/zvk-ddr/uboot-netboot-on
 
 vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
 	@if [ -s "$(VCU118_NETBOOT_FILE_GC)" ]; then echo "== ROM U-Boot: baking auto-netboot bootcmd from $(VCU118_NETBOOT_FILE_GC) =="; else echo "== ROM U-Boot: no $(VCU118_NETBOOT_FILE_GC) -- U-Boot will drop to its => prompt =="; fi
-	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_GC) 2>/dev/null)" flow/build_uboot.sh
+	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_GC) 2>/dev/null)" CROSS_COMPILE="$(XCHAIN)" flow/build_uboot.sh
 	$(MAKE) vcu118-fuboot-rom-hex \
 		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
 		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
@@ -2531,12 +2573,12 @@ FUBOOT_VEC_DTB ?= $(KARUDEB)/build/karu64/karu64-zvk-ddr.dtb
 VCU118_VEC_EXTRA_DEFINES ?=
 vcu118-ddr-sgmii-rom-vec: gen-pcspma mig-vcu118 | $(BUILD)
 	@if [ -s "$(VCU118_NETBOOT_FILE_VEC)" ]; then echo "== ROM U-Boot: baking auto-netboot bootcmd from $(VCU118_NETBOOT_FILE_VEC) =="; else echo "== ROM U-Boot: no $(VCU118_NETBOOT_FILE_VEC) -- U-Boot will drop to its => prompt =="; fi
-	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_VEC) 2>/dev/null)" flow/build_uboot.sh
+	UBOOT_DIR="$(UBOOT_NETBOOT_DIR)" UBOOT_NETBOOT_CMD="$$(cat $(VCU118_NETBOOT_FILE_VEC) 2>/dev/null)" CROSS_COMPILE="$(XCHAIN)" flow/build_uboot.sh
 	$(MAKE) vcu118-fuboot-rom-hex \
 		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
 		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
 		FUBOOT_ROM_DTB="$(FUBOOT_VEC_DTB)"
-	ulimit -v $(VIVADO_VMEM_KB); \
+	$(call VIVADO_PRIVATE_UMASK,$(VCU118_VEC_EXTRA_DEFINES)) ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_ZVK KARU_KECCAK KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_SMCNTRPMF KARU_SSCOFPMF $(VCU118_VEC_EXTRA_DEFINES)" \
 		VIVADO_THREADS="$(VIVADO_THREADS)" \
 		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
@@ -2707,6 +2749,7 @@ vcu118-program-bundle: | $(BUILD)
 			fi; \
 			python3 flow/rom_manifest.py --rom-hex "$(VCU118_FUBOOT_HEX)" --blobs flow/boot/fuboot_blobs.h \
 				--bit "$(BUILD)/vcu118_ddr.bit" --manifest "$(VCU118_ROM_MANIFEST)" --dtb "$(VCU118_ROM_DTB)" \
+				--toolchain "$(VCU118_FUBOOT_TOOLCHAIN)" \
 				--repo karu64=. --repo karudeb="$(KARUDEB)"; \
 			files="$$files $(VCU118_ROM_MANIFEST) $(VCU118_ROM_DTB)"; \
 		else \
@@ -2724,7 +2767,7 @@ vcu118-program-bundle: | $(BUILD)
 			echo "NOTE: no $(VCU118_AUTH_RECORD): no authentication record or key in the bundle"; \
 		fi; \
 		rm -f "$(VCU118_PROGRAM_TGZ).tmp"; \
-		(umask 077; tar -czf "$(VCU118_PROGRAM_TGZ).tmp" $$files); \
+		(umask 077; tar --mode=go-rwx -czf "$(VCU118_PROGRAM_TGZ).tmp" $$files); \
 		chmod 600 "$(VCU118_PROGRAM_TGZ).tmp"; mv -f "$(VCU118_PROGRAM_TGZ).tmp" "$(VCU118_PROGRAM_TGZ)"; \
 		echo "Wrote $(VCU118_PROGRAM_TGZ) (mode 600): $$files"
 
@@ -2960,7 +3003,13 @@ stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/
 #	rtl/karu_entropy.v behind the seed CSR, with the FPGA noise source
 #	flow/fpga/karu_rosc_rng.v (a behavioural model in simulation).
 #	  entropy-test	unit test of karu_entropy with driven symbols, and its
-#			one-mechanism mutants (test/entropy_mutants.py)
+#			one-mechanism mutants (test/entropy_mutants.py); then the health
+#			tests against their reference model
+#			(test/dbg/board/entropy_health.py) on the same symbols
+#			(test/entropy_replay.py), and the model against the criteria
+#			of SP 800-90B section 4.5 and the source's failure modes.
+#			ENTROPY_DATA=<files of 4-bit symbols> replays board captures
+#			too, and ENTROPY_RESTART=<files> restart data, row by row
 #	  zkr-test	the seed access table, mseccfg, word delivery and the custom
 #			CSRs on the core, with and without H, and with the strap low;
 #			then mutants of the access rules in rtl/karu_csr.v
@@ -2985,6 +3034,11 @@ entropy-test: | $(BUILD)
 	grep 'first ES16' $(BUILD)/entropy/run.log
 	python3 test/entropy_mutants.py --out $(BUILD)/entropy/mut > $(BUILD)/entropy/mutants.log 2>&1 || { cat $(BUILD)/entropy/mutants.log; exit 1; }
 	tail -1 $(BUILD)/entropy/mutants.log
+	python3 test/entropy_replay.py --out $(BUILD)/entropy/replay $(if $(ENTROPY_DATA),--data $(ENTROPY_DATA)) \
+		$(if $(ENTROPY_RESTART),--restart $(ENTROPY_RESTART)) > $(BUILD)/entropy/replay.log 2>&1 || { grep -v '^ok ' $(BUILD)/entropy/replay.log; exit 1; }
+	tail -1 $(BUILD)/entropy/replay.log
+	python3 test/dbg/board/entropy_health.py criteria > $(BUILD)/entropy/criteria.json || { cat $(BUILD)/entropy/criteria.json; exit 1; }
+	grep '"verdict": "PASS"' $(BUILD)/entropy/criteria.json
 
 #	No combinational loop between the CSR file and the entropy block. A CSR
 #	set or clear instruction computes the value it writes from the value it
@@ -3051,8 +3105,12 @@ ddr-noise-burst-sim:
 	mkdir -p $(NB_DIR)
 	$(NB_BUILD) DDR_SIM_DIR=$(NB_DIR)/obj DDR_RTL='$(DDR_RTL) $(ZKR_RTL)' $(NB_SIM) > $(NB_DIR)/build.log 2>&1 \
 		|| { tail -20 $(NB_DIR)/build.log; exit 1; }
+#	No unwind tables: with them the Linux-targeting compiler's image runs 24
+#	bytes into the tohost page; the bare-metal compiler's image is the same
+#	with or without the flags.
 $(BUILD)/noise_burst_test.elf:	$(NB_TEST_SRCS) flow/spike.ld | $(BUILD)
-	$(XCHAIN)gcc $(HTIF_CFLAGS) -Os -march=rv64gc_zicsr -T flow/spike.ld -o $@ $(NB_TEST_SRCS)
+	$(XCHAIN)gcc $(HTIF_CFLAGS) -Os -march=rv64gc_zicsr -fno-asynchronous-unwind-tables -fno-unwind-tables \
+		-T flow/spike.ld -o $@ $(NB_TEST_SRCS)
 $(BUILD)/noise_burst_test.hex:	$(BUILD)/noise_burst_test.elf
 	$(XCHAIN)objcopy -O binary $< $(BUILD)/noise_burst_test.bin
 	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/noise_burst_test.bin > $@

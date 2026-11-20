@@ -81,26 +81,40 @@ module tb_jtag_core #(parameter ROM_HEX = "") (
     // Rehearsal options; the values below are the defaults, as before:
     //   +auth_lc=<0..3>         lifecycle strap
     //   +auth_hold=<0|1>        boot-hold strap
-    //   +auth_trng_opst=<0..3>  TRNG status (2 is ES16)
-    //   +auth_trng_lfsr         TRNG data from an LFSR that advances with
+    // With KARU_ZKR (a model whose ROM draws a nonce from seed), what seed
+    // reports is a stand-in driven here:
+    //   +auth_seed_opst=<0..3>  seed status (2 is ES16, 0 a source that
+    //                           stays in BIST, 3 a dead one)
+    //   +auth_seed_lfsr         seed words from an LFSR that advances with
     //                           every word taken and survives a power-on
     //                           reset, so each window draws another nonce
     reg [1:0] lc_i = 2'd1;
     reg hold_strap_i = 1'b1;
     wire revoke_i = 1'b0;
-    reg [1:0] trng_opst_i = 2'd2;
-    reg [15:0] trng_data_i = 16'h5a5a;
-    reg trng_lfsr = 1'b0;
-    wire trng_ack_o, auth_reset_o;
+    wire auth_reset_o;
     integer auth_arg;
     initial begin
         if ($value$plusargs("auth_lc=%d", auth_arg)) lc_i = auth_arg[1:0];
         if ($value$plusargs("auth_hold=%d", auth_arg)) hold_strap_i = auth_arg[0];
-        if ($value$plusargs("auth_trng_opst=%d", auth_arg)) trng_opst_i = auth_arg[1:0];
-        trng_lfsr = $test$plusargs("auth_trng_lfsr");
     end
-    always @(posedge clk) if (trng_lfsr && trng_ack_o)
-        trng_data_i <= {trng_data_i[14:0], trng_data_i[15] ^ trng_data_i[13] ^ trng_data_i[12] ^ trng_data_i[10]};
+`ifdef KARU_EN_ZKR
+    reg [1:0] seed_opst = 2'd2;
+    reg [15:0] seed_data = 16'h5a5a;
+    reg seed_lfsr = 1'b0;
+    wire seed_taken;
+    wire [63:0] zkr_rdata_i, zkr_wdata_o;
+    wire zkr_fire_o, zkr_we_o;
+    wire [1:0] zkr_sel_o;
+    initial begin
+        if ($value$plusargs("auth_seed_opst=%d", auth_arg)) seed_opst = auth_arg[1:0];
+        seed_lfsr = $test$plusargs("auth_seed_lfsr");
+    end
+    karudbg_test_seed seed (
+        .zkr_fire_i(zkr_fire_o), .zkr_sel_i(zkr_sel_o), .zkr_we_i(zkr_we_o), .zkr_rdata_o(zkr_rdata_i),
+        .opst_i(seed_opst), .data_i(seed_data), .taken_o(seed_taken));
+    always @(posedge clk) if (seed_lfsr && seed_taken)
+        seed_data <= {seed_data[14:0], seed_data[15] ^ seed_data[13] ^ seed_data[12] ^ seed_data[10]};
+`endif
     karudbg_top #(.RESET_PC(64'h0001_0000), .ISLAND_ROM_HEX(ROM_HEX)) dut (.*,.rst(por),.tdo_oe());
 `else
     karudbg_top dut (.*,.rst(por),.tdo_oe());

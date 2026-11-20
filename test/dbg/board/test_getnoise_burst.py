@@ -136,7 +136,10 @@ BASE, SIZE = 0x80000000, 0x40000            # the part of the bench RAM that is 
 LOAD = BASE + 0x2000                        # payload; the driver and the tohost page are below it
 BUF = LOAD + 0x10000                        # where getnoise_burst.py puts the buffer
 DIV = 8                                     # the bench's own sampling period (ZKR_SAMPLE_DIV)
-PRE = (700 << 26) | (37 << 16) | 9          # a configuration the bench does not have by itself
+# A configuration the bench does not have by itself, and that its limits
+# accept: every field stricter than the reset value (calm 25, 2 strikes,
+# symbol cutoffs 100 and 12, lane cutoffs 700 and 37), k = 10.
+PRE = (25 << 57) | (2 << 54) | (100 << 44) | (12 << 37) | (700 << 26) | (37 << 16) | 9
 LOCK = 1 << 63
 MAGIC = 0x4b4e4231
 FIELDS = ["status", "stored", "words", "polls", "ctrl", "period_used", "cfg", "noise_after", "ctrl_after", "mcause", "mepc"]

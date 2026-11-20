@@ -412,5 +412,12 @@ samples them every 1 to 256 clocks in its test mode. It is in bitstream
 `85f07e58…` and ran on the board on 2026-11-19
 ([record](dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)): the
 noise model can now be fitted, and lanes 2 and 3 show a dependence.
+Since bitstream `ddb168e1…` the health tests are SP 800-90B's approved
+tests on the 4-bit sample plus lane tests, with a latched alarm and a
+strike count; on the board on 2026-11-20 every interval read between
+resets, about 100 minutes in total, ended with zero failures on the real
+rings ([record](dbg/BOARD_ACCEPTANCE-2026-11-20.md)). The source is
+not SP 800-90B compliant and no min-entropy is claimed
+([assessment](doc/sp800-90b-assessment.md)).
 See [the FPGA guide](doc/fpga.md) and the
 [Zkr follow-up plan](doc/zkr-followup-plan.md).

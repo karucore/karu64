@@ -61,6 +61,8 @@ dbg-functional-gates: lsu-aw-w-test nomem-aw-w-isa-test dbg-bscan-truncate-test 
 # doc/debug-auth-contract.md).
 dbg-functional-gates: dbg-auth-test
 dbg-functional-gates: dbg-auth-sba-revoke-test
+# The same in other configurations, behind the DDR crossbar and through JTAG.
+dbg-functional-gates: dbg-auth-revoke-ext-test
 # The access permissions of a core with authentication: the island SRAM and
 # the Debug Module's page are inside the boot ROM's span and are not ROM.
 # Checked through the address translator, HLVX included, with a control.

@@ -22,6 +22,24 @@ simulating the SoC see [flows.md](flows.md).
 The notes are newest first. The text after them describes the October 29
 image.
 
+**2026-11-20 image (board-tested 2026-11-20, [record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).** Bitstream `ddb168e1…096aad` changes
+three things against `85f07e58…`: the entropy block's health tests are the
+redesigned ones (the two SP 800-90B tests on the 4-bit sample, lane tests
+at lags 1 to 4, a latched alarm, strikes, and the read-only `mentropystat`
+CSR; [assessment, section 9](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19));
+`mdbgrng` (`0x7C3`) is gone; and the authentication window has a hardware
+limit of 2³¹ clocks, 28.6 s, behind the ROM's own 14.3 s. It meets 75 MHz
+(setup +0.008 ns, hold +0.011 ns, no DRC errors;
+[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)). Its boot ROM is the
+accepted image's: fu-boot, OpenSBI, the device tree, the boot command and
+the island ROM are byte-identical to those of `85f07e58…`, and U-Boot
+differs in the 5 bytes of its build date. The
+[board test plan, section 8](../dbg/BOARD_TEST_PLAN.md) has what to expect.
+A first build of the same RTL on 2026-11-19, `f3493b17…`, had fu-boot and
+U-Boot
+from a Linux-target compiler and was replaced before it reached a board
+(see the toolchain paragraph below and the measurements).
+
 **2026-11-18 evening image (board-tested 2026-11-19, [record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).** Bitstream
 `85f07e58…f2639a` adds to `d7ff00dc…` a burst capture for the entropy
 source's characterisation, with a sampling period that can be set in test
@@ -182,14 +200,36 @@ flow/with_vivado.sh make vcu118-ddr       # build -> _build/vcu118_ddr.bit
 flow/with_vivado.sh make prog_vcu118_ddr  # separate, explicit JTAG programming
 ```
 
-The boot/ROM builds compile bare-metal fu-boot with the `XCHAIN` toolchain
-(default `riscv64-unknown-elf-`). If only a Linux GNU cross toolchain is
-installed, override it — fu-boot is freestanding, so it builds fine:
+The boot/ROM builds compile bare-metal fu-boot, and U-Boot, with the
+`XCHAIN` toolchain. Its default is `riscv64-unknown-elf-` by absolute path,
+`$RISCV/bin/riscv64-unknown-elf-`, when `$RISCV` has that compiler, and
+the name on `PATH` otherwise. The absolute path matters: a name on `PATH`
+does not say which compiler runs (the 2026-11-19 build `f3493b17…` got a
+Linux-target GCC through a link of that name; see
+[measurements](../dbg/MEASUREMENTS.md)). Packing a boot ROM runs
+`make toolchain-check`, which prints the compiler's path, its
+`-dumpmachine` target and its version, and refuses a compiler that does
+not target what its name says. The same line is written to
+`_build/vcu118_fuboot_toolchain.txt` for fu-boot and for U-Boot, and from
+there into the ROM manifest of the programming bundle.
+
+If only a Linux GNU cross toolchain is installed, name it: fu-boot is
+freestanding, so it builds fine. Such a compiler writes unwind tables by
+default, so fu-boot and U-Boot then carry an `.eh_frame` section (about
+1 KiB and 95 KiB); the check notes it.
 
 ```sh
 flow/with_vivado.sh make vcu118-ddr-sgmii-rom-vec XCHAIN=riscv64-linux-gnu- \
      VIVADO_VMEM_KB=84000000 VIVADO_THREADS=8
 ```
+
+**File modes.** An image with `KARU_DBG_AUTH` has the authentication key in
+its island ROM, and therefore in its three checkpoints and in the
+bitstream. For such an image the Makefile runs Vivado with `umask 077`,
+and the flow sets those four files to mode 0600 and checks it
+(`KARU_PRIVATE` lines in the log), like the key file, the ROM image and
+the programming bundle. On the board host, unpack the bundle with
+`umask 077` into a directory of mode 0700.
 
 The Makefile launches Vivado from `_build`, so journals, logs, `.Xil`, generated
 IP, project state, reports, checkpoints, and bitstreams stay under `_build`. The
@@ -454,17 +494,28 @@ instruction-memory latency.
     depended combinationally on the value being written to another
     entropy CSR, which closes a loop through every CSR set and clear
     instruction. `make zkr-loop-test` now checks that without Vivado.
-  - `rtl/karu_entropy.v`: keeps every k-th symbol, runs the repetition-count
-    and adaptive-proportion tests on each lane, packs four symbols into a
-    16-bit word and buffers eight words. A `seed` word is 16 raw bits. Words
-    are released four at a time, because Linux and OpenSBI give up after 100
-    and 1,000 polls. With the default parameters the first word is available
-    56.8 ms after reset at 75 MHz.
-  - `mentropycfg` (`0x7C9`) holds k, the two test cutoffs and a lock;
+  - `rtl/karu_entropy.v`: keeps every k-th symbol, runs the health tests,
+    packs four symbols into a 16-bit word and buffers eight words. A `seed`
+    word is 16 raw bits. Words are released four at a time, because Linux
+    and OpenSBI give up after 100 and 1,000 polls. With the default
+    parameters the first word is available 56.8 ms after reset at 75 MHz.
+    In the images up to `85f07e58…` the health tests are a repetition count
+    and an adaptive proportion test on each lane. **Since image
+    `ddb168e1…` (2026-11-20; on the board that day, zero failures in every interval read; induced failures in simulation only):** the two SP 800-90B tests on the
+    4-bit symbol as well, a lane repetition count at lags 1 to 4, a `BIST`
+    alarm that stays until a `seed` access has seen it, and a strike count
+    that ends a recurring failure in `DEAD`
+    ([assessment, section 9](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)).
+  - `mentropycfg` (`0x7C9`) holds k, the test cutoffs and a lock;
     `mnoise` (`0x7C8`) is the GetNoise test interface of the Zkr rationale
     and returns raw symbols with a loss flag while `seed` is held in `BIST`.
     It also works on a source that has failed its tests for good (`seed`
     then reports `DEAD`), which is when raw samples are most needed.
+    In the tree since 2026-11-19: `mentropycfg` also holds the two symbol
+    cutoffs and the two failure numbers, its reset values are the weakest
+    it accepts, and `mentropystat` (`0x7CA`, read-only) reports the state,
+    the alarm, the strikes and the last failure. The header of
+    `rtl/karu_entropy.v` has the fields.
   - `flow/fpga/karu_noise_burst.v` (added 2026-11-18, after the board
     session: **not in bitstream `d7ff00dc…`**): a measurement aid for
     characterising the rings, which `mnoise` is too slow for. In the
@@ -522,9 +573,10 @@ instruction-memory latency.
   On the board top the two are joined by `flow/fpga/karu_entropy_src.v`,
   which is also what the simulation benches instantiate, with a
   behavioural model in place of the rings.
-  Tests: `make entropy-test` (the block, 33 mutants), `make zkr-test` (the
+  Tests: `make entropy-test` (the block, 86 mutants, and its health tests
+  against a Python model on the same symbols), `make zkr-test` (the
   access table in M, S, U, VS and VU, the value format, the custom CSRs and
-  the strap on the core; 14 mutants), `make zkr-loop-test` (no
+  the strap on the core; 17 mutants), `make zkr-loop-test` (no
   combinational loop between the CSR file and the block),
   `make noise-burst-test` (the capture block with the noise model and the
   entropy block: the period, bursts against a record of every symbol of

@@ -277,6 +277,51 @@ the operational restart requirement is untested. The work, in order:
   restarts; a physical rationale (the Z3 model with flicker and wander) for
   the entropy claim.
 
+*Status, 2026-11-19: the first three items are implemented in RTL, tested
+in simulation and built into bitstream `ddb168e1…` (2026-11-20, timing met;
+[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)); on the
+board on 2026-11-20 (below). (A first build that evening, `f3493b17…`, had a boot ROM from the
+wrong compiler and was replaced before it was used.)*
+- `rtl/karu_entropy.v` runs the two approved tests on the 4-bit sample and,
+  per lane, a repetition count at lags 1 to 4 and the adaptive proportion
+  test. A running failure latches the `BIST` alarm until a `seed` access
+  has seen it; the third without 2^24 clean samples in between is fatal.
+  A new read-only CSR, `mentropystat` (`0x7CA`), reports the state, the
+  alarm, the strikes and what failed last.
+- The cutoffs and the failure numbers stay writable through `mentropycfg`.
+  The reset values are for a target of 3 bits per 4-bit sample (the rate
+  the Zkr text asks) and a false-alarm probability of 2⁻⁴⁰ per test: 15
+  and 124 on the sample, 55 and 719 per lane. They are the weakest
+  configuration unless a build widens the limits: software can only make
+  the tests stricter. Three bits is a target, not an established claim.
+- `seed` is the entropy block's only consumer: the authentication block's
+  own port and CSR (`mdbgrng`) are removed, and its ROM reads `seed`.
+- GetNoise: the loss flag of `mnoise` is now also set when the source is
+  switched off, when `mentropycfg` is written in test mode, and when the
+  burst block's sampling period is written, so a run never spans a stopped
+  source or a change of spacing.
+- **Decided where the plan left a choice:** the fixed configuration is a
+  one-sided limit, not a constant, so that software with an assessed claim
+  can set its cutoffs; the spacing floor does not apply in test mode,
+  where `seed` delivers nothing, so the GetNoise k-sweep still works.
+- `make entropy-test` compares the RTL with a Python model of the health
+  logic on generated faults and, with `ENTROPY_DATA=…` and
+  `ENTROPY_RESTART=…`, on board captures: D18 and D19 raise no failure at
+  the reset cutoffs and end running; the restart rows, replayed row by
+  row, raise none either, but each row is shorter than a start-up test.
+  [Section 9 of the assessment](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)
+  has the cutoffs, the rule for intermittent and persistent failures and
+  the evidence.
+- *2026-11-20, on the board* ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)):
+  every interval read between resets (`mentropystat`), about 100 minutes
+  in total, ended with zero failures on the real rings, and none in replay of that
+  day's k = 16 and restart captures; the non-IID estimate at k = 16 was
+  3.556 bits per sample. Two rings run at other frequencies relative to the
+  clock than in `85f07e58…`: the characterisation is per bitstream. An
+  hours-long reading is still open.
+- Not done: the lock in the boot chain; the operational restart data; the
+  data over the operating range; the physical rationale.
+
 ## 3. Order
 
 Z1 and Z2 belong in one bitstream. Z3's simulation part can start before

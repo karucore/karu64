@@ -10,7 +10,9 @@ an NS16550 UART instead (see [fpga.md](fpga.md)).
 
 Toolchain: the `riscv64-unknown-elf-` GNU toolchain
 (`--with-arch=rv64gcv --with-abi=lp64d`), plus `spike`, `iverilog`, and
-`verilator` on `$PATH`. Submodules (`riscv-tests`, Berkeley TestFloat-3e +
+`verilator` on `$PATH`. The Makefile's `XCHAIN` takes the compiler by
+absolute path under `$RISCV` when that prefix has it, and
+`make toolchain-check` prints what is used ([fpga.md](fpga.md)). Submodules (`riscv-tests`, Berkeley TestFloat-3e +
 SoftFloat-3e under `test/`) are initialised with
 `git submodule update --init --recursive`.
 
@@ -220,8 +222,11 @@ make noise-burst-test ddr-noise-burst-test
 and authentication has it: the island SRAM and the Debug Module's page lie
 inside the boot ROM's span and must not be ROM. The Zkr targets cover the
 opt-in `KARU_ZKR`: `entropy-test` the entropy block with driven symbols and
-33 one-mechanism mutants, `zkr-test` the `seed` access table in M, S, U, VS
-and VU with `mseccfg` and the custom CSRs on the core (14 mutants),
+86 one-mechanism mutants, then its health tests against a Python reference
+model on the same symbols (and, with `ENTROPY_DATA=…` and
+`ENTROPY_RESTART=…`, on board captures),
+`zkr-test` the `seed` access table in M, S, U, VS
+and VU with `mseccfg` and the custom CSRs on the core (17 mutants),
 `zkr-loop-test` the absence of a combinational loop between the CSR file and
 the block (Yosys), and `zkr-test-spike` the same access table on Spike.
 `noise-burst-test` is the FPGA entropy source with its burst capture

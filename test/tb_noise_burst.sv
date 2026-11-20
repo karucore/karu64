@@ -37,19 +37,18 @@ module tb_noise_burst;
     logic [2:0]  reg_raddr = 0, reg_waddr = 0;
     logic [63:0] reg_wdata = 0;
     wire  [63:0] reg_rdata, csr_rdata, q_csr_rdata;
-    wire  [1:0]  opst, q_opst;
-    wire  [15:0] data, q_data;
+    //  what seed reports, of the bench's two entropy sources
+    wire  [1:0]  opst = dut.entropy.seed_opst, q_opst = quiet.entropy.seed_opst;
+    wire  [15:0] data = dut.entropy.seed_data, q_data = quiet.entropy.seed_data;
 
     karu_entropy_src #(.SIM(1), .SAMPLE_DIV(DIV), .INTERVAL_RESET(16'd0), .BURST_LOG2_WORDS(LOG2W)) dut (
         .clk(clk), .rst(rst), .en_i(en),
         .csr_fire_i(csr_fire), .csr_sel_i(csr_sel), .csr_we_i(csr_we), .csr_wdata_i(csr_wdata), .csr_rdata_o(csr_rdata),
-        .trng_opst_o(opst), .trng_data_o(data), .trng_ack_i(1'b0),
         .reg_re_i(reg_re), .reg_raddr_i(reg_raddr), .reg_rdata_o(reg_rdata),
         .reg_we_i(reg_we), .reg_waddr_i(reg_waddr), .reg_wdata_i(reg_wdata));
     karu_entropy_src #(.SIM(1), .SAMPLE_DIV(DIV), .INTERVAL_RESET(16'd0), .BURST_LOG2_WORDS(LOG2W)) quiet (
         .clk(clk), .rst(rst), .en_i(en),
         .csr_fire_i(csr_fire), .csr_sel_i(csr_sel), .csr_we_i(csr_we), .csr_wdata_i(csr_wdata), .csr_rdata_o(q_csr_rdata),
-        .trng_opst_o(q_opst), .trng_data_o(q_data), .trng_ack_i(1'b0),
         .reg_re_i(1'b0), .reg_raddr_i(3'd0), .reg_rdata_o(),
         .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
 
@@ -243,6 +242,19 @@ module tb_noise_burst;
         csr(2'd1, 1, NT | 64'h2000_0000);
         csr(2'd1, 1, NT);
         check(got[31:29] == 3'b111, "period 1: a GetNoise poll every other cycle has a symbol and has lost one");
+        //  a period write ends a run of mnoise symbols: the spacing changes
+        regw(R_PERIOD, 64'd7);                  //  8 clocks per symbol: every one can be taken
+        csr(2'd1, 1, NT | 64'h2000_0000);       //  a new run
+        for (i = 0; i < 3; i++) begin
+            do csr(2'd1, 1, NT); while (!got[30]);
+            check(!got[29], "period 8: consecutive symbols of a run, none lost");
+        end
+        regw(R_PERIOD, 64'd3);
+        do csr(2'd1, 1, NT); while (!got[30]);
+        check(got[29], "the first symbol after a period write carries the loss flag: the run has ended");
+        csr(2'd1, 1, NT | 64'h2000_0000);
+        do csr(2'd1, 1, NT); while (!got[30]);
+        check(!got[29], "a clearing write after it starts a new run at the new period");
         check(opst == BIST && dut.entropy.state_q == 2'd0 && dut.entropy.bist_cnt == 11'd0,
               "test mode at period 1: no health test runs, seed stays in BIST");
 

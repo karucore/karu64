@@ -8,7 +8,8 @@ module karudbg_top #(
     parameter [31:0] IDCODE=32'h0000_0db3,
     parameter [63:0] AUTH_ROM_BASE=64'h0000_0000_0001_0000,
     parameter [63:0] AUTH_ROM_END=64'h0000_0000_0002_0000,
-    parameter ISLAND_ROM_HEX=""
+    parameter ISLAND_ROM_HEX="",
+    parameter integer AUTH_WINDOW_LOG2=0
 ) (
     input wire  clk,
     input wire  rst,
@@ -83,9 +84,6 @@ module karudbg_top #(
     input wire [1:0] lc_i,
     input wire hold_strap_i,
     input wire revoke_i,
-    input wire [1:0] trng_opst_i,
-    input wire [15:0] trng_data_i,
-    output wire trng_ack_o,
     output wire auth_reset_o
 `endif
 `ifdef KARU_EN_ZKR
@@ -114,7 +112,8 @@ module karudbg_top #(
         .req_op_o(req_op),.req_data_o(req_data),.resp_valid_i(resp_valid),
         .resp_ready_o(resp_ready),.resp_data_i(resp_data),.resp_op_i(resp_op));
     karudbg_core #(.RESET_PC(RESET_PC),.EXT_TIME(EXT_TIME),.NONSECURE(NONSECURE),.SBA_ENABLE(SBA_ENABLE),
-        .AUTH_ROM_BASE(AUTH_ROM_BASE),.AUTH_ROM_END(AUTH_ROM_END),.ISLAND_ROM_HEX(ISLAND_ROM_HEX)) system (
+        .AUTH_ROM_BASE(AUTH_ROM_BASE),.AUTH_ROM_END(AUTH_ROM_END),.ISLAND_ROM_HEX(ISLAND_ROM_HEX),
+        .AUTH_WINDOW_LOG2(AUTH_WINDOW_LOG2)) system (
         .clk(clk),
         .rst(rst),
         .debug_mode_o(debug_mode_o),
@@ -183,7 +182,6 @@ module karudbg_top #(
         .dmi_resp_data_o(resp_data),.dmi_resp_op_o(resp_op)
 `ifdef KARU_DBG_AUTH
         ,.lc_i(lc_i),.hold_strap_i(hold_strap_i),.revoke_i(revoke_i),
-        .trng_opst_i(trng_opst_i),.trng_data_i(trng_data_i),.trng_ack_o(trng_ack_o),
         .auth_reset_o(auth_reset_o)
 `endif
 `ifdef KARU_EN_ZKR

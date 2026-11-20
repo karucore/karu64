@@ -42,7 +42,8 @@ M = [
  # ---- the capture ----
  ("start_restarts_a_capture", BURST, "reg_wdata_i[0] && !busy_q;", "reg_wdata_i[0];"),
  ("start_without_the_bit", BURST, "reg_waddr_i == R_CTRL && reg_wdata_i[0] && !busy_q;", "reg_waddr_i == R_CTRL && !busy_q;"),
- ("period_write_while_busy", BURST, "if (reg_we_i && reg_waddr_i == R_PERIOD && !busy_q)", "if (reg_we_i && reg_waddr_i == R_PERIOD)"),
+ ("period_write_while_busy", BURST, "wire period_we = allow && reg_we_i && reg_waddr_i == R_PERIOD && !busy_q;", "wire period_we = allow && reg_we_i && reg_waddr_i == R_PERIOD;"),
+ ("period_write_keeps_the_mnoise_run", BURST, "	assign respace_o = period_we;", "	assign respace_o = 1'b0;"),
  ("read_stalls_capture", BURST, "wire take    = allow && busy_q && !fin_q && rng_val_i;", "wire take    = allow && busy_q && !fin_q && rng_val_i && !reg_re_i;"),
  ("one_symbol_short",    BURST, "wire last    = take && (&cnt_q);", "wire last    = take && (&cnt_q[AW+3:1]);"),
  ("symbol_order",        BURST, "part_q <= {rng_b_i, part_q[59:4]};", "part_q <= {part_q[55:0], rng_b_i};"),

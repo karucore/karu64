@@ -42,33 +42,45 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     wire [1:0] dmi_resp_op_o;
     reg [1:0] lc_i = 2'd1;
     reg hold_strap_i = 1'b1, revoke_i = 1'b0;
-    reg [1:0] trng_opst_i = 2'd2;
-    reg [15:0] trng_data_i = 16'h5a5a;
-    wire trng_ack_o, auth_reset_o;
-`ifdef KARU_EN_ZKR
-    // Built with KARU_ZKR, the ROM is the FPGA image's variant and takes its
-    // nonce from the seed CSR instead of mdbgrng: the entropy source with its
-    // behavioural noise model, reset with the hart. The model runs on through
-    // resets, so a window after another power-on reset draws another nonce.
+    wire auth_reset_o;
+    // The ROM draws its nonce from the seed CSR, so the core is built with
+    // KARU_ZKR and the bench provides what is behind seed:
+    //   by default      a stand-in whose words the bench chooses (an LFSR
+    //                   that advances with every word taken)
+    //   AUTH_WINDOW_ENTROPY_SRC  the entropy source of the FPGA image, with
+    //                   its behavioural noise model, reset with the hart. The
+    //                   model runs on through resets, so a window after
+    //                   another power-on reset draws another nonce.
+    //   AUTH_WINDOW_NO_SEED  nothing: the core is built without KARU_ZKR and
+    //                   has no seed CSR. Its ROM is built with -DAUTH_NO_SEED.
+    //                   Only the cases of noseed_case below run.
+    integer seed_words = 0;
+`ifndef AUTH_WINDOW_NO_SEED
     wire [63:0] zkr_rdata_i, zkr_wdata_o;
     wire zkr_fire_o, zkr_we_o;
     wire [1:0] zkr_sel_o;
+`ifdef AUTH_WINDOW_ENTROPY_SRC
     karu_entropy_src #(.SIM(2), .SAMPLE_DIV(8), .INTERVAL_RESET(16'd0)) entropy (
         .clk(clk), .rst(dut.core_rst), .en_i(1'b1),
         .csr_fire_i(zkr_fire_o), .csr_sel_i(zkr_sel_o), .csr_we_i(zkr_we_o),
         .csr_wdata_i(zkr_wdata_o), .csr_rdata_o(zkr_rdata_i),
-        .trng_opst_o(), .trng_data_o(), .trng_ack_i(1'b0),
         .reg_re_i(1'b0), .reg_raddr_i(3'd0), .reg_rdata_o(), .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
+`else
+    reg [1:0] seed_opst = 2'd2;
+    reg [15:0] seed_data = 16'h5a5a;
+    wire seed_taken;
+    karudbg_test_seed seed (
+        .zkr_fire_i(zkr_fire_o), .zkr_sel_i(zkr_sel_o), .zkr_we_i(zkr_we_o), .zkr_rdata_o(zkr_rdata_i),
+        .opst_i(seed_opst), .data_i(seed_data), .taken_o(seed_taken));
+    // A 16-bit LFSR advanced by every word the ROM takes, so each window
+    // gets a fresh nonce and a replayed response must fail.
+    always @(posedge clk) if (seed_taken)
+        seed_data <= {seed_data[14:0], seed_data[15] ^ seed_data[13] ^ seed_data[12] ^ seed_data[10]};
 `endif
-    // Which source the ROM used for its nonces: words taken from mdbgrng, and
-    // words taken from seed.
-    integer rng_words = 0, seed_words = 0;
-    always @(posedge clk) begin
-        if (trng_ack_o) rng_words = rng_words + 1;
-`ifdef KARU_EN_ZKR
-        if (zkr_fire_o && zkr_sel_o == 2'd0 && zkr_rdata_i[31:30] == 2'd2) seed_words = seed_words + 1;
+    // The nonce words the ROM took from seed.
+    always @(posedge clk)
+        if (zkr_fire_o && zkr_we_o && zkr_sel_o == 2'd0 && zkr_rdata_i[31:30] == 2'd2) seed_words = seed_words + 1;
 `endif
-    end
     karudbg_core #(.RESET_PC(64'h0001_0000), .ISLAND_ROM_HEX(ROM_HEX)) dut (.*);
     wire [31:0] mmio_reads, mmio_writes;
     wire [63:0] mmio_value;
@@ -130,14 +142,16 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     // access it guards. The island ROM is fetched uncached, one beat per
     // instruction, so one polling iteration takes about 230 cycles here.
     localparam integer SLACK = 256;
-    reg [63:0] deadline_addr = 0;
+    reg [63:0] deadline_addr = 64'h2_0000;
     reg [1023:0] rom_file;
     wire [63:0] mcycle = dut.core.csr.csr_mcycle;
     wire [63:0] rom_deadline = dut.island.sram[(deadline_addr - 64'h2_0000) >> 3];
     reg window_live = 0;                           // deadline variable written this POR
     integer late_pops = 0, late_grants = 0, grants = 0;
     initial begin
+`ifndef AUTH_WINDOW_NO_SEED                        // the no-seed ROM opens no window
         if (!$value$plusargs("deadline_addr=%h", deadline_addr)) $fatal(1, "+deadline_addr required");
+`endif
         if ($value$plusargs("rom=%s", rom_file)) begin #1; $readmemh(rom_file, dut.island.rom); end
     end
     always @(posedge clk) if (!rst && window_live) begin
@@ -151,6 +165,13 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     task check(input bit c, input string what);
         begin checks = checks + 1; if (!c) $fatal(1, "auth core check %0d: %s", checks, what); end
     endtask
+    // Since the start of the run: words the ROM pushed towards the debugger,
+    // and grants, whether or not a window was located.
+    integer rom_pushes = 0, all_grants = 0;
+    always @(posedge clk) if (!rst) begin
+        if (dut.auth.rom_push) rom_pushes <= rom_pushes + 1;
+        if (dut.auth.unlock_commit) all_grants <= all_grants + 1;
+    end
     task dmi(input [1:0] op, input [6:0] addr, input [31:0] data, output [31:0] result);
         integer t;
         begin
@@ -233,10 +254,6 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     // ---- host side of the frame protocol (contract 5) ----
     reg [31:0] chal [0:19];
     reg [31:0] old_chal [0:19];
-    // Varying TRNG stub: a 16-bit LFSR advanced by every ROM read, so each
-    // window gets a fresh nonce and a replayed response must fail.
-    always @(posedge clk) if (trng_ack_o)
-        trng_data_i <= {trng_data_i[14:0], trng_data_i[15] ^ trng_data_i[13] ^ trng_data_i[12] ^ trng_data_i[10]};
     reg [31:0] key [0:7];
     initial begin
         key[0] = 32'h6b617275; key[1] = 32'h64626761; key[2] = 32'h75746821; key[3] = 32'h54455354;
@@ -294,7 +311,50 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
         end
     endtask
 
+    // A core without Zkr has no seed CSR and so no nonce source. Its ROM is
+    // built with -DAUTH_NO_SEED: it accepts a REQUEST, makes no challenge,
+    // grants nothing, and leaves for the next stage like a ROM whose window
+    // ran out. Reading seed there would be an illegal instruction with no
+    // trap vector set, so the case also counts those.
+    task noseed_case(input bit request);
+        integer t, pushes0, traps0;
+        reg [31:0] s;
+        begin
+            por(1, request);                           // held only for a debugger that will ask
+            pushes0 = rom_pushes; traps0 = illegal_traps;
+            if (request) begin wr(7'h10, 1); wr(7'h30, 32'h10a50001); end
+            // until the first instruction is issued at the next stage, or
+            // one of the two things this ROM must not do has happened
+            t = 0;
+            while (!(dut.k_imem_arvalid && dut.k_imem_araddr == RAM[`AXI_ADDR_W-1:0]) &&
+                   rom_pushes == pushes0 && illegal_traps == traps0 && t < 400000) begin
+                @(negedge clk); t = t + 1;
+            end
+            check(rom_pushes == pushes0, "no challenge word was pushed");
+            check(illegal_traps == traps0, "the ROM did not read seed (no illegal instruction)");
+            check(t < 400000, "the ROM hands over: first instruction issued at the next stage");
+            $display("no seed, %s: next stage after %0d clocks", request ? "REQUEST" : "no request", t);
+            if (request) check(dut.auth.auth_req_q, "the REQUEST was accepted");
+            check(all_grants == 0 && !dut.auth.auth_unlock_q, "no grant");
+            repeat (200) @(negedge clk);
+            check(dut.auth.boot_done_q, "the window is closed in hardware");
+            if (!request) wr(7'h10, 1);
+            rd(7'h30, s);
+            check(s[23:21] == 3 && s[4:0] == 0, "mailbox closed, nothing to receive");
+            wr(7'h30, 32'h10a50001);                   // a REQUEST after the hand-over
+            expect_locked("locked after the hand-over", 5000);
+            check(rom_pushes == pushes0 && all_grants == 0, "a later REQUEST gets no challenge and no grant");
+            check(!saw_debug && illegal_traps == traps0, "no Debug Mode, no illegal instruction afterwards");
+        end
+    endtask
+
     initial begin
+`ifdef AUTH_WINDOW_NO_SEED
+        noseed_case(1);
+        noseed_case(0);
+        $display("karudbg auth window ROM without seed: PASS (%0d checks)", checks);
+        $finish;
+`endif
         // ---- correct TEST response unlocks ----
         por(1, 1);
         wr(7'h10, 1);
@@ -402,13 +462,12 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
         expect_locked("repeated ABORTs leave the part locked", 2000);
         check(late_grants == 0 && late_pops == 0, "no late pop or grant under repeated ABORTs");
 
-`ifdef KARU_EN_ZKR
-        check(seed_words >= 16 && seed_words % 16 == 0 && rng_words == 0,
-              "every nonce came from seed, sixteen words each, and none from mdbgrng");
-        $display("nonce source: seed, %0d words", seed_words);
+        check(seed_words >= 16 && seed_words % 16 == 0,
+              "every nonce came from seed, sixteen words each");
+`ifdef AUTH_WINDOW_ENTROPY_SRC
+        $display("nonce source: seed, the entropy source, %0d words", seed_words);
 `else
-        check(rng_words >= 16 && rng_words % 16 == 0 && seed_words == 0,
-              "every nonce came from mdbgrng, sixteen words each");
+        $display("nonce source: seed, the bench's words, %0d words", seed_words);
 `endif
         $display("karudbg auth window ROM: PASS (%0d checks)", checks);
         $finish;

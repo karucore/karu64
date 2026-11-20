@@ -7,11 +7,12 @@ run is replayed separately: samples are never joined across a run boundary,
 and the tests start afresh in every run, as they do after a restart. For each
 file:
 
-  * the tests as rtl/karu_entropy.v implements them: per lane, binary,
-    repetition count with cutoff --rct (41) and adaptive proportion over
-    non-overlapping windows of 1024 with cutoff --apt (821); a failure is
-    counted as soon as a count reaches its cutoff, also in a final partial
-    window, as the hardware does;
+  * the tests of the images up to 85f07e58 (rtl/karu_entropy.v before the
+    redesign of 2026-11-19): per lane, binary, repetition count with cutoff
+    --rct (41) and adaptive proportion over non-overlapping windows of 1024
+    with cutoff --apt (821); a failure is counted as soon as a count reaches
+    its cutoff, also in a final partial window, as that hardware does. The
+    tests of the current RTL are modelled in entropy_health.py;
   * the approved tests of SP 800-90B section 4.4 applied to the 4-bit symbol
     (the noise source sample): repetition count with C = 1 + ceil(20/H) and
     adaptive proportion with W = 512, C = 1 + CRITBINOM(512, 2^-H, 1 - 2^-20),

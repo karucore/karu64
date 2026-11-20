@@ -209,7 +209,7 @@ none is checked by the generic flow.
 | Reset fan-out | `auth_reset_o` (boot hold and relock) joins the hart-side reset inside `karudbg_core`; fabric responders that share the hart reset must follow it, as for `ndmreset` |
 | Boot-hold strap `hold_strap_i` | A physical-presence input sampled at power-on reset. It only delays boot in `AUTH`. It is treated as adversary-controlled and grants nothing by itself |
 | Revocation `revoke_i` | Optional trusted input; tie low if unused. Once high it disables debug until power-on reset |
-| TRNG port | A health-checked entropy source on `trng_opst_i`, `trng_data_i` and `trng_ack_o`, with the Zkr `seed` status encoding. The nonce is only as good as this source |
+| Nonce source | The core's Zkr `seed` CSR with a health-checked entropy source behind it (`KARU_ZKR`; see the Zkr notes below). The block has no entropy port of its own since 2026-11-19. The nonce is only as good as this source |
 | Scan and DFT | The scan controller must force `debug_enable` low and reset `karudbg_auth` on scan entry and exit (plan D6). Scan access to the grant, the mailbox or the island SRAM is outside the proof |
 | ROM software | The obligations of plan §6: interrupts off, trap vector in ROM, fresh nonce, fixed-size parsing, constant-time verification, a fault-resistant decision. The simulation ROM under `test/dbg/auth_rom/` does not meet them and must not be shipped; its `TEST` algorithm (`0x80`) must be rejected by a production ROM |
 | Window deadline | The ROM's `WINDOW_CYCLES` limit is a software cutoff with an implementation-dependent tolerance. A hard cutoff needs a worst-case margin in the ROM or a hardware timer (contract §5.3) |
@@ -242,7 +242,8 @@ Yosys; Cadence execution and compiler-macro binding have not been performed.
 ### Entropy source obligations (`KARU_ZKR`)
 
 `KARU_ZKR` is opt-in and is not part of `flow/asic/karu64.f`: the core then
-has the `seed`, `mseccfg`, `mnoise` and `mentropycfg` CSRs and expects an
+has the `seed`, `mseccfg`, `mnoise`, `mentropycfg` and `mentropystat` CSRs
+and expects an
 entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
 
 - **A noise source.** `flow/fpga/karu_rosc_rng.v` is for FPGA only: its
@@ -259,11 +260,17 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
   health tests see, the bits `seed` delivers and the bits the GetNoise
   interface shows stay the same bits. Add `rtl/karu_entropy.v` to the file
   list.
-- **Parameters from an assessment.** The reset interval, its floor
-  (`INTERVAL_MIN`) and the health-test cutoffs and their ceilings
-  (`RCT_MAX`, `APT_MAX`) are provisional. They have to come from raw data
-  of the actual source, fitted per lane to the stochastic model and
-  checked for dependence between lanes.
+- **Parameters from an assessment.** The reset interval, the health-test
+  cutoffs, the strike number and the clean-sample count, and the limits
+  that software cannot go below (`INTERVAL_MIN`, `SRCT_MAX`, `SAPT_MAX`,
+  `RCT_MAX`, `APT_MAX`, `STRIKE_MAX`, `CALM_MIN`; each follows its reset
+  value unless set) are for the FPGA rings and a target of 3 bits per
+  4-bit sample that is not yet an established claim.
+  They have to come from raw data of the actual source, fitted per lane to
+  the stochastic model and checked for dependence between lanes;
+  `test/dbg/board/entropy_health.py cutoffs` turns a claim and a
+  false-alarm probability into cutoffs
+  ([assessment, section 9](../../doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)).
 - **A policy for the test interface.** `mnoise` gives M-mode raw samples
   and holds `seed` in `BIST` meanwhile. Firmware should set the lock bit of
   `mentropycfg` before leaving M-mode; a production device may want the

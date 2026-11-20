@@ -22,12 +22,11 @@
 #define CSR_AUTH 0x7c0
 #define CSR_RX   0x7c1
 #define CSR_TX   0x7c2
-/* The nonce source. mdbgrng (0x7c3) is the authentication block's own port;
-   an integration whose core has Zkr builds with -DCSR_RNG=0x015 and reads
-   seed, which has the same format and the same take-on-write rule. */
-#ifndef CSR_RNG
-#define CSR_RNG  0x7c3
-#endif
+/* The nonce source: the Zkr seed CSR, sixteen ES16 words, each taken by a
+   read-write access. An image whose core has no seed CSR has no nonce
+   source; its ROM is built with -DAUTH_NO_SEED, makes no challenge and so
+   never unlocks. (Reading seed there would trap, with no trap vector set.) */
+#define CSR_SEED 0x015
 /* Polls allowed per nonce word while the source reports BIST or WAIT. It
    must cover the source's start-up test after reset. */
 #ifndef TRNG_TRIES
@@ -159,11 +158,15 @@ static int rx_word(uint32_t *w, int first) {
 }
 
 static int make_nonce(uint32_t *dst) {
+#ifdef AUTH_NO_SEED
+    (void)dst;
+    return 0;
+#else
     for (unsigned i = 0; i < 16; i++) {
         unsigned tries = 0;
         for (;;) {
             if (expired()) return 0;
-            uint64_t v = csr_rw(CSR_RNG, 0);
+            uint64_t v = csr_rw(CSR_SEED, 0);
             unsigned opst = (v >> 30) & 3;
             if (opst == 2) {                       /* ES16 */
                 if (i & 1) dst[i >> 1] |= (uint32_t)(v & 0xffff) << 16;
@@ -174,6 +177,7 @@ static int make_nonce(uint32_t *dst) {
         }
     }
     return 1;
+#endif
 }
 
 /* Push the whole challenge, restarting from word 0 whenever a session reset

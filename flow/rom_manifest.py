@@ -84,6 +84,8 @@ def main():
     ap.add_argument('--manifest', required=True)
     ap.add_argument('--dtb', required=True, help='where to write the DTB extracted from the ROM')
     ap.add_argument('--bit', help='bitstream that contains this ROM')
+    ap.add_argument('--toolchain', help='compiler record written when the ROM was packed '
+                                        '(the Makefile\'s VCU118_FUBOOT_TOOLCHAIN)')
     ap.add_argument('--repo', action='append', default=[], metavar='NAME=DIR')
     args = ap.parse_args()
 
@@ -144,6 +146,16 @@ def main():
                f'  (bootdelay {delay.group(1).decode() if delay else "?"})')
     out.append(f'  0x{dtb_off:05x}  control DTB       {len(dtb):7d} bytes  sha256 {sha(dtb)}')
     out.append('')
+    if args.toolchain:
+        rec = Path(args.toolchain)
+        out.append('Compilers of the firmware in this ROM (recorded when the ROM was packed, not read from the image):')
+        if not rec.is_file():
+            out.append(f'  no record ({args.toolchain} is missing)')
+        elif rec.stat().st_mtime < Path(args.rom_hex).stat().st_mtime - 60:
+            out.append(f'  no record ({args.toolchain} is older than the ROM image)')
+        else:
+            out.extend('  ' + line for line in rec.read_text().splitlines())
+        out.append('')
     out.append('Boot command baked into the ROM U-Boot (CONFIG_BOOTCOMMAND):')
     out.append(bootcmd)
     out.append('')

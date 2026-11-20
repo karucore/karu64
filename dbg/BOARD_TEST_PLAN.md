@@ -19,6 +19,17 @@ reconfiguration (a full power-on, straps sampled again) or the software
 reset (hart, peripherals and entropy source; not the authentication block)
 instead of the CPU reset button where the test allows.
 
+**Keep one process on the console port.** On 2026-11-20 a boot froze when
+one host process released the serial port and another reopened it while
+the kernel was printing ([record](BOARD_ACCEPTANCE-2026-11-20.md#finding-a-boot-froze-after-a-console-port-hand-over)).
+Open the port once, before the first reset, and keep it open: to drive
+U-Boot, use one process that drives the prompt and then keeps capturing.
+If a boot stops on the console, read GPIO LED 3 (the FPGA's CTS input)
+before any reset.
+
+**Keep a fallback image on the lab host.** The failure tables say to go
+back to the previous image; copy its bundle over before the session.
+
 | | |
 |---|---|
 | Bitstream `_build/vcu118_ddr.bit` | SHA-256 `d7ff00dc494d8354ce596b3e7ebb07aabb2df92f9df186d8a3870b9a972a3e80`, 80,159,322 bytes |
@@ -315,3 +326,95 @@ bookkeeping does not agree. Then:
 | Authentication: the response is refused with SHA3 | Check the key file: `python3 flow/auth_record.py verify --record _build/vcu118_auth_record.json --bit _build/vcu118_ddr.bit --key $KARU_BOARD_AUTH_KEY` prints `key` for this bitstream's key and fails for any other |
 | Burst phase: payload status `LOCKED` or `BUSY` | Something locked `mentropycfg` or left test mode on; a reset clears both |
 
+## 8. The 2026-11-20 image: health tests on the sample, no `mdbgrng`, a hardware window limit
+
+*Built 2026-11-19 22:29 to 2026-11-20 00:10 UTC; board-tested on 2026-11-20, accepted with documented exceptions ([record](BOARD_ACCEPTANCE-2026-11-20.md)).* It follows `85f07e58…` (section 7), whose
+steps apply with the changes below. What is new is in the entropy block and
+the authentication block. The boot ROM is the accepted image's: the same
+OpenSBI, device tree, boot command, fu-boot and island ROM byte for byte,
+and the same U-Boot except the 5 bytes of its build date.
+
+It replaces `f3493b17…`, built earlier on 2026-11-19 from the same RTL and
+never programmed: that build's fu-boot and U-Boot came from a Linux-target
+compiler ([measurements](MEASUREMENTS.md)). Do not use it.
+
+| | |
+|---|---|
+| Bitstream `_build/vcu118_ddr.bit` | SHA-256 `ddb168e1081c9b73c29cd5a16ab777ee8106a52d382469b5b741b094bc096aad`, 80,159,322 bytes |
+| Bundle `_build/vcu118_programming.tgz` | SHA-256 `88dce485fadad7c63ba42e07bd7ed5f2124d69bbef8ca2f1a53b7b8c54817342`, mode 600: it holds the authentication key |
+| Configuration | as `85f07e58…` |
+| Timing | meets 75 MHz: setup +0.008 ns, hold +0.011 ns, pulse width +0.005 ns; no DRC errors |
+| Boot ROM | OpenSBI `cbbbe5ce…`, U-Boot 2026.10 with the Zkr time-out patch (`7a27c424…`, 802,453 bytes), device tree `784e2762…`. 5 bytes differ from the ROM of `85f07e58…`, all in U-Boot's build date |
+| Compilers | fu-boot and U-Boot: `$RISCV/bin/riscv64-unknown-elf-gcc`, which targets `riscv64-unknown-elf` (recorded in the ROM manifest of the bundle) |
+| Island ROM | `f518b750…`, byte-identical to that of `85f07e58…`: algorithm `0x04`, key fingerprint `276bf6e96d8edecc`, the nonce from `seed` |
+| Sources | karu64 `f014194` with uncommitted changes (the diff and the new files are in `_build/vcu118-2026-11-19b-sources/`), karudeb `db180ff` |
+
+**Handling the bundle.** The bundle and the bitstream hold the
+authentication key, like the key file. On the board host unpack the bundle
+with `umask 077` into a directory of mode 0700, and keep the bitstream
+there:
+
+```sh
+umask 077; mkdir -m 700 ~/karu-ddb168e1 && tar -C ~/karu-ddb168e1 -xzf vcu118_programming.tgz
+```
+
+**Which image is on the board.** The boot looks the same as with
+`85f07e58…`. U-Boot's banner tells them apart: this image prints
+`U-Boot 2026.10-dirty (Nov 19 2026 - 22:30:01 +0000)`, the accepted one
+`(Nov 18 2026 - 21:33:44 +0000)`. With debug access, `mentropycfg` (`0x7C9`) reads
+`0x30c7c1eb3c37000f` after reset in this image only.
+
+**What changed, as seen from the board.**
+
+| Change | What to expect |
+| --- | --- |
+| Health tests on the 4-bit sample and on each lane at lags 1 to 4 ([assessment, section 9](../doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)); reset cutoffs 15 and 124, 55 and 719 | Nothing, if the rings behave as in the captures: `seed` works as before, the first word 57 ms after reset. If the tests trip on the real rings, `seed` reports `DEAD`: U-Boot prints "No RNG device" with switch 4 **off**, `linux_zkr.py` still passes (it checks discovery, not delivery), the `authenticate` case gets no challenge |
+| A running failure latches `BIST` until a `seed` access; the third within 15 minutes is `DEAD` | Not visible unless a failure happens |
+| `mentropycfg` (`0x7C9`) has more fields; reset value `0x30c7c1eb3c37000f` | The capture sidecars show it in `cfg_before` and `cfg_after`, with the new fields decoded. The payloads keep the fields; rebuild the fixtures from this tree |
+| `mentropystat` (`0x7CA`), read-only: state, alarm, strikes, last failure, failure count | No phase reads it yet. With the hart halted, the harness's `rawread(0x7ca)` returns it: `1` is running with no failure since reset |
+| GetNoise: the loss flag is also set when switch 4 turns the source off, when `mentropycfg` is written in test mode, and when the burst block's period is written | A capture with switch 4 on ends with `TIMEOUT` as before, now with one loss counted per poll |
+| `mdbgrng` (`0x7C3`) is gone | Nothing: this ROM already read `seed`. Any tool that read `0x7C3` gets an illegal instruction |
+| The authentication window closes in hardware 2³¹ clocks (28.6 s) after the `REQUEST` | Nothing in the cases: the ROM's own deadline, 14.3 s, still comes first, and `expiry` should see the window close there as before |
+
+**Order of work.** As section 7: stage B (boot, `linux_zkr.py`, the U-Boot
+prompt with `rng 0 10`), stage A (switch 4 on), stage C, stages D and D2
+with rebuilt fixtures, stage E with `KARU_BOARD_AUTH_ALG=SHA3` and the key
+from the bundle, stage F.
+
+**What this image is for.**
+
+- Leave it running and read `mentropystat` at the end of the session,
+  before any reset: a failure count of zero after hours is the first board
+  evidence about the new tests. Note the time since the last reset with it.
+- A k = 16 capture and a restart capture as on 2026-11-19, to compare with
+  D19 and R19; the health tests do not run in test mode, so the captures
+  themselves are unaffected.
+
+**If `seed` is ever `DEAD`.** What the tests found is in `mentropystat`, and
+the entropy block is reset with the SoC (`soc_rst` in
+`flow/fpga/vcu118_ddr_top.v`). Any reset clears it: a reboot, `reset halt`,
+reprogramming, and any fixture set-up that resets the SoC, the capture
+scripts included. So, in this order:
+
+1. **Read `mentropystat` first**, with the hart halted and without a
+   reset. It names the test, the lanes and the lags that failed. This needs
+   debug access: lifecycle `OPEN`, or `AUTH` with a grant given earlier in
+   the same power cycle.
+2. **In locked `AUTH` it cannot be read.** A source that died before
+   authentication gives the ROM no nonce, so no challenge comes, nothing
+   can be granted, and JTAG has no way to the CSR; a reset into `OPEN`
+   clears the evidence. Keep what the failed boot did show: the UART log
+   (U-Boot's "No RNG device", what OpenSBI and Linux print) and the mailbox
+   as read over JTAG (the status word and the absence of a challenge), and
+   record that the cause could not be read.
+3. Only then capture with `getnoise_capture.py` (test mode switches a dead
+   source back on) and compare with D19.
+
+**If something fails.**
+
+| Symptom | Try |
+| --- | --- |
+| `seed` is `DEAD` right after reset, switch 4 off | The start-up test failed on the real rings. Follow the three steps above; then switch 4 on to boot without the source, or go back to `85f07e58…` |
+| U-Boot or Linux behaves as with switch 4 on, but later | A third running failure made the source `DEAD`; same steps |
+| The authentication window closes before 14 s | Not expected: report the time. The hardware limit is 28.6 s |
+| The boot stops before or in U-Boot, where `85f07e58…` did not | The boot ROM is the accepted one but for U-Boot's build date, so suspect the RTL: note the last UART line, go back to `85f07e58…`, and report both |

@@ -14,6 +14,9 @@ value". The check then requires, for every flop bit in the module:
 
 A wrong reset constant, an inverted reset polarity, a missing reset and a
 register reset from the wrong net all change that value, so all four fail.
+A register that drives nothing is removed with the unused logic before the
+simulation and is not checked; "present" lists registers that must be in the
+netlist (the window counter of karudbg_auth exists only with WINDOW_LOG2 != 0).
 The input-dependent reset values of karudbg_auth (UNRESET there) are proved
 by the formal block test/dbg/formal/c6_karudbg_auth.vh, and the wiring of
 each instance's reset pin by reset_pins() below.
@@ -35,6 +38,14 @@ MODULES = {
         files=["dbg/karudbg_auth.v"], memory_map=True, nonzero={},
         # POR-sampled trust inputs set these reset values (plan 2.2): lc_i,
         # hold_strap_i and revoke_i. Their values are proved by lemma C6v.
+        unreset={"lc_q", "hold_q", "revoke_q", "debug_enable_o", "sys_reset_o"}),
+    # The same block with the hardware window limit, at the VCU118 value.
+    # With the default WINDOW_LOG2 = 0 the window counter win_cnt drives
+    # nothing and Yosys removes it before the simulation, so the entry above
+    # does not cover it; "present" makes its absence here an error.
+    "karudbg_auth WINDOW_LOG2=31": dict(
+        top="karudbg_auth", files=["dbg/karudbg_auth.v"], memory_map=True, nonzero={},
+        chparam="WINDOW_LOG2 31", present={"win_cnt"},
         unreset={"lc_q", "hold_q", "revoke_q", "debug_enable_o", "sys_reset_o"}),
     "karudbg": dict(
         files=["dbg/karudbg.v", "dbg/karudbg_rom.v", "dbg/karudbg_sba.v"], memory_map=True,
@@ -70,6 +81,8 @@ MUTANTS = [
      "auth_req_q <= 0; auth_unlock_q <= 0;"),
     ("mailbox_reset_inverted", "karudbg_auth", "dbg/karudbg_auth.v",
      "        if (rst) begin\n            rx_rd <= 0;", "        if (!rst) begin\n            rx_rd <= 0;"),
+    ("window_counter_not_reset", "karudbg_auth WINDOW_LOG2=31", "dbg/karudbg_auth.v",
+     "            win_cnt <= {(WINDOW_LOG2+1){1'b0}};\n", ""),
     ("island_owner_not_reset", "karudbg_island", "dbg/karudbg_island.v",
      "im_owner <= 0; dr_owner <= 0; dw_owner <= 0; dw_active <= 0;",
      "im_owner <= 0; dr_owner <= 0; dw_owner <= 0;"),
@@ -126,6 +139,9 @@ def judge(top, cfg, values):
     stale = sorted(n for n in cfg["unreset"] if n not in values or "x" not in values[n])
     if stale:
         errors.append(f"allowlisted as unreset but reset or absent: {stale}")
+    absent = sorted(n for n in cfg.get("present", ()) if n not in values)
+    if absent:
+        errors.append(f"register not in the netlist, so not checked: {absent}")
     return errors
 
 
@@ -157,7 +173,8 @@ def main():
     with tempfile.TemporaryDirectory(dir=ROOT / "_build") as tmp:
         work = Path(tmp)
         for top, cfg in MODULES.items():
-            values = reset_values(top, cfg, work)
+            # the key is the module, or a label for another parameter set of cfg["top"]
+            values = reset_values(cfg.get("top", top), cfg, work)
             errors = judge(top, cfg, values)
             bits = sum(len(v) for v in values.values())
             if errors:
@@ -178,10 +195,18 @@ def main():
                     raise RuntimeError(f"mutant {name}: site not unique in {path}")
                 copy = work / f"{name}.v"
                 copy.write_text(text.replace(before, after))
-                errors = judge(top, MODULES[top], reset_values(top, MODULES[top], work, (path, copy)))
+                cfg = MODULES[top]
+                errors = judge(top, cfg, reset_values(cfg.get("top", top), cfg, work, (path, copy)))
                 ok = ok and bool(errors)
                 print(f"{'detected' if errors else 'NOT DETECTED'} C6 mutant {name}"
                       + (f": {errors[0]}" if errors else ""))
+            # Control for "present": with the default WINDOW_LOG2 the window
+            # counter is not in the netlist, which must be an error.
+            cfg = dict(MODULES["karudbg_auth"], present={"win_cnt"})
+            errors = judge("karudbg_auth", cfg, reset_values("karudbg_auth", cfg, work))
+            ok = ok and bool(errors)
+            print(f"{'detected' if errors else 'NOT DETECTED'} C6 control window_counter_absent_at_default"
+                  + (f": {errors[0]}" if errors else ""))
             text = (ROOT / "dbg/karudbg_core.v").read_text()
             before = ".ROM_HEX(ISLAND_ROM_HEX)) island (\n        .clk(clk), .rst(core_rst),"
             if text.count(before) != 1:

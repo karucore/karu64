@@ -101,6 +101,23 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 	puts "KARU_DBG_AUTH: debug authentication enabled; lifecycle and hold on the DIP switches; island ROM vcu118_auth_rom.hex"
 }
 
+#	A design with debug authentication has the key in its island ROM, and so
+#	in every checkpoint and in the bitstream. Those four files are made
+#	private (mode 0600), like the key file and the ROM image. The make recipe
+#	runs Vivado with umask 077 for such a design, so that they are private
+#	while they are written too; setting the mode here covers a file that an
+#	earlier build left with a wider one. A KARU_PRIVATE line reports each.
+set karu_private [expr {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_DBG_AUTH] >= 0}]
+proc karu_private_file {path} {
+	if {!$::karu_private} { return }
+	file attributes $path -permissions 0600
+	set mode [file attributes $path -permissions]
+	if {![string match *0600 $mode]} {
+		error "KARU_PRIVATE: $path has mode $mode, not 0600"
+	}
+	puts "KARU_PRIVATE [file tail $path] mode $mode"
+}
+
 set ip_list [list \
 	$ipdir/ddr4_0/ddr4_0.xci \
 	$ipdir/axi_clock_converter_0/axi_clock_converter_0.xci \
@@ -245,6 +262,7 @@ report_timing -max_paths 30 -nworst 30 -path_type full_clock_expanded \
 report_timing -max_paths 100 -nworst 100 -sort_by slack -path_type full_clock_expanded \
                                 -file [lindex $synth_reports 3]
 write_checkpoint -force [karu_build_path vcu118_ddr_synth.dcp]
+karu_private_file [karu_build_path vcu118_ddr_synth.dcp]
 
 #	Retain this run's post-synth reports under a config tag (KARU_REPORT_TAG,
 #	else the design top). Done here too so SYNTH_ONLY feasibility runs archive.
@@ -278,6 +296,7 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 #	Save the placed checkpoint so a route failure (e.g. the native-LVDS SGMII bitslice)
 #	is diagnosable (report_route_status / report_io) without re-placing.
 write_checkpoint -force [karu_build_path vcu118_ddr_postplace.dcp]
+karu_private_file [karu_build_path vcu118_ddr_postplace.dcp]
 phys_opt_design {*}$phys_opt_args
 route_design {*}$route_args
 set route_slack [get_property SLACK [get_timing_paths -delay_type min_max]]
@@ -304,9 +323,11 @@ report_timing -max_paths 100 -nworst 100 -sort_by slack -path_type full_clock_ex
                                 -file [lindex $route_reports 3]
 report_bus_skew                 -file [lindex $route_reports 4]
 write_checkpoint -force [karu_build_path vcu118_ddr_route.dcp]
+karu_private_file [karu_build_path vcu118_ddr_route.dcp]
 write_debug_probes -force [karu_build_path vcu118_ddr.ltx]
 
 #	Retain this run's post-route reports under the same config tag.
 karu_archive_reports $rtag $route_reports
 
 write_bitstream -force [karu_build_path vcu118_ddr.bit]
+karu_private_file [karu_build_path vcu118_ddr.bit]

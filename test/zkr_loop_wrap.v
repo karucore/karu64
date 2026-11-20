@@ -9,10 +9,10 @@
 //  never active together; Vivado refuses to write a bitstream with it.
 //
 //  zkr_loop_strict is the same rule stated on the entropy block alone, and
-//  does not rely on what karu_csr happens to do: every output that the core
-//  or the authentication block reads is fed back into the write strobes, the
-//  written value and the acknowledge. csr_sel_i stays an input: it is decoded
-//  from the instruction, and the read value has to depend on it.
+//  does not rely on what karu_csr happens to do: the value that the core
+//  reads is fed back into the write strobes and the written value.
+//  csr_sel_i stays an input: it is decoded from the instruction, and the
+//  read value has to depend on it.
 //  SPDX-License-Identifier: BSD-2-Clause
 module zkr_loop_strict (
     input  wire        clk,
@@ -21,17 +21,14 @@ module zkr_loop_strict (
     input  wire        rng_val,
     input  wire [3:0]  rng_b,
     input  wire [1:0]  sel,
-    output wire [63:0] rdata,
-    output wire [1:0]  opst,
-    output wire [15:0] data
+    output wire [63:0] rdata
 );
-    wire fb = ^{rdata, opst, data};
+    wire fb = ^rdata;
     karu_entropy entropy (
         .clk(clk), .rst(rst), .en_i(en),
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(fb), .csr_sel_i(sel), .csr_we_i(fb),
-        .csr_wdata_i(rdata ^ {4{data}} ^ {32{opst}}), .csr_rdata_o(rdata),
-        .opst_o(opst), .data_o(data), .trng_ack_i(fb), .test_o(), .lock_o());
+        .csr_wdata_i(rdata), .csr_rdata_o(rdata), .respace_i(fb), .test_o(), .lock_o());
 endmodule
 
 module zkr_loop_wrap (
@@ -46,11 +43,8 @@ module zkr_loop_wrap (
     input  wire [4:0]  op_sub,
     input  wire [4:0]  op_rs1,
     input  wire        trap_req,
-    input  wire        trng_ack,
     output wire [63:0] op_rd_v,
-    output wire [1:0]  csr_exc,
-    output wire [1:0]  trng_opst,
-    output wire [15:0] trng_data
+    output wire [1:0]  csr_exc
 );
     wire [63:0] zkr_rdata, zkr_wdata;
     wire        zkr_fire, zkr_we;
@@ -65,6 +59,5 @@ module zkr_loop_wrap (
         .clk(clk), .rst(rst), .en_i(en),
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
-        .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-        .opst_o(trng_opst), .data_o(trng_data), .trng_ack_i(trng_ack), .test_o(), .lock_o());
+        .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata), .respace_i(1'b0), .test_o(), .lock_o());
 endmodule

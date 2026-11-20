@@ -22,12 +22,12 @@ VCU118_DBG_EXT_DEFINES ?= KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR
 # The key ends up in the ROM image and the bitstream: anyone holding either,
 # or the key file, can authenticate. It is not printed.
 #
-# Where the nonce comes from follows the image. With KARU_ZKR the ROM reads
-# seed and waits long enough for the entropy source's start-up test (about
-# 4.3 million clocks). Without it there is no seed CSR, and reading it would
-# trap with no trap vector set: the ROM then reads mdbgrng, whose port the
-# board top ties to DEAD, so a request is refused and the boot goes on.
-VCU118_AUTH_ROM_RNG = $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),-DCSR_RNG=0x015 -DTRNG_TRIES=200000,)
+# The nonce comes from seed. With KARU_ZKR the ROM reads it and waits long
+# enough for the entropy source's start-up test (about 4.3 million clocks).
+# Without it there is no seed CSR, and reading it would trap with no trap
+# vector set: the ROM is then built without a nonce source, so a request is
+# refused and the boot goes on.
+VCU118_AUTH_ROM_RNG = $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),-DTRNG_TRIES=200000,-DAUTH_NO_SEED)
 VCU118_AUTH_KEY ?= $(BUILD)/vcu118_auth_key.txt
 VCU118_AUTH_KEY_H = $(BUILD)/vcu118_auth_key.h
 VCU118_AUTH_RECORD = $(BUILD)/vcu118_auth_record.json
@@ -171,7 +171,7 @@ FORCE_UBOOT_SIM:
 $(IMAGE_BOOT_DIR)/uboot-sim.bin: FORCE_UBOOT_SIM
 	mkdir -p $(UBOOT_BOOT_DIR)
 	UBOOT_DIR='$(abspath $(UBOOT_BOOT_TREE))' UBOOT_REF=$(UBOOT_BOOT_REF) UBOOT_NETBOOT_CMD="$$(cat test/dbg/uboot_sim_bootcmd.txt)" \
-		flow/build_uboot.sh > $(UBOOT_BOOT_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_BOOT_DIR)/uboot-build.log; exit 1; }
+		CROSS_COMPILE="$(XCHAIN)" flow/build_uboot.sh > $(UBOOT_BOOT_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_BOOT_DIR)/uboot-build.log; exit 1; }
 	mkdir -p $(IMAGE_BOOT_DIR)
 	cmp -s $(UBOOT_BOOT_TREE)/u-boot.bin $(IMAGE_BOOT_DIR)/uboot-sim.bin || cp $(UBOOT_BOOT_TREE)/u-boot.bin $(IMAGE_BOOT_DIR)/uboot-sim.bin
 $(IMAGE_BOOT_DIR)/uboot-1g.dtb: $(IMAGE_BOOT_ZKR_DTB)
@@ -203,7 +203,7 @@ UBOOT_TFTP_DTB ?= $(KARUDEB)/build/karu64/karu64-sim.dtb
 uboot-tftp-test:
 	mkdir -p $(UBOOT_TFTP_DIR)
 	UBOOT_DIR='$(abspath $(UBOOT_TFTP_TREE))' UBOOT_REF=$(UBOOT_BOOT_REF) UBOOT_NETBOOT_CMD= \
-		flow/build_uboot.sh > $(UBOOT_TFTP_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_TFTP_DIR)/uboot-build.log; exit 1; }
+		CROSS_COMPILE="$(XCHAIN)" flow/build_uboot.sh > $(UBOOT_TFTP_DIR)/uboot-build.log 2>&1 || { tail -20 $(UBOOT_TFTP_DIR)/uboot-build.log; exit 1; }
 	: > $(UBOOT_TFTP_DIR)/flat.img
 	dd if=$(KARUDEB_OPENSBI) of=$(UBOOT_TFTP_DIR)/flat.img bs=1M conv=notrunc status=none
 	dd if=$(UBOOT_TFTP_TREE)/u-boot.bin of=$(UBOOT_TFTP_DIR)/flat.img bs=1M seek=2 conv=notrunc status=none

@@ -28,7 +28,7 @@ module tb_dm_auth;
     // authentication block
     reg [1:0] lc = 1;
     reg strap = 1, revoke = 0;
-    wire debug_enable, debug_enable_next, lc_auth, sys_reset, authbusy, trng_ack;
+    wire debug_enable, debug_enable_next, lc_auth, sys_reset, authbusy;
     wire auth_valid, auth_write, dm_active;
     wire [31:0] auth_wdata, auth_rdata;
     reg csr_fire = 0, csr_we = 0;
@@ -62,7 +62,6 @@ module tb_dm_auth;
         .dmactive_o(dm_active));
     karudbg_auth #(.AUTH_ROM_BASE(ROM), .AUTH_ROM_END(ROM + 64'h1_0000)) auth (
         .clk(clk), .rst(rst), .lc_i(lc), .hold_strap_i(strap), .revoke_i(revoke),
-        .trng_opst_i(2'd2), .trng_data_i(16'h1234), .trng_ack_o(trng_ack),
         .debug_enable_o(debug_enable), .debug_enable_next_o(debug_enable_next),
         .lc_auth_o(lc_auth), .sys_reset_o(sys_reset),
         .dm_active_i(dm_active), .dmi_valid_i(auth_valid), .dmi_write_i(auth_write),

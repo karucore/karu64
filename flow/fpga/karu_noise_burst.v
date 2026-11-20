@@ -47,6 +47,8 @@
 //	  1  period: [7:0] clock cycles per raw symbol, less one. Written only
 //	     while capturing is allowed and no capture runs. It applies to the
 //	     noise source for as long as capturing is allowed, to mnoise as well.
+//	     An accepted write ends a run of mnoise symbols (respace_o): the
+//	     symbols on either side of it are not the same distance apart.
 //	  2  index: [LOG2_WORDS-1:0] the word that the data register returns next
 //	  3  data: word `index` of the recording, then index + 1. Sixteen symbols
 //	     per word in the order they were sampled, the first in bits [3:0];
@@ -83,6 +85,7 @@ module karu_noise_burst #(
 	input  wire			rng_val_i,
 	input  wire [3:0]	rng_b_i,
 	output wire [7:0]	div_o,					//	to the noise source: clk cycles per symbol, less one
+	output wire			respace_o,				//	to the entropy block: the period is written in this cycle
 
 	//	register port
 	input  wire			reg_re_i,
@@ -111,6 +114,7 @@ module karu_noise_burst #(
 	wire word_we = take && (&cnt_q[3:0]);
 	wire last    = take && (&cnt_q);
 	wire brk     = allow && busy_q && !fin_q && !rng_en_i;		//	source off during a capture
+	wire period_we = allow && reg_we_i && reg_waddr_i == R_PERIOD && !busy_q;
 	wire pop     = allow && done_q && reg_re_i && reg_raddr_i == R_DATA;
 	wire idx_we  = allow && reg_we_i && reg_waddr_i == R_INDEX;
 	wire [AW-1:0] idx_n = idx_we ? reg_wdata_i[AW-1:0] : pop ? idx_q + 1'b1 : idx_q;
@@ -120,7 +124,7 @@ module karu_noise_burst #(
 			busy_q <= 1'b0; done_q <= 1'b0; fin_q <= 1'b0; brk_q <= 1'b0; div_q <= DIV_RESET;
 			cnt_q <= {(AW+4){1'b0}}; part_q <= 60'b0; idx_q <= {AW{1'b0}};
 		end else begin
-			if (reg_we_i && reg_waddr_i == R_PERIOD && !busy_q)
+			if (period_we)
 				div_q <= reg_wdata_i[7:0];
 			if (start) begin					//	a start with the source off is an abort at once
 				busy_q <= rng_en_i; done_q <= 1'b0; brk_q <= !rng_en_i; cnt_q <= {(AW+4){1'b0}};
@@ -152,6 +156,7 @@ module karu_noise_burst #(
 
 	//	Outside test mode the noise source runs at the build's period.
 	assign div_o = allow ? div_q : DIV_RESET;
+	assign respace_o = period_we;
 
 	//	Only the low bits of a written value are used.
 	wire unused = &{reg_wdata_i[63:8], 1'b0};

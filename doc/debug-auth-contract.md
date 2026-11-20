@@ -7,9 +7,17 @@ it was written nothing was implemented.
 
 *Status, 2026-11-17.* The RTL (A1) and the window ROM with the simulation-only
 `TEST` algorithm (A2) implement this contract; see the plan's milestone notes
-for what is tested and how. The VCU118 debug image is built with it, reading
-its nonce from the Zkr `seed` CSR in place of `mdbgrng` (section 3), which
-has the same format and take-on-write rule. Two details that the
+for what is tested and how. The VCU118 debug image is built with it.
+
+*Changed on 2026-11-19, in the tree and in bitstream `ddb168e1…`
+(board-tested on 2026-11-20: the ROM drew its nonces from `seed`; the
+2³¹-clock hardware window limit was not reached there and has simulation
+coverage only):* `mdbgrng`
+(`0x7C3`) and the block's TRNG port are removed. The ROM draws its nonce
+from the Zkr `seed` CSR, as the VCU118 image's ROM already did, so
+authentication needs a core with Zkr and an entropy source behind `seed`
+(section 3.2). And the window can be given a hard limit in hardware
+(section 5.3, `WINDOW_LOG2`). Two details that the
 implementation fixes more tightly than the text below, found while writing
 the board client: the RTL also requires `REQUEST` bits [15:8] to be zero,
 and the ROM rejects a response whose length word has bits [31:24] set.
@@ -145,10 +153,12 @@ memory mapped.
 | `0x7C0` | `mdbgauth` | Read; write-1-to-set | Grant and lifecycle state |
 | `0x7C1` | `mdbgrx` | Read-write access only | Pop one RX word (host → ROM) |
 | `0x7C2` | `mdbgtx` | Write; reads return 0 | Push one TX word (ROM → host) |
-| `0x7C3` | `mdbgrng` | Read-write access only | Pop one TRNG word |
 | `0xFC0` | `mdbgmbst` | Read-only | Mailbox counts, errors and session state |
 
-`0x7C0–0x7C3` lie in the machine custom read/write range and `0xFC0` in the
+`0x7C3` was `mdbgrng` until 2026-11-19; it is not implemented now and an
+access to it is an illegal instruction.
+
+`0x7C0–0x7C2` lie in the machine custom read/write range and `0xFC0` in the
 machine custom read-only range. A write instruction to `mdbgmbst` raises
 illegal instruction, per the CSR address convention.
 
@@ -163,7 +173,7 @@ write:
 For CSRRS/CSRRC and their immediate forms, the written value is
 `old | src` or `old & ~src`. For each CSR:
 
-| Form | `mdbgauth` | `mdbgrx`, `mdbgrng` | `mdbgtx` | `mdbgmbst` |
+| Form | `mdbgauth` | `mdbgrx` | `mdbgtx` | `mdbgmbst` |
 | --- | --- | --- | --- | --- |
 | CSRRW / CSRRWI, `rd≠x0` | Read; written value applied as W1S | Pop; return the word | Push `rs1[31:0]` or zero-extended `uimm`; return 0 | Illegal |
 | CSRRW / CSRRWI, `rd=x0` | W1S, no read | Pop and discard | Push | Illegal |
@@ -174,7 +184,7 @@ For CSRRS/CSRRC and their immediate forms, the written value is
 
 Further rules:
 
-- **`mdbgrx` and `mdbgrng`** follow the Zkr `seed` rule. Consuming a word is a
+- **`mdbgrx`** follows the Zkr `seed` rule. Consuming a word is a
   *write* side effect, a polling and flush action; the written value is
   ignored. Every read-only form is illegal, so a speculative or stray read
   cannot consume data. `rd=x0` discards the popped word.
@@ -194,7 +204,7 @@ Further rules:
   commit predicate, and `boot_done` is already set by Debug Mode entry. A
   debugger may therefore revoke its own access, which only reduces privilege
   (§3.4).
-- `mdbgrx`, `mdbgtx` and `mdbgrng` raise illegal instruction, which an
+- `mdbgrx` and `mdbgtx` raise illegal instruction, which an
   abstract command reports as `cmderr=3`.
 
 ### 3.1 `mdbgauth` (`0x7C0`)
@@ -218,7 +228,7 @@ Setting `auth_unlock` sets `perm[0]`. Writes to read-only fields, and writes of
 0 to the W1S bits, are ignored. The write-1-to-set fields change only
 monotonically between PORs.
 
-### 3.2 `mdbgrx`, `mdbgtx`, `mdbgrng`
+### 3.2 `mdbgrx`, `mdbgtx`, and the nonce source
 
 Pop and push behaviour, by instruction form, is defined in §3.
 
@@ -227,10 +237,16 @@ Pop and push behaviour, by instruction form, is defined in §3.
 - **`mdbgtx`** pushes `rs1[31:0]` if TX has space. Otherwise it drops the word
   and sets the ROM-side sticky `TX_FULL` error in `mdbgmbst`. The ROM checks
   space first.
-- **`mdbgrng`** returns `{OPST[1:0] at 31:30, 14'b0, entropy[15:0]}`, the Zkr
-  `seed` format: `OPST` is 0 `BIST`, 1 `WAIT`, 2 `ES16` or 3 `DEAD`. Only
-  `ES16` carries entropy. The source and its health tests are platform
-  obligations (plan §1.1); simulation uses a deterministic stub.
+- **The nonce** comes from the Zkr `seed` CSR (`0x015`), which the ROM reads
+  in M-mode like any other software: `{OPST[1:0] at 31:30, 14'b0,
+  entropy[15:0]}`, `OPST` 0 `BIST`, 1 `WAIT`, 2 `ES16` or 3 `DEAD`, and only
+  `ES16` carries entropy. The block has no entropy CSR or port of its own.
+  The source and its health tests are platform obligations (plan §1.1);
+  simulation uses a stand-in behind `seed` (`test/dbg/karudbg_test_seed.v`)
+  or the FPGA entropy source with its noise model. A core without Zkr has
+  no nonce source: its ROM is built with `-DAUTH_NO_SEED`, makes no
+  challenge and never unlocks, and still hands over to the next stage
+  (`make dbg-auth-window-noseed-test`).
 
 ### 3.3 `mdbgmbst` (`0xFC0`)
 
@@ -403,7 +419,7 @@ rejects nonzero padding.
 | 0 | Header (algorithm = the ROM's accepted ID) |
 | 1 | `[15:0]` body length in bytes (fixed: 72); `[23:16]` `perm_req`; `[25:24]` `lc` |
 | 2–9 | Device-identity digest, 32 bytes |
-| 10–17 | Nonce, 32 bytes, from `mdbgrng` `ES16` words only |
+| 10–17 | Nonce, 32 bytes, from `seed` `ES16` words only |
 | 18–19 | Monotonic POR counter if the platform has one, else 0 (8 bytes) |
 
 **RESPONSE (host → ROM)**
@@ -427,6 +443,7 @@ timeout. Whether to send it is the ROM's choice, made after the decision, and
 | `MAX_SIG_BYTES` | 2560 (≥ 2484) |
 | `MAX_RESPONSE_WORDS` | 2 + 640 = 642 |
 | `WINDOW_CYCLES` (ROM build constant) | 2³⁰ cycles from `REQUEST` observation to decision (about 10.7 s at 100 MHz; 14.3 s at the VCU118 image's 75 MHz) |
+| `WINDOW_LOG2` (hardware parameter of `karudbg_auth`; `AUTH_WINDOW_LOG2` on `karudbg_core` and `karudbg_top`) | 0: no limit in hardware. n > 0: the window is open for exactly 2ⁿ clocks after the edge that accepts the `REQUEST`; in the clock after that no unlock can commit and `boot_done` is set, whatever the ROM does. The counter is POR-domain state: a hart reset does not restart it. The VCU118 top sets 31 (28.6 s), behind the ROM's own 2³⁰ |
 
 The ROM rejects without unlocking, and then sets `boot_done`, when any of these
 holds:
@@ -446,10 +463,11 @@ holds:
   simulation ROM's tests allow 256 cycles for this, a tolerance measured for
   that ROM and core configuration (about 230 cycles per polling iteration,
   with the island ROM fetched uncached). It is not a proven maximum and does
-  not carry over to other implementations. If production needs a hard
-  cutoff at `WINDOW_CYCLES`, the ROM must end its window early by a justified
-  worst-case margin, or expiry must be enforced in hardware; D5 currently
-  chooses neither;
+  not carry over to other implementations. A hard cutoff is what
+  `WINDOW_LOG2` provides: with it set, the software tolerance only decides
+  which of the two deadlines closes the window, and no unlock can commit
+  after 2^`WINDOW_LOG2` clocks. Without it (the default), the ROM's
+  deadline with this tolerance is the only one;
 - `sess_reset` is set while the ROM is parsing a RESPONSE (§4.1). Hardware has
   already closed the window in this case; the rule keeps the ROM from
   continuing;
@@ -468,7 +486,7 @@ The plan's recommended defaults are adopted.
 | D2 | No locked-DM "reset into window" command. Re-entry is by POR with the physical strap. |
 | D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (Ed25519, ML-DSA-44 or hybrid) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). Interim, 2026-11-18: the FPGA image uses the shared-secret `SHA3` (`0x04`, §5.1) for validation; this does not settle D3. |
 | D4 | One permission bit, `perm[0]`, granting full debug: run control, abstract commands, Program Buffer and SBA. Mask bits 1–7 are reserved, and `REQUEST` and the ROM reject them. |
-| D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3; a hard cutoff is not provided. |
+| D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3. A hard cutoff of the window, not of the hold, is available as the opt-in parameter `WINDOW_LOG2` (§5.3, added 2026-11-19). |
 | D6 | The scan controller must force `debug_enable=0` and reset `karudbg_auth` on scan entry and exit. This is a platform obligation, recorded for A7. |
 
 ## 7. `lc=OPEN` equivalence
@@ -513,10 +531,10 @@ With `KARU_DBG_AUTH` defined and `lc` tied to `OPEN`:
     benchmark, not a general proof. The strap is ignored outside `AUTH`, and an
   assertion in `karudbg_auth` checks that the hart is never held or reset
   outside `AUTH` without revocation.
-- The core differs only in the five CSRs of §3, which exist with
+- The core differs only in the four CSRs of §3, which exist with
   `KARU_DBG_AUTH` and are illegal without it. Equivalence is therefore
   required for every hart program, and every debugger session, that does not
-  access `0x7C0–0x7C3` or `0xFC0`, with `revoke_i=0`. Today such an access
+  access `0x7C0–0x7C2` or `0xFC0`, with `revoke_i=0`. Today such an access
   traps, so no existing program depends on it.
 
 The plan's formula stands, and `mdbgauth.debug_enable` (§3.1) reports it:

@@ -35,7 +35,7 @@ module karu_csr (
     output wire trigger_exec_hit_o, trigger_data_hit_o, trigger_data_armed_o,
 `endif
 `ifdef KARU_DBG_AUTH
-    //  Authentication CSRs 0x7C0-0x7C3, 0xFC0 live in the POR-domain
+    //  Authentication CSRs 0x7C0-0x7C2, 0xFC0 live in the POR-domain
     //  karudbg_auth block (doc/debug-auth-contract.md section 3). This file
     //  only decodes them, applies the instruction-form legality table and
     //  reports one committed (legal, non-trapping) access per instruction.
@@ -47,13 +47,14 @@ module karu_csr (
 `endif
 `endif
 `ifdef KARU_EN_ZKR
-    //  Zkr. seed (0x015) and the custom M-mode CSRs mnoise (0x7C8) and
-    //  mentropycfg (0x7C9) live in karu_entropy, outside the core. This file
+    //  Zkr. seed (0x015) and the custom M-mode CSRs mnoise (0x7C8),
+    //  mentropycfg (0x7C9) and mentropystat (0x7CA) live in karu_entropy,
+    //  outside the core. This file
     //  decodes them, applies the access rules and reports one committed
     //  (legal, non-trapping) access per instruction. mseccfg is kept here.
     input  wire [63:0]  zkr_rdata_i,
     output wire         zkr_fire_o,
-    output wire [1:0]   zkr_sel_o,      //  0 seed, 1 mnoise, 2 mentropycfg
+    output wire [1:0]   zkr_sel_o,      //  0 seed, 1 mnoise, 2 mentropycfg, 3 mentropystat
     output wire         zkr_we_o,
     output wire [63:0]  zkr_wdata_o,
 `endif
@@ -1003,10 +1004,10 @@ module karu_csr (
 `endif
 `ifdef KARU_DBG_AUTH
         (op_addr == 12'h7c0 || op_addr == 12'h7c1 || op_addr == 12'h7c2 ||
-         op_addr == 12'h7c3 || op_addr == 12'hfc0) ? auth_rdata_i :
+         op_addr == 12'hfc0) ? auth_rdata_i :
 `endif
 `ifdef KARU_EN_ZKR
-        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9) ? zkr_rdata_i :
+        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9 || op_addr == 12'h7ca) ? zkr_rdata_i :
         op_addr == 12'h747 ? {54'b0, mseccfg_sseed, mseccfg_useed, 8'b0} :
 `endif
 `ifdef KARU_DBG
@@ -1114,10 +1115,10 @@ module karu_csr (
                 12'h7b0,12'h7b1,12'h7b2,12'h7b3,
 `endif
 `ifdef KARU_DBG_AUTH
-                12'h7c0,12'h7c1,12'h7c2,12'h7c3,12'hfc0,
+                12'h7c0,12'h7c1,12'h7c2,12'hfc0,
 `endif
 `ifdef KARU_EN_ZKR
-                12'h015,12'h747,12'h7c8,12'h7c9,
+                12'h015,12'h747,12'h7c8,12'h7c9,12'h7ca,
 `endif
 `ifdef KARU_EN_H
                 12'h200,12'h204,12'h205,12'h240,12'h241,12'h242,
@@ -1202,14 +1203,14 @@ module karu_csr (
         ((op_sub == `CSR_RS || op_sub == `CSR_RC ||
           op_sub == `CSR_RSI || op_sub == `CSR_RCI) && op_rs1 != 5'd0);
 
-    //  Authentication CSR instruction forms (contract section 3): mdbgrx and
-    //  mdbgrng pop on a write (Zkr seed rule), so every read-only form is
+    //  Authentication CSR instruction forms (contract section 3): mdbgrx
+    //  pops on a write (Zkr seed rule), so every read-only form is
     //  illegal; mdbgtx pushes only on CSRRW/CSRRWI, so the set/clear forms that
-    //  write are illegal; rx, tx and rng are illegal in Debug Mode.
+    //  write are illegal; rx and tx are illegal in Debug Mode.
     wire auth_form_ill;
 `ifdef KARU_DBG_AUTH
     assign auth_form_ill =
-        ((op_addr == 12'h7c1 || op_addr == 12'h7c3) && (!wen_w || debug_mode_i)) ||
+        (op_addr == 12'h7c1 && (!wen_w || debug_mode_i)) ||
         (op_addr == 12'h7c2 && (debug_mode_i ||
                                 (wen_w && op_sub != `CSR_RW && op_sub != `CSR_RWI)));
 `else
@@ -1366,7 +1367,7 @@ module karu_csr (
     // the same cycle, reports nothing: it does not retire (plan C8).
     assign auth_fire_o = op_req && !rst && !trap_req && (csr_exc_o == EXC_NONE) &&
         (op_addr == 12'h7c0 || op_addr == 12'h7c1 || op_addr == 12'h7c2 ||
-         op_addr == 12'h7c3 || op_addr == 12'hfc0);
+         op_addr == 12'hfc0);
     assign auth_sel_o = op_addr == 12'hfc0 ? 3'd4 : {1'b0, op_addr[1:0]};
     assign auth_we_o = wen_w;
     assign auth_wdata_o = new_v_w;
@@ -1376,8 +1377,9 @@ module karu_csr (
     //  trap taken in the same cycle reports nothing, so no word is taken by
     //  an instruction that does not retire.
     assign zkr_fire_o = op_req && !rst && !trap_req && (csr_exc_o == EXC_NONE) &&
-        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9);
-    assign zkr_sel_o = op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd1 : 2'd2;
+        (op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9 || op_addr == 12'h7ca);
+    assign zkr_sel_o = op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd1 :
+                       op_addr == 12'h7c9 ? 2'd2 : 2'd3;
     assign zkr_we_o = wen_w;
     assign zkr_wdata_o = new_v_w;
 `endif
@@ -1399,7 +1401,7 @@ module karu_csr (
             $display("ASSERT: karu_csr: a seed access was reported against the access table"); $fatal;
         end
         if (zkr_sel_o != 2'd0 && (virt || priv != PRIV_M)) begin
-            $display("ASSERT: karu_csr: mnoise/mentropycfg access reported outside M-mode"); $fatal;
+            $display("ASSERT: karu_csr: mnoise/mentropycfg/mentropystat access reported outside M-mode"); $fatal;
         end
     end
     // synthesis translate_on

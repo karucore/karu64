@@ -77,8 +77,6 @@ TRUSTED = {
     "rst": "POR (plan 1.2)",
     "lc_i": "lifecycle (plan 1.2)",
     "revoke_i": "trusted platform revocation input (contract 3.4)",
-    "trng_opst_i": "island entropy (plan 1.1)",
-    "trng_data_i": "island entropy (plan 1.1)",
 }
 ADVERSARY = {  # plan 1.2: every other input
     "tck": "JTAG", "tms": "JTAG", "tdi": "JTAG", "trst_n": "JTAG",
@@ -249,10 +247,9 @@ ALLOW_DRIVERS = {
 }
 
 # ---- the VCU118 debug image (--image) ----
-# Its defines: dbg/fpga.mk's VCU118_DBG_EXT_DEFINES with the shipping
-# profile (RVA23_SHIP_SYN_DEFINES without KARU_ICACHE, as the image's
-# simulation uses). The vector unit is included. Two things differ from
-# DEFINES, and image_allowances() adds exactly those:
+# Its defines and parameters are those of the image's synthesis, listed
+# below. The vector unit is included. Two things differ from DEFINES in
+# what the inventory has to allow, and image_allowances() adds exactly those:
 #   * KARU_RVA23S64 implies KARU_H, so K2.virt_i is live: the hart's
 #     virtualisation mode, driven by its own auth_virt_o, reaches the
 #     authentication state and, through debug_enable_next_o, the DM state,
@@ -260,9 +257,21 @@ ALLOW_DRIVERS = {
 #   * KARU_ZKR adds the top-level input zkr_rdata_i, the entropy block's
 #     read data. It is classified as adversary, conservatively: the block is
 #     written by the hart too. It must reach no protected element directly.
-IMAGE_DEFINES = ["KARU_DBG", "KARU_DBG_AUTH", "KARU_DBG_FULL", "KARU_ZKR", "KARU_RVA23S64", "KARU_ZVK",
-                 "KARU_KECCAK", "KARU_M_MUL_CYCLES=4", "KARU_M_DIV_CYCLES=64", "KARU_V_MUL_CYCLES=16",
-                 "KARU_V_DIV_CYCLES=64", "KARU_V_LANE_PIPE", "KARU_V_CWB_STAGE", "KARU_SMCNTRPMF", "KARU_SSCOFPMF"]
+# The list and the parameters are those of the image's own synthesis, as its
+# Vivado log prints them ("KARU_DEFINES:", and "Parameter ... bound to:" for
+# karudbg_core in flow/fpga/vcu118_ddr_top.v), less the defines of the
+# Ethernet and DDR4 blocks, which are outside karudbg_top:
+#   * KARU_ICACHE, the instruction cache between the hart's fetch and K3;
+#   * the reset vector in the island ROM, the external time input, and the
+#     hardware window limit of karudbg_auth at 2^31 clocks.
+# The island ROM's contents are a parameter too. The image's own ROM holds
+# the authentication key and is not read here; --island-rom takes another
+# build of the same ROM (the simulation's, with the public test key).
+IMAGE_DEFINES = ["KARU_DBG", "KARU_DBG_FULL", "KARU_DBG_AUTH", "KARU_ZKR", "KARU_RVA23S64", "KARU_ICACHE",
+                 "KARU_ZVK", "KARU_KECCAK", "KARU_V_MUL_CYCLES=16", "KARU_V_DIV_CYCLES=64", "KARU_V_LANE_PIPE",
+                 "KARU_V_CWB_STAGE", "KARU_SMCNTRPMF", "KARU_SSCOFPMF"]
+IMAGE_PARAMS = {"RESET_PC": "64'h0000000000010000", "EXT_TIME": "1", "AUTH_WINDOW_LOG2": "31"}
+PARAMS = {}                     # parameters of TOP that differ from their defaults
 def image_allowances():
     ALLOW_ELEMENTS["auth_state"]["K2.virt_i"] = "hart CSR sideband, live with KARU_H (C5, inputs free; C8 provenance)"
     ALLOW_ELEMENTS["dm_state"]["K2.virt_i"] = "through karudbg_auth's debug_enable_next_o (ndmreset gate, S10)"
@@ -319,7 +328,8 @@ def elaborate(work, overrides=None):
     files = [str((overrides or {}).get(f, ROOT / f)) for f in rtl_files()]
     flags = " ".join(f"-D{d}" for d in DEFINES)
     out = work / "netlist.json"
-    script = (f"read_verilog {flags} -I{ROOT}/rtl -I{ROOT}/dbg {' '.join(files)}\n"
+    params = "".join(f"chparam -set {k} {v} {TOP}\n" for k, v in PARAMS.items())
+    script = (f"read_verilog {flags} -I{ROOT}/rtl -I{ROOT}/dbg {' '.join(files)}\n{params}"
               # no opt_clean: it drops unused port nets (rid, bid) by name
               f"hierarchy -check -top {TOP}\nproc\nmemory_collect\nflatten\n"
               f"write_json {out}\n")
@@ -730,13 +740,20 @@ def main():
     parser.add_argument("--defines", help="space-separated defines replacing DEFINES (exploration "
                         "only: the allowlists are written for DEFINES)")
     parser.add_argument("--image", action="store_true",
-                        help="the VCU118 debug image's defines (IMAGE_DEFINES) in place of DEFINES, "
-                             "with the allowlist entries that H and Zkr add")
+                        help="the VCU118 debug image's defines and parameters (IMAGE_DEFINES, IMAGE_PARAMS) in "
+                             "place of DEFINES, with the allowlist entries that H and Zkr add")
+    parser.add_argument("--island-rom", help="with --image: a hex image for the island ROM (ISLAND_ROM_HEX). Not "
+                                             "the image's own, which holds the authentication key")
     args = parser.parse_args()
     if args.defines:
         DEFINES[:] = args.defines.split()
     if args.image:
         DEFINES[:] = IMAGE_DEFINES
+        PARAMS.update(IMAGE_PARAMS)
+        if args.island_rom:
+            rom = Path(args.island_rom).resolve()
+            if not rom.is_file(): sys.exit(f"--island-rom: no file {rom}")
+            PARAMS["ISLAND_ROM_HEX"] = f'"{rom}"'
         image_allowances()
     out = (ROOT / args.out).resolve()
     t0 = time.monotonic()

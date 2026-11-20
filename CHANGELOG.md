@@ -6,6 +6,184 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Tested — VCU118 board session, 2026-11-20
+
+- Image `ddb168e1…` is accepted with documented exceptions: translation
+  fails with the six known OpenOCD walker results, and phase 12's OpenSSL
+  matrix hit its time limit and was completed by phase 13 (92 pairs). The
+  record is [dbg/BOARD_ACCEPTANCE-2026-11-20.md](dbg/BOARD_ACCEPTANCE-2026-11-20.md).
+- Every interval of the redesigned health tests read between resets
+  (`mentropystat`), about 100 minutes in total, ended with zero failures on
+  the real rings; other intervals were cleared by resets without a reading,
+  and the tests do not run in test mode. Replay of the day's captures
+  agrees. This shows no false alarms in those intervals; detection of a
+  failing source, and the 28.6 s hardware window limit, have simulation
+  coverage only.
+- Six SHA3 authentication cases pass with reconfiguration as the power-on;
+  the ROM's 14.3 s deadline closed the window, so the new 28.6 s hardware
+  limit has no board evidence.
+- Non-IID estimate 3.556 bits per 4-bit sample at k = 16 (3.526 on
+  `85f07e58…`). Two rings run at different frequencies relative to the
+  clock in this bitstream (lane 0 F 0.41, lane 3 F 0.016): the
+  characterisation is per bitstream.
+- One boot froze after a hand-over of the console port between two host
+  processes; the UART transmit wait in the crossbar is a possible mechanism,
+  not established. Keep one process on the console port.
+
+### Built — VCU118 image `ddb168e1…` (2026-11-20; board-tested the same day)
+
+- The three RTL changes below (health tests, no `mdbgrng`, the window
+  limit at 2³¹ clocks) on the configuration of `85f07e58…`. 75 MHz met:
+  setup +0.008 ns, hold +0.011 ns, no DRC errors; 377,901 LUTs.
+  [Measurements](dbg/MEASUREMENTS.md#fpga-image--2026-11-20); board steps in
+  [the test plan, section 8](dbg/BOARD_TEST_PLAN.md).
+- Its boot ROM is the accepted image's: fu-boot, OpenSBI, the device tree,
+  the boot command and the island ROM are byte-identical to those of
+  `85f07e58…`, and U-Boot differs in the 5 bytes of its build date.
+- It replaces `f3493b17…`, built earlier that evening from the same RTL and
+  never programmed. That build's fu-boot and U-Boot were compiled by a
+  Linux-target GCC, which the build host's `PATH` found under the
+  bare-metal compiler's name: each carried an `.eh_frame` section, and
+  U-Boot ended 1,875 bytes below the device-tree slot.
+
+### Changed — the firmware compiler is pinned and recorded; files that hold the key are private
+
+- `XCHAIN` defaults to `$RISCV/bin/riscv64-unknown-elf-` by absolute path
+  when `$RISCV` has that compiler, and U-Boot is built with the same one.
+  `make toolchain-check` prints the compiler's path, its `-dumpmachine`
+  target and its version, and fails if the target is not the one in the
+  compiler's name; packing a boot ROM runs it. A Linux toolchain chosen
+  by name still works and is noted.
+- The compilers of fu-boot and U-Boot are recorded when the ROM is packed
+  and repeated in the ROM manifest of the programming bundle.
+  `flow/build_uboot.sh` leaves the record beside its binary and cleans a
+  tree whose record names another compiler.
+- For an image with `KARU_DBG_AUTH`, Vivado runs with `umask 077` and the
+  flow sets the three checkpoints and the bitstream to mode 0600 and
+  checks it (`KARU_PRIVATE` lines). The bundle strips group and other
+  access from its members.
+
+### Added — proof additions after the second review; a regression for the no-Zkr ROM
+
+- Glue lemma C3n gives each of the two Debug Modules of the C3 miter its
+  own free next-state input (`C3_SPLIT_NEXT`); three new controls fail
+  with separate inputs and pass with the shared one.
+- Lemma C9own (`test/dbg/formal/c9own_karudbg_island.vh`): response
+  ownership on the island for the whole transaction, against ghost state
+  that reads neither the router's flags nor its decode. 44 assertions,
+  unbounded, 56 controls; also in the composition's single model.
+  `make dbg-auth-formal-test` now has 16 entries and 111 controls.
+- The composition report's file fingerprints are plain SHA-256, its count
+  of open findings agrees with its body (two), and it says which of three
+  runs covers what of the image's configuration.
+- `make dbg-auth-window-noseed-test` (in `dbg-auth-test`): the window
+  bench on a core without Zkr, with the `-DAUTH_NO_SEED` ROM. No challenge,
+  no grant, no illegal instruction, hand-over to the next stage after
+  41,061 clocks; two controls.
+
+### Added — composition of the authentication lemmas; claim T1 reworded
+
+- `make dbg-auth-compose-test` (`test/dbg/run_auth_compose.py`, about 12
+  minutes, not in the gate): lemmas C9 and C10 in one model with each
+  side's assumptions about the other as assertions; four glue lemmas for
+  five gaps between C1 to C10; and a report that matches every `assume()`
+  of every lemma to what discharges it. Two findings stay open (the fetch
+  path behind T2, and the image's configuration for four core lemmas) and
+  eighteen steps are argued, not machine-checked
+  ([plan, A3](doc/debug-auth-plan.md)).
+- Claim T1's third bullet now gives two runs the same authdata read data,
+  the mailbox's TX words and its status words; it said "the same mailbox
+  TX words", which lemma C3 does not prove and a witness contradicts. The
+  script reads the bullet from the plan.
+- `make dbg-auth-bypass-image-test` (lemma C1) now uses the define list
+  and the parameters of the image's synthesis: the instruction cache, the
+  reset vector in the island ROM, the window limit at 2³¹. Its own list
+  had drifted from the image's. The result is unchanged.
+
+### Removed — `mdbgrng` and the authentication block's TRNG port (breaking; in bitstream `ddb168e1…`)
+
+- The CSR `0x7C3` and the ports `trng_opst_i`, `trng_data_i` and
+  `trng_ack_o` of `karudbg_auth`, `karudbg_core` and `karudbg_top` are gone,
+  and with them the second output port of `rtl/karu_entropy.v`
+  (`opst_o`, `data_o`, `trng_ack_i`). They dated from before the core had
+  Zkr. The authentication ROM draws its nonce from `seed`, as the VCU118
+  image's ROM already did; `seed` is the entropy block's only consumer
+  again.
+- `KARU_DBG_AUTH` therefore needs `KARU_ZKR` for a ROM that can make a
+  challenge. Without it the ROM is built with `-DAUTH_NO_SEED`, never makes
+  one and never unlocks, which is what the tied-off port did before.
+- Benches whose ROM draws a nonce have a stand-in behind `seed`
+  (`test/dbg/karudbg_test_seed.v`); the rehearsal's plusargs are
+  `+auth_seed_opst` and `+auth_seed_lfsr`.
+- [Contract](doc/debug-auth-contract.md) sections 3 and 3.2.
+
+### Added — a hardware limit on the authentication window (opt-in; 2³¹ clocks in bitstream `ddb168e1…`; on the board the ROM's deadline came first)
+
+- `karudbg_auth` parameter `WINDOW_LOG2` (`AUTH_WINDOW_LOG2` on the debug
+  tops): the window is open for exactly 2ⁿ clocks after the edge that
+  accepts the `REQUEST`, then no unlock can commit and `boot_done` is set,
+  whatever the ROM does. 0, the default, keeps the ROM's software deadline
+  as the only one. The VCU118 top sets 31 (28.6 s), behind the ROM's 2³⁰.
+- Unit cases for the last clock, the clock after, no unlock, and a hart
+  held in reset, with four mutants (`make dbg-auth-unit-test`, 413 checks).
+  [Contract](doc/debug-auth-contract.md) section 5.3.
+
+### Changed — Zkr health tests on the 4-bit sample, alarm latch, strikes, configuration limits (in bitstream `ddb168e1…`)
+
+Items 1 to 3 of the work list of the
+[SP 800-90B assessment](doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19).
+Tested in simulation, by replay of board captures, and on the board in
+bitstream `ddb168e1…` on 2026-11-20, where every interval read between
+resets ended with zero failures. Induced health-test failures (detection,
+strikes, `DEAD`) have simulation coverage only. Bitstream `85f07e58…` has
+the old tests.
+
+- **Tests on the noise-source sample.** `rtl/karu_entropy.v` runs the
+  repetition count and the adaptive proportion test (W = 512) of SP 800-90B
+  section 4.4 on the kept 4-bit symbol. Per lane it keeps the adaptive
+  proportion test and counts repetitions at lags 1 to 4, which catches a
+  stuck lane and a lane with a pattern of period 2 to 4.
+- **Alarm.** A running failure makes `seed` report `BIST` until one `seed`
+  access has seen it, as the Zkr text requires ("latched until polled at
+  least once"); before, it showed only for the 56 ms of the retest.
+- **Strikes.** Running failures are counted; 2^24 samples without one clear
+  the count; the third is fatal. A failure in any start-up test is fatal,
+  as before.
+- **Configuration (breaking for software that writes `mentropycfg`).** The
+  CSR gains the two symbol cutoffs `[43:37]` and `[53:44]`, the strike
+  number `[56:54]` and the clean-sample count `[61:57]`; a write that
+  leaves them zero stops the source, so change a field by
+  read-modify-write
+  ([example](doc/sp800-90b-assessment.md#96-for-software-that-writes-mentropycfg)).
+  The reset values are for a target of 3 bits per 4-bit sample at a
+  false-alarm probability of 2⁻⁴⁰ per test (15 and 124 on the symbol, 55
+  and 719 per lane; before, 41 and 821 per lane) and are by default the
+  weakest values the CSR accepts. The interval reads back as written;
+  outside test mode the source keeps at least the build's spacing.
+- **`mentropystat` (`0x7CA`, M-mode, read-only):** state, alarm, strikes
+  (the fatal one included), the test, lanes and lags of the last failure,
+  failures since reset.
+- **Fixed — GetNoise could report samples on either side of a stopped
+  source as consecutive.** The loss flag of `mnoise` was set only when a
+  sample was overwritten. If the strap switched the source off and on
+  between two reads, or `mentropycfg` or the burst block's sampling period
+  was written in test mode, the rings stopped or the spacing changed, and
+  both samples read as one run. Now each of these sets the loss flag and
+  drops a sample not yet taken. This predates the health-test work; a
+  capture is affected only if the strap, the configuration or the period
+  changed while it ran.
+- **Tests.** `make entropy-test`: the unit bench (4,073 checks), 86
+  mutants, the RTL against a Python model of the health logic
+  (`test/dbg/board/entropy_health.py`, `test/entropy_replay.py`,
+  `test/tb_entropy_replay.sv`) and the criteria of section 4.5 on that
+  model. With `ENTROPY_DATA=…` and `ENTROPY_RESTART=…` board captures are
+  replayed: D18 and D19 raise no failure at the reset cutoffs, nor do the
+  restart rows, row by row. The core test covers the new CSR and its
+  access rules.
+- **Fixed — the burst test firmware did not link with the Linux-targeting
+  compiler** (24 bytes into the `tohost` page): its rule now builds
+  without unwind tables.
+
 ### Added — SP 800-90B assessment of the entropy source
 
 - [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md): the `seed`

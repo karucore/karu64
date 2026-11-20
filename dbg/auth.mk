@@ -31,6 +31,10 @@ dbg-auth-unit-test:
 	$(call dbg_auth_mutant,no_reset_close,s/sess_close_now || reset_close ||/sess_close_now ||/,system reset in the window\|system reset after boot left)
 	$(call dbg_auth_mutant,csr_live_in_reset,s/assign csr_live = csr_fire_i \&\& !core_in_reset_i \&\& !trap_i \&\& !dbg_enter_i;/assign csr_live = csr_fire_i \&\& !trap_i \&\& !dbg_enter_i;/,in a reset cycle\|unlock committed outside)
 	$(call dbg_auth_mutant,unlock_from_debug_mode,s/!virt_i \&\& !debug_mode_i \&\&$$/!virt_i \&\&/,no unlock from Debug Mode\|unlock committed outside)
+	$(call dbg_auth_mutant,window_never_expires,s/assign win_expire = (WINDOW_LOG2 != 0) \&\& win_open \&\& win_cnt\[WINDOW_LOG2\];/assign win_expire = 1'"'"'b0;/,window limit)
+	$(call dbg_auth_mutant,unlock_in_the_expiry_clock,s/^        !win_expire \&\&$$/        1'"'"'b1 \&\&/,one clock after the window limit is refused\|expired and the window stayed open or unlocked)
+	$(call dbg_auth_mutant,window_one_clock_short,s/if (win_open \&\& !win_cnt\[WINDOW_LOG2\]) win_cnt <= win_cnt + 1'"'"'b1;/if (win_open \&\& !win_cnt[WINDOW_LOG2]) win_cnt <= win_cnt + (win_cnt == 0 ? 2 : 1);/,in the last clock of the window commits)
+	$(call dbg_auth_mutant,window_restarts_with_the_hart,s/if (win_open \&\& !win_cnt\[WINDOW_LOG2\]) win_cnt <= win_cnt + 1'"'"'b1;/if (core_in_reset_i) win_cnt <= 0; else if (win_open \&\& !win_cnt[WINDOW_LOG2]) win_cnt <= win_cnt + 1'"'"'b1;/,a hart held in reset does not stop the window timer)
 
 # DM + authentication block together (KARU_DBG_AUTH).
 DBG_AUTH_DM_SRCS = dbg/karudbg.v dbg/karudbg_rom.v dbg/karudbg_sba.v dbg/karudbg_auth.v
@@ -226,7 +230,7 @@ dbg-core-auth-open-test: dbg-core-test
 	@echo "PASS lc=OPEN real core identical: $$(cat $(BUILD)/dbg/core-auth-open/auth-summary.txt)"
 
 dbg-auth-test: dbg-auth-unit-test dbg-auth-island-test dbg-auth-dm-test dbg-auth-open-equiv-test dbg-auth-core-test \
- dbg-auth-openocd-test dbg-auth-window-test dbg-auth-window-seed-test \
+ dbg-auth-openocd-test dbg-auth-window-test dbg-auth-window-seed-test dbg-auth-window-noseed-test \
  dbg-core-auth-open-test
 
 # Pristine pinned OpenOCD against a KARU_DBG_AUTH JTAG model (contract 2):
@@ -283,36 +287,77 @@ $(DBG_AUTH_WIN_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS)
 	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_WIN_DIR)/rom.elf $(DBG_AUTH_WIN_DIR)/rom.bin
 	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_WIN_DIR)/rom.bin > $@
 	$(XCHAIN)size $(DBG_AUTH_WIN_DIR)/rom.elf
-$(DBG_AUTH_WIN_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_WIN_DIR)/rom.hex
-	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+# The ROM draws its nonce from seed, so the core has KARU_ZKR and the bench a
+# stand-in behind it (test/dbg/karudbg_test_seed.v) whose words it chooses.
+$(DBG_AUTH_WIN_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_WIN_DIR)/rom.hex
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
 	  -GROM_HEX='"$(abspath $(DBG_AUTH_WIN_DIR)/rom.hex)"' \
-	  --Mdir $(DBG_AUTH_WIN_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL)
+	  --Mdir $(DBG_AUTH_WIN_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v $(DBG_CORE_RTL)
 
 # +deadline_addr is the ROM's deadline variable, for the bench's monitor.
 # The mutant ROM has the reviewed defect: an available RX word bypasses the
 # deadline, and nothing checks it before the grant. The boundary sweep must
 # catch it on the real core.
-# The same bench with the nonce from the Zkr seed CSR, as in the FPGA image:
-# the core built with KARU_ZKR, the entropy source with its behavioural noise
-# model, and the ROM built to read seed (CSR_RNG=0x015). Every case of the
-# bench runs again, and it checks that no nonce word came from mdbgrng.
+# The same bench with the entropy source of the FPGA image behind seed, with
+# its behavioural noise model, in place of the bench's stand-in. Every case
+# of the bench runs again.
 DBG_AUTH_SEED_DIR ?= $(DBG_AUTH_WIN_DIR)/seed
 $(DBG_AUTH_SEED_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS)
 	mkdir -p $(DBG_AUTH_SEED_DIR)
-	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -DCSR_RNG=0x015 -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_SEED_DIR)/rom.elf \
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -T test/dbg/auth_rom/rom.ld -o $(DBG_AUTH_SEED_DIR)/rom.elf \
 	  test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c
 	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_SEED_DIR)/rom.elf $(DBG_AUTH_SEED_DIR)/rom.bin
 	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_SEED_DIR)/rom.bin > $@
 $(DBG_AUTH_SEED_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(ZKR_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_SEED_DIR)/rom.hex
-	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR -DAUTH_WINDOW_ENTROPY_SRC $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
 	  -GROM_HEX='"$(abspath $(DBG_AUTH_SEED_DIR)/rom.hex)"' \
 	  --Mdir $(DBG_AUTH_SEED_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL) $(ZKR_RTL)
 .PHONY: dbg-auth-window-seed-test
 dbg-auth-window-seed-test: $(DBG_AUTH_SEED_DIR)/Vtb_auth_window
 	timeout 900 $< +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_SEED_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
 	  > $(DBG_AUTH_SEED_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_SEED_DIR)/run.log; exit 1; }
-	grep 'nonce source: seed' $(DBG_AUTH_SEED_DIR)/run.log
+	grep 'nonce source: seed, the entropy source' $(DBG_AUTH_SEED_DIR)/run.log
 	grep 'karudbg auth window ROM: PASS' $(DBG_AUTH_SEED_DIR)/run.log
+
+# A core without Zkr has no seed CSR, so no nonce source. Its ROM is built
+# with -DAUTH_NO_SEED (dbg/fpga.mk does that for an image with KARU_DBG_AUTH
+# and no KARU_ZKR): it accepts a REQUEST, makes no challenge, never unlocks,
+# and must still hand over to the next stage. The window bench without
+# KARU_ZKR and with that ROM, in the SHA3 build with the public test key as
+# the board's ROM is: with a REQUEST and without one. Two controls, each of
+# which must fail: the ROM built without the flag (it reads seed, an illegal
+# instruction with no trap vector set), and a ROM whose make_nonce() reports
+# success without a source (a challenge with a constant nonce).
+DBG_AUTH_NOSEED_DIR ?= $(DBG_AUTH_WIN_DIR)/noseed
+DBG_AUTH_NOSEED_CC = $(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) $(DBG_AUTH_SHA3_FLAGS) -DAUTH_NO_SEED -Itest/dbg/auth_rom -T test/dbg/auth_rom/rom.ld
+$(DBG_AUTH_NOSEED_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS) $(DBG_AUTH_SHA3_SRCS) $(DBG_AUTH_TEST_KEY_H) dbg/auth.mk
+	mkdir -p $(DBG_AUTH_NOSEED_DIR)/mut-nonce
+	$(DBG_AUTH_NOSEED_CC) -o $(DBG_AUTH_NOSEED_DIR)/rom.elf test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c test/dbg/auth_rom/sha3.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_NOSEED_DIR)/rom.elf $(DBG_AUTH_NOSEED_DIR)/rom.bin
+	sed -e '/^#ifdef AUTH_NO_SEED/,/^#else/ s/return 0;/return 1;/' test/dbg/auth_rom/window.c > $(DBG_AUTH_NOSEED_DIR)/mut-nonce/window.c
+	test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_NOSEED_DIR)/mut-nonce/window.c | grep -c '^>')" = 1
+	$(DBG_AUTH_NOSEED_CC) -o $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.elf test/dbg/auth_rom/start.S $(DBG_AUTH_NOSEED_DIR)/mut-nonce/window.c test/dbg/auth_rom/sha3.c
+	$(XCHAIN)objcopy -O binary -j .text $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.elf $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.bin > $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.hex
+	hexdump -v -e '1/8 "%016x\n"' $(DBG_AUTH_NOSEED_DIR)/rom.bin > $@
+$(DBG_AUTH_NOSEED_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_NOSEED_DIR)/rom.hex
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DAUTH_WINDOW_NO_SEED $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_NOSEED_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_NOSEED_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv $(DBG_CORE_RTL) \
+	  > $(DBG_AUTH_NOSEED_DIR)/build.log 2>&1 || { tail -20 $(DBG_AUTH_NOSEED_DIR)/build.log; exit 1; }
+.PHONY: dbg-auth-window-noseed-test
+dbg-auth-window-noseed-test: $(DBG_AUTH_NOSEED_DIR)/Vtb_auth_window $(DBG_AUTH_SHA3_DIR)/rom.hex
+	timeout 900 $< > $(DBG_AUTH_NOSEED_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_NOSEED_DIR)/run.log; exit 1; }
+	grep 'next stage after' $(DBG_AUTH_NOSEED_DIR)/run.log
+	grep 'karudbg auth window ROM without seed: PASS' $(DBG_AUTH_NOSEED_DIR)/run.log
+	@if timeout 900 $< +rom=$(abspath $(DBG_AUTH_SHA3_DIR)/rom.hex) > $(DBG_AUTH_NOSEED_DIR)/mut-seed.log 2>&1; then \
+	  echo 'a ROM that reads seed NOT detected on a core without Zkr'; exit 1; fi
+	grep -q 'the ROM did not read seed' $(DBG_AUTH_NOSEED_DIR)/mut-seed.log
+	@echo "detected ROM built without AUTH_NO_SEED: $$(grep -m1 'auth core check' $(DBG_AUTH_NOSEED_DIR)/mut-seed.log)"
+	@if timeout 900 $< +rom=$(abspath $(DBG_AUTH_NOSEED_DIR)/mut-nonce/rom.hex) > $(DBG_AUTH_NOSEED_DIR)/mut-nonce.log 2>&1; then \
+	  echo 'a no-seed ROM that makes a challenge NOT detected'; exit 1; fi
+	grep -q 'no challenge word was pushed' $(DBG_AUTH_NOSEED_DIR)/mut-nonce.log
+	@echo "detected no-seed ROM with a constant nonce: $$(grep -m1 'auth core check' $(DBG_AUTH_NOSEED_DIR)/mut-nonce.log)"
 
 .PHONY: dbg-auth-window-test dbg-auth-rom-host-test
 dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test
@@ -388,6 +433,40 @@ dbg-auth-formal-test:
 	timeout 3600 python3 test/dbg/run_auth_formal.py --out $(BUILD)/dbg/auth-formal
 	timeout 900 python3 test/dbg/check_auth_reset.py --self-test
 
+# A4 (plan 3.5), what dbg-auth-sba-revoke-test leaves out: the same bench as
+# a two-state Verilator build, with the instruction cache, and in the RVA23
+# and vector configurations (the vector unit shares the data bus with the
+# SBA); with the DDR crossbar as the responder (karu_ddr_xbar with its
+# assertions, the beat held on either side of it, its local engines, and a
+# stalled address phase); and through the JTAG transport (TAP, DTM and
+# clock-domain crossing; an sbdata0 read in the crossing when debug_enable
+# falls). Twelve configurations, four-state and two-state; every
+# configuration must report the reference's scenarios and detect the three
+# mutants of dbg-auth-sba-revoke-test. test/dbg/run_auth_revoke_ext.py;
+# about four minutes.
+DBG_AUTH_REVOKE_EXT ?= $(BUILD)/dbg/auth-revoke-ext
+.PHONY: dbg-auth-revoke-ext-test
+dbg-auth-revoke-ext-test: $(DBG_AUTH_CORE_DIR)/rom.hex
+	timeout 2400 python3 test/dbg/run_auth_revoke_ext.py --out $(DBG_AUTH_REVOKE_EXT) --jobs $(DBG_JOBS) \
+	  --rom-hex $(DBG_AUTH_CORE_DIR)/rom.hex --core-rtl '$(DBG_CORE_RTL)' --xbar-rtl '$(SBA_XBAR_RTL)' \
+	  --jtag-rtl '$(KARUDBG_JTAG_SRCS)' > $(BUILD)/dbg/auth-revoke-ext.log 2>&1 || { tail -30 $(BUILD)/dbg/auth-revoke-ext.log; exit 1; }
+	@grep '^PASS auth revocation extended' $(BUILD)/dbg/auth-revoke-ext.log
+
+# The composition of the lemmas (plan 5.3; test/dbg/run_auth_compose.py):
+# one model in which C9 and C10 hold together, each side's assumption about
+# the other turned into an assertion; glue lemmas for what C1 to C10 left
+# between them; and a report that matches every assume() of every lemma to
+# the assertion or the platform assumption that discharges it, and fails on
+# one that nothing discharges. One depends on the plan's wording: lemma C3
+# gives its two runs the same authdata read data, status words included, and
+# the script reads T1's third bullet from doc/debug-auth-plan.md to see that
+# the plan gives them the same (it does since 2026-11-19; --tx-words-only
+# checks the earlier wording, and fails). About 12 minutes; not in the gate.
+DBG_AUTH_COMPOSE_FLAGS ?=
+.PHONY: dbg-auth-compose-test
+dbg-auth-compose-test:
+	timeout 5400 python3 test/dbg/run_auth_compose.py --out $(BUILD)/dbg/auth-compose --jobs $(DBG_JOBS) $(DBG_AUTH_COMPOSE_FLAGS)
+
 # Lemma C1 (plan 5.2), bypass freedom: Yosys flattens karudbg_top (KARU_DBG
 # KARU_DBG_AUTH KARU_DBG_FULL KARU_NO_V); bit-level cones of influence from
 # each protected element, stopped at the cuts, and the drivers of K2 and of
@@ -398,10 +477,15 @@ dbg-auth-formal-test:
 dbg-auth-bypass-test:
 	timeout 900 python3 test/dbg/check_auth_bypass.py --self-test --out $(BUILD)/dbg/auth-bypass
 dbg-functional-gates: dbg-auth-bypass-test
-# The same inventory with the VCU118 debug image's defines: H, the vector
-# unit and Zkr included, and the two allowlist entries they add (see
-# IMAGE_DEFINES in the script). About three minutes, 2.5 GB.
+# The same inventory as the VCU118 debug image is synthesised: its defines
+# (H, the vector unit, Zkr and the instruction cache included) and the
+# parameters its top gives karudbg_core (reset vector, external time, the
+# hardware window limit at 2^31), with the two allowlist entries that H and
+# Zkr add (IMAGE_DEFINES and IMAGE_PARAMS in the script). The island ROM is
+# the simulation's SHA3 build with the public test key: the image's own
+# holds the key and is not read. About three minutes, 2.5 GB.
 .PHONY: dbg-auth-bypass-image-test
-dbg-auth-bypass-image-test:
-	timeout 1200 python3 test/dbg/check_auth_bypass.py --image --out $(BUILD)/dbg/auth-bypass-image
+dbg-auth-bypass-image-test: $(DBG_AUTH_SHA3_DIR)/rom.hex
+	timeout 1200 python3 test/dbg/check_auth_bypass.py --image --island-rom $(DBG_AUTH_SHA3_DIR)/rom.hex \
+	  --out $(BUILD)/dbg/auth-bypass-image
 dbg-functional-gates: dbg-auth-bypass-image-test

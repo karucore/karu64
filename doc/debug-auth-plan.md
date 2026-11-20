@@ -68,7 +68,7 @@ outside adversary control:
 | Authentication ROM | ROM window code and its constants | Island ROM `[AUTH_ROM_BASE, AUTH_ROM_END)`; `RESET_PC` and the reset `mtvec` lie inside it |
 | Verifier memory | Stack and intermediate verification state | Island SRAM, reachable only from the hart's own instruction/data ports |
 | Verification key | The public key, or its hash with the key itself in ROM | OTP or ROM, read through the island |
-| Entropy | Challenge nonce | Platform TRNG port into `karudbg_auth`, read by CSR (`mdbgrng`); where the core has Zkr the ROM can read `seed` instead, as the VCU118 image does |
+| Entropy | Challenge nonce | The Zkr `seed` CSR, read by the ROM in M-mode; the entropy source behind it is a platform block. (Until 2026-11-19 the block had a TRNG port and CSR of its own, `mdbgrng`; it was removed as redundant) |
 | Lifecycle | `OPEN`, `AUTH` or `DISABLED` | Platform OTP/lifecycle input, stable from POR |
 
 The island is decoded inside `karudbg_core` on the core's own `imem` and
@@ -212,7 +212,7 @@ DIP switch SW12 (A5).
 ### 3.1 `karudbg_auth` state and CSRs
 
 `karudbg_auth.v` is a POR-domain block in `karudbg_core`. The hart reaches it
-**only through M-mode custom CSRs**: `0x7C0–0x7C3` and read-only `0xFC0`,
+**only through M-mode custom CSRs**: `0x7C0–0x7C2` and read-only `0xFC0`,
 as fixed in [contract §3](debug-auth-contract.md#3-csrs). CSRs are
 not on any bus, so SBA, DMA and the JTAG loader have no path to them by
 construction.
@@ -222,7 +222,6 @@ construction.
 | `mdbgauth` (`0x7C0`) | Read; write-1-to-set only | `auth_unlock`, `boot_done` and `fw_lock` (monotone; clears ignored); read-only `lc`, `auth_req`, `hold` and window state |
 | `mdbgrx` (`0x7C1`) | Read-write access only (Zkr `seed` rule) | ROM side of the mailbox: pop RX |
 | `mdbgtx` (`0x7C2`) | Write | ROM side of the mailbox: push TX |
-| `mdbgrng` (`0x7C3`) | Read-write access only | TRNG word in the Zkr `seed` format |
 | `mdbgmbst` (`0xFC0`) | Read-only | Mailbox counts, errors and session state |
 
 **Commit predicate for `auth_unlock`.** A set takes effect only when **all**
@@ -431,7 +430,15 @@ input sequence (§1.2):
     command or an SBA request.
   - The DMI response stream is identical for any two runs that differ only in
     hart, memory and fabric state but receive the same DMI inputs and the
-    same mailbox TX words. The mailbox is the only declassified channel.
+    same authdata read data: the mailbox's TX words and its status words.
+    The mailbox, its status included, is the only declassified channel.
+    (*Reworded on 2026-11-19.* It said "the same mailbox TX words". The
+    status word holds the session state, the FIFO counts and the error
+    code, which depend on what the hart does and when; lemma C3 has always
+    given the two runs the same read data, and the composition showed two
+    runs with the same TX words and different status words. The status
+    word carries no register or memory content, but it does tell a locked
+    debugger how far the ROM has got.)
 - **T2 — Unlock confinement.** `auth_unlock` rises only when a CSR
   instruction fetched from the island ROM commits the predicate of §3.1. That
   requires lifecycle `AUTH`, a window still open, M-mode outside Debug Mode,
@@ -489,8 +496,9 @@ Composition over time, written as a short proof in the evidence report:
   affect only the mailbox. No hart execution takes place.
 - **Window** (`boot_done=0`). `debug_enable=0`, so C2, C3 and C4 give no debug
   and no disclosure. The hart executes island code, by C9 and the ROM range.
-  It consumes untrusted input only through `mdbgrx`, `mdbgmbst` and
-  `mdbgrng`. Any trap or attempt to leave the ROM closes the window (C8, C5).
+  It consumes untrusted input only through `mdbgrx`, `mdbgmbst` and the
+  nonce words it reads from `seed`. Any trap or attempt to leave the ROM
+  closes the window (C8, C5).
   A system reset reruns the ROM with `boot_done=1`. `auth_unlock` can rise
   only through K2 under the C5/C8 predicate: a CSR instruction fetched from
   the trusted ROM. Whether that instruction executes is the ROM's decision
@@ -644,6 +652,14 @@ checks for its invariants.
   challenge ([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). It still
   verifies with `TEST`; the production verifier awaits D3.
 
+  *Status, 2026-11-20: image `ddb168e1…` on the board*, without `mdbgrng`
+  (the ROM reads `seed`) and with the hardware window limit at 2³¹ clocks:
+  `locked`, `authenticate` (unlock 0.19 s after the REQUEST),
+  `wrong-response`, `replay`, `expiry` (closed between 14.29 and 14.35 s,
+  by the ROM's deadline; the hardware limit was not reached) and
+  `entropy-off` pass with algorithm `0x04`, each after a reconfiguration
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).
+
   *Status, 2026-11-19: the SHA3 ROM on the board.* Image `85f07e58…`
   passed `locked`, `authenticate` (unlock 0.20 s after the REQUEST),
   `wrong-response`, `replay`, `expiry` (closed between 14.28 and 14.33 s)
@@ -675,8 +691,10 @@ checks for its invariants.
   *Status, 2026-11-17: FPGA variant written, simulated, not on a board.* It
   is the same source built with other constants (`VCU118_AUTH_ROM_FLAGS` in
   `dbg/fpga.mk`), 784 bytes:
-  - the nonce comes from the Zkr `seed` CSR (`CSR_RNG=0x015`), which has the
-    format and take-on-write rule of `mdbgrng`. With `seed` in the core,
+  - the nonce comes from the Zkr `seed` CSR. *2026-11-19: `mdbgrng` and
+    the TRNG port were removed from the contract, the RTL, the ROM and the
+    benches; every ROM reads `seed` now.* The note as written before: with
+    `seed` in the core,
     `mdbgrng` is redundant; removing it would change the contract, the RTL,
     this ROM, its tests and the formal checks, and is left as a decision;
   - `TRNG_TRIES=200000` polls per nonce word, because the entropy source
@@ -730,6 +748,13 @@ checks for its invariants.
       (D5). A production contract that needs a hard cutoff must either end
       the ROM's window early by a justified worst-case margin or enforce
       expiry in hardware; this is an open decision (contract §5.3).
+    - *2026-11-19: the hardware option exists.* `karudbg_auth` has the
+      parameter `WINDOW_LOG2` (0, the default, is no limit): the window is
+      open for exactly 2ⁿ clocks after the edge that accepts the `REQUEST`,
+      then no unlock can commit and `boot_done` is set. The VCU118 top sets
+      31, behind the ROM's own 2³⁰. Unit cases with four mutants
+      (`dbg-auth-unit-test`) and lemma C5w below. Whether a product sets
+      it, and to what, is still the integrator's choice.
 - [ ] **A3 — formal.**
   - Implement C1–C10, the composition report, the sanity runs and the negative
     controls.
@@ -824,6 +849,149 @@ checks for its invariants.
     implicitly: a hierarchical reference into a submodule becomes a free
     wire, and an assertion over it would prove nothing.
 
+  *Status, 2026-11-19: the composition, partly.* `make dbg-auth-compose-test`
+  (`test/dbg/run_auth_compose.py`, about 12 minutes, not in the gate) does
+  the two things this milestone still listed, and reports what it could
+  not close. A3 stays open. Last run: 23:04 UTC (874 s; the lemma suite on its own at 23:13 UTC), pass, with T1 as reworded
+  below, the image's define list as corrected under lemma C1, and the two
+  proof additions of the second review (the notes after this one). A
+  reviewer read the script and its lemmas on 2026-11-19 and asked for
+  those two additions and for the distinction between the image's runs.
+  - **One model for C9 with C10.** A build copy of `karudbg_core` keeps the
+    core's own logic and the island on the real nets and the real reset;
+    the core's submodules, the other debug instances and the fabric's
+    responses are free. The repository's C9 and C10 blocks are both in it,
+    with each block's three assumptions about the other side turned into
+    assertions, and a link between the island's flags and C10's ghost
+    flags, and lemma C9own's block is in the island copy as well. BMC
+    depth 12, and k = 2 induction for 76 of the 82 assertions; C9's six
+    bridge-consistency assertions stay bounded at depth 12, as in C9.
+    Proved with C1's defines, C10's and the VCU118 image's define list (see
+    "three runs" below for what that last one is). Thirteen controls fail
+    on the intended assertion. The only assumption is a hart
+    reset in the first cycle: C9 and C10 alone assumed none later, although
+    `hart_reset_i` is an adversary input. The core's bus contract of
+    section 9 is therefore no longer an assumption.
+  - **The report.** All 27 `assume()` statements and 19 model restrictions
+    of the lemmas are matched to the assertion or the platform assumption
+    that discharges them; a missing or stale entry fails the run. Thirteen
+    implications are checked by the solver, and 82 wiring pairs are read
+    from the netlist of `karudbg_core`.
+  - **Gaps it found between the lemmas, and closed**: the first five by
+    four glue lemmas (`gate`, `dm`, C2n, C3n; 16 controls), the last by
+    running the core lemmas again:
+    - C7 assumes that `debug_enable_o` is `debug_enable_next_o` one clock
+      later; nothing proved it of `karudbg_auth`;
+    - C2 and C3 assume `debug_enable_next_i = 0` always, so they did not
+      cover the cycle in which the unlock commits (C2n, C3n);
+    - no lemma covered the DM's outputs in the first cycle after POR;
+    - nothing said that `dmstatus` hides hart state after a revocation;
+    - C3's shared `authbusy` and "authdata implemented" inputs rested on
+      properties of `karudbg_auth` that no lemma stated;
+    - the lemmas shared no configuration: the core lemmas are now proved
+      with C1's defines as well.
+  - **Closed by rewording T1 (2026-11-19):** T1's third bullet gave two
+    runs "the same mailbox TX words"; C3 gives them the same authdata read
+    data, which includes the status word, and the status word depends on
+    hart activity and its timing. Two runs with the same DM side and the
+    same TX pushes can read different status words (the report has the
+    witness). T1 now names the read data, status included, as the
+    declassified channel. The script reads the bullet from this file: with
+    the old wording, or with `--tx-words-only`, it fails on this item.
+  - **Three runs touch the VCU118 image's configuration, and they are not
+    one configuration.**
+    - The single model's run named `image` uses the image's define list
+      only (`IMAGE_DEFINES` in `check_auth_bypass.py`). It elaborates
+      `karudbg_core` with its default top-level parameters and, like every
+      run of that model, cuts out the authentication block. It is evidence
+      for the bus ownership property of C9 with C10 under those defines,
+      and for nothing else of the image.
+    - Lemma C1's `--image` inventory is the run with the image's
+      parameters as well (`IMAGE_PARAMS`: the island reset vector,
+      external time, `AUTH_WINDOW_LOG2` = 31) and with the I-cache in the
+      fetch path. The composition script does not make it; the gate does.
+    - The window timer at width 31 is lemma C5w31.
+    - C4, C6cone, C8 and C10 are not run with the image's defines.
+  - **Open: fetch-to-execute provenance**, for the image as for every
+    configuration. T2's "fetched from the island ROM" rests on the core's
+    fetch path being correct: no lemma states that the word at EX is the
+    word the imem port returned for that PC, and section 9 does not list
+    it as an assumption. C8 checks the PC range of the committing
+    instruction; C9, C9own and the single model check which side answers
+    a bus request.
+  - **Argued, not machine-checked:** the inductions over cycles from the
+    per-cycle lemmas, the CSR decode of the authentication CSRs and the
+    JTAG path. The report lists all eighteen steps; two findings are open
+    (the fetch path, and the image's configuration for the four core
+    lemmas).
+
+  *Status, 2026-11-19: two proof gaps from the second external review,
+  closed.* Both are in `make dbg-auth-formal-test` or the composition; the
+  RTL is unchanged.
+  - **C3n with separate next-state inputs.** C3n gave the two DMs of the
+    C3 miter one shared `debug_enable_next_i`. In the cycle before a grant
+    takes effect both DMs are locked and their next states can differ,
+    because the grant depends on what the hart does. Under
+    `C3_SPLIT_NEXT`, which C3n sets, the miter has a next-state input for
+    each DM; lemma C3 holds the next state at 0 and is unchanged. BMC depth
+    10 and induction pass. Three new controls show the next state to a
+    locked debugger (in `dmstatus`, in the DMI ready, in the response
+    code): each fails with separate inputs and passes with the shared one,
+    and the script checks both, so the shared input did hide them.
+  - **C9own, response ownership for the whole transaction.** C9 checked
+    the owner flag one cycle after an address was accepted and worded its
+    later checks with the router's own flags. C9own
+    (`test/dbg/formal/c9own_karudbg_island.vh`, spliced after C9's block,
+    no assumption of its own) keeps ghost state that reads neither the
+    owner flags nor the address decode: the destination of each accepted
+    address, held through stalls and bursts.
+    - On the imem read, dmem read and dmem write channels it asserts:
+      with no transaction outstanding no beat is shown to the core and
+      none is taken from downstream; during the island's transaction the
+      core sees exactly the island bridge's beat (valid, ID, data,
+      response code, LAST), the bridge sees the core's READY and
+      downstream sees none; and the same with the sources swapped.
+    - 44 assertions; BMC depth 12 and induction (k = 2) on the island
+      with free inputs, every C9 assertion proved again in the same
+      model. C9's six bridge-consistency assertions stay bounded.
+    - 56 controls, each failing on an assertion of the new block, and
+      each of the 44 assertions fails in a control written for it. Among
+      them: the response selected by the address of the moment, the owner
+      latched a cycle late or not at all, the outstanding flag cleared by
+      any beat, the ID from the wrong side, LAST forced, a downstream
+      error reported as OKAY, READY reaching the side that does not own
+      the transaction, and part of the island's range routed downstream.
+    - The block is also in the single model.
+    - Not claimed: the island bridge does see the core's READY when no
+      transaction is outstanding and the last one was the island's (the
+      RTL gates that READY with the owner flag alone). It has no beat to
+      give then, which only C9's bounded assertions say.
+    - Not checked, because it is bridge and memory correctness and not
+      ownership: that a response's ID is the accepted address's, the
+      bridge's beat count, the routing of the W channel, and that island
+      data is the word at the accepted address.
+  - **Seen while doing this, not acted on:** the downstream address and
+    write-data outputs are unconditional copies of the core's, so an
+    island request's address and write data are on the downstream wires
+    with VALID low. No lemma looks at payload when VALID is low.
+
+  *Status, 2026-11-19: lemma C5w, the window timer.* Proved on
+  `karudbg_auth` with `WINDOW_LOG2` 1, 3 and 31, unbounded (k = 3), from
+  ports and ghost state (a count of the clocks since the accepted
+  `REQUEST`), with every C5 property proved again in the same model:
+  `boot_done` is set at the latest 2ⁿ + 1 edges after the accepting edge;
+  the grant never rises on that edge or later; before it, the commit
+  predicate still grants and `boot_done` still needs a closing event, so
+  the window is not shorter either. Eleven controls at n = 3 each fail on
+  one of these. A second entry, C5w0, shows that the limit is off at the
+  default: the guard on the parameter deleted passes C5 alone and fails
+  there. The reset check now has an entry for the block with the timer
+  present, because at the default Yosys removes the counter. Not covered:
+  values of n other than these, and the pass-through of the parameter in
+  `karudbg_core` and `karudbg_top`. The suite still passes after the
+  removal of `mdbgrng`, with all earlier controls (15 entries, 55
+  controls, about 20 minutes).
+
   *Status, 2026-11-18: C1 implemented, as a structural check only.*
   `dbg-auth-bypass-test` (`test/dbg/check_auth_bypass.py`, part of
   `dbg-functional-gates`, about 80 s) closes the C1 item above.
@@ -880,6 +1048,22 @@ checks for its invariants.
     authentication and DM state through K2 and is driven only by the hart's
     `auth_virt_o`; and the new top-level input `zkr_rdata_i`, classified as
     adversary, reaches no protected element directly.
+    *Corrected on 2026-11-19 (a reviewer's finding).* Until then this run
+    was not the image's configuration: it left `KARU_ICACHE` out, set the
+    integer multiplier and divider to 4 and 64 cycles where the image
+    takes the defaults, and left every parameter of `karudbg_top` at its
+    default, so the hardware window limit was absent (`AUTH_WINDOW_LOG2`
+    = 0) and the reset vector was not the island ROM's. The define list is
+    now the one Vivado's `synth_design` is given, less the Ethernet and
+    DDR4 defines, which name nothing inside `karudbg_top`, and the
+    parameters are those `vcu118_ddr_top` binds: `RESET_PC` in the island
+    ROM, `EXT_TIME` = 1, `AUTH_WINDOW_LOG2` = 31, and an island ROM image
+    (the simulation's SHA3 build with the public test key: the image's own
+    holds the key). The inventory passes unchanged, with the same two
+    additions: 6 protected elements, 133 cut signals, 120 allowlisted
+    paths, 40 cut-signal drivers. The netlist has the 32-bit window
+    counter and the instruction cache. The reviewer ran the same check
+    independently before this change, with the same result.
 - [ ] **A4 — simulation.**
   - DM and mailbox unit tests, including the protocol's empty/full, error,
     `CLOSED` and `authbusy` rules.
@@ -963,6 +1147,36 @@ checks for its invariants.
 
     This is a four-state run of this scenario only; the general four-state
     item stays open.
+  - *Status, 2026-11-19: three of those four are covered by
+    `dbg-auth-revoke-ext-test`* (`test/dbg/run_auth_revoke_ext.py`, the same
+    bench in compile-time variants; in the gate, about four minutes). Twelve
+    configurations, 334 scenario runs, 12,444 checks; each configuration
+    must report the reference's scenarios and detect the three mutants (36
+    mutant builds).
+    - **Configurations of the bench:** two-state Verilator (also from random
+      initial values), the instruction cache, the RVA23 build and a build
+      with the vector unit, in which vector loads and stores share the data
+      bus with the SBA; four-state for each of them as well.
+    - **The DDR crossbar as responder:** `karu_ddr_xbar` with its assertions
+      and `karu_axi4_ram` behind it, 36 scenarios: the 24 with the beat held
+      on the DDR side, and twelve of its own (the beat held on the core
+      side, the crossbar's local engines, a stalled read or write address).
+      Three scenarios differ from the RAM-model bench for reasons in the
+      crossbar: an outstanding SBA read of main memory occupies its one
+      read engine, so the hart cannot fetch and cannot set `fw_lock` (the
+      `fw_lock` scenarios read the scratch SRAM instead). That is the
+      liveness limit of §3.5 item 2, and with the crossbar it also keeps
+      firmware from revoking.
+    - **The JTAG transport:** TAP, DTM and clock-domain crossing in front of
+      the DMI, 29 scenarios: the 24, and five with an `sbdata0` read in the
+      crossing when `debug_enable` falls. A read the DM accepts one clock
+      after the fall returns zero on TDO; one accepted at or before it
+      returns the data, which §3.5 item 1 allows.
+    - **Still not covered:** OpenOCD on this path; the crossbar and JTAG
+      together; the real Ethernet device in four-state (its model does not
+      start in Icarus; an idle stand-in is used); a DDR read latency other
+      than one; the DTM's busy path; acceptance on the falling edge itself
+      (C7, at DM level). No RTL defect was found.
 - [x] **A5 — FPGA.**
   - Map DIP switches to `lc` and the boot-hold strap.
   - Extend the existing `KARU_DDR_HOST_DBG` exclusion check

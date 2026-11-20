@@ -134,7 +134,7 @@ static int rx_ready(void) {
 uint64_t mock_rw(unsigned csr, uint64_t w) {
     (void)w;
     tick();
-    if (csr == CSR_RNG) return ((uint64_t)m.rng_opst << 30) | ((m.t * 0x9e37u) & 0xffffu);
+    if (csr == CSR_SEED) return ((uint64_t)m.rng_opst << 30) | ((m.t * 0x9e37u) & 0xffffu);
     if (csr != CSR_RX) fail("unexpected CSR read-write");
     if (rx_ready()) {
         m.started = 1; m.last_pop_t = m.t;

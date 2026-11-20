@@ -2,7 +2,10 @@
 
 Status: **assessment, 2026-11-19.** Board data from the VCU118 image
 `85f07e58…` (and, for comparison, `d7ff00dc…`), analysed with NIST's
-SP 800-90B tools. This is an engineering self-assessment against
+SP 800-90B tools. *Sections 1 to 8 describe that image. The health tests
+were redesigned in RTL afterwards ([section 9](#9-redesign-of-the-health-tests-rtl-2026-11-19));
+that work is built into bitstream `ddb168e1…` (2026-11-20, timing met), which
+was board-tested on 2026-11-20 ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).* This is an engineering self-assessment against
 [NIST SP 800-90B](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-90B.pdf)
 (January 2018), not a validation: no accredited laboratory has been
 involved, and the FPGA ring oscillators are a stand-in for an ASIC noise
@@ -364,12 +367,15 @@ anything detects them:
 
 1. Health tests on the 4-bit sample: RCT and APT (W = 512) with cutoffs from
    the assessed H and a documented α; keep the lane tests as additional
-   diagnostics. Add a test for short periodic patterns.
+   diagnostics. Add a test for short periodic patterns. *In RTL since
+   2026-11-19 (section 9); the cutoffs wait for an assessed H.*
 2. Failure reporting: a sticky failure indication readable by the consumer,
    a rule that ends a recurring operational failure in `DEAD`, and their
-   rationale.
+   rationale. *In RTL since 2026-11-19 (section 9.3).*
 3. Fixed configuration: build-time constants (no write path) or a boot-time
    lock for k and the cutoffs; document the assessed clock and spacing.
+   *In RTL since 2026-11-19: build limits that software cannot weaken, and
+   the lock (section 9.1). The boot chain still sets no lock.*
 4. Operational restart data: 1,000 restarts by power-on or reconfiguration,
    with samples read through `seed` from the first `ES16` on (§4.4).
 5. Data over the operating range: temperature and supply corners, several
@@ -391,12 +397,246 @@ python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').
 ea_iid -v d19-sym4.bin 4
 ea_non_iid -a -v d19-sym4.bin 4
 ea_restart -n -v restart-rows.bin 4 3.526340
-# health-test replay and the alternative-test criteria
+# health-test replay and the alternative-test criteria, for the lane tests of 85f07e58
 python3 test/dbg/board/sp80090b_health.py --h 3.526340 getnoise-k16.bin
+# section 9: cutoffs, the criteria and failure modes on the model of the current RTL, replay
+python3 test/dbg/board/entropy_health.py cutoffs --h 3.0 --h-lane 0.75 --alpha 40
+python3 test/dbg/board/entropy_health.py criteria
+make entropy-test ENTROPY_DATA="d18-sym4.bin d19-sym4.bin" ENTROPY_RESTART=restart-rows.bin
 # board data
 python3 test/dbg/board/getnoise_capture.py     # k-sweep, includes k = 16
 python3 test/dbg/board/getnoise_restart.py     # delayed warm restarts, 1,000 x 1,000
 ```
+
+## 9. Redesign of the health tests (RTL, 2026-11-19)
+
+Sections 1 to 8 describe image `85f07e58…`. After the assessment the health
+tests and the failure handling of `rtl/karu_entropy.v` were redone (items 1
+to 3 of section 7). **This is RTL and simulation. It is built into VCU118
+bitstream `ddb168e1…` (2026-11-20, timing met;
+[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)).** On the
+board on 2026-11-20 every interval read between resets (`mentropystat`),
+about 100 minutes in total, ended with zero failures on the real rings, and replay of that day's
+captures raised none either; non-IID estimates on the k = 16 capture were
+3.556 bits per sample against 3.526 on 2026-11-19
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#health-tests-on-the-board)).
+That shows no false alarms on this source; detection of a failing source
+is shown in simulation only. Items 4 to 6 of section 7 are open, so the
+verdict of section 1 stands until then.
+
+### 9.1 What the block does now
+
+| | Before (`85f07e58…`) | Now |
+| --- | --- | --- |
+| Tests on the 4-bit sample | none | repetition count (§4.4.1) and adaptive proportion with W = 512 (§4.4.2): the approved tests, on the noise-source sample |
+| Tests per lane | repetition count, adaptive proportion (W = 1024) | repetition count at lags 1 to 4 (a lane bit equal to the bit g samples earlier: lag 1 is a stuck lane, lags 2 to 4 are patterns of period 2 to 4), adaptive proportion (W = 1024). Kept as developer-defined tests for failure modes (§4.3 item 8) |
+| A running failure | back to `BIST` for the 56 ms of the retest | words wiped, retest, and `seed` reports `BIST` until one `seed` access has seen it: the alarm that the Zkr text requires to be "latched until polled at least once" |
+| A recurring failure | cycles between `BIST` and `ES16` without end | counted as strikes; the third without 2^24 clean samples in between is fatal (`DEAD`) |
+| A failure in a start-up test | `DEAD` | `DEAD`, as before; also for the retest after a running failure |
+| Configuration | k and two cutoffs writable down to k = 1 and up to 1,023 and 1,024; a lock that nothing sets | k, four cutoffs, the strike number and the clean-sample count are writable through `mentropycfg`; **the build's reset values are the weakest configuration by default**, so software can make the tests stricter and the spacing longer, not the reverse; the lock as before. Test mode takes any k, for characterisation; `seed` delivers nothing there |
+| GetNoise, a run across a stopped source | two samples on either side of a strap change, or of a `mentropycfg` write, were reported as consecutive if neither was overwritten | the loss flag is set and a sample not yet taken is dropped: the run has ended. So does an accepted write to the burst block's sampling period (`0x1000_0848`), which changes the spacing. Found in review; it predates the redesign, and matters only for a capture during which the strap, the configuration or the period changed |
+| Status for the consumer | `OPST` only | `OPST`, with the latched alarm; and `mentropystat` (`0x7CA`, M-mode, read-only): state, alarm, strikes (the fatal one included), which test, lanes and lags failed last, failures since reset |
+
+The lane tests are needed beside the sample tests: a sample with one dead
+or periodic lane still varies in the other three, and the sample tests
+cannot tell that from a source that meets the claim.
+
+**`seed` is the only way out for a word.** Until 2026-11-19 the same words
+also went to the debug authentication block through a second port (its
+`mdbgrng` CSR), which could have acknowledged the alarm in place of a
+`seed` reader. That port and CSR are removed: the authentication ROM reads
+`seed` like any other M-mode software, and only a `seed` access clears the
+alarm.
+
+### 9.2 Cutoffs: the target, the false-alarm probability, and their choice in software
+
+A cutoff follows from a min-entropy and a false-alarm probability α per
+test (`test/dbg/board/entropy_health.py cutoffs`):
+
+- repetition count: C = 1 + ⌈−log₂α / H⌉ (§4.4.1);
+- proportion: the smallest C with P(1 + B(W−1, 2⁻ᴴ) ≥ C) ≤ α. The first
+  sample of a window always counts, so the count is 1 + B(W−1, p). The
+  formula printed in §4.4.2, 1 + CRITBINOM(W, 2⁻ᴴ, 1 − α), gives one less on
+  the sample test (123 for H = 3), whose alarm probability is 1.44 α: the
+  cutoffs here are the ones that meet α for the comparison the hardware
+  makes.
+
+The lane cutoffs use the same formulas with the entropy per lane bit: a bit
+with min-entropy h given the past equals any bit determined by the past
+with probability at most 2⁻ʰ, so the bound of §4.4.1 holds at every lag.
+
+**The reset values are for H = 3 bits per 4-bit sample, h = 0.75 bit per
+lane bit and α = 2⁻⁴⁰ per test.** Three bits per sample is the rate of 0.75
+that the Zkr text asks of an SP 800-90B source. It is the target of this
+assessment, **not an established claim**: the estimates of section 4.3
+(3.53 and 3.68) are above it for one board at 24 °C, and the
+operating-range, restart and source-model evidence of section 7 is still
+needed.
+
+| Test | Cutoff | Alarm probability of a source exactly at the target, in units of α | A healthy source trips it about every |
+| --- | --- | --- | --- |
+| Sample repetition | 15 | 0.25 per run | 116,000 years |
+| Sample proportion, W = 512 | 124 | 0.64 per window | 10²⁷ years |
+| Lane repetition, lags 1 to 4 | 55 | 0.71 per run | 3,100 years |
+| Lane proportion, W = 1024 | 719 | 0.77 per window | 10²⁶ years |
+| Any of them | | | 3,000 years |
+
+α is a target per test. "Healthy" is four independent lanes of independent
+bits with the largest bias of the 2026-11-19 captures (0.509), at 18,310
+samples per second. For that model the probability is exact for one lane at
+one lag (a repetition count reaches C when exactly C − 1 comparisons in a
+row match, which at lag g means g interleaved runs), for the sample
+repetition count, and for one window of a proportion test. The rows of the
+table add these up over lanes and lags, and the last row over the tests;
+the events overlap, so those rows are upper bounds on the alarm
+probability, and lower bounds on the interval, under the model. They say
+nothing about a real source's dependence. α = 2⁻⁴⁰ and not the 2⁻²⁰ of
+section 5.2 because of the sample rate: at 2⁻²⁰ and the D19 estimate
+(cutoffs 7 and 79) a healthy source would trip the sample repetition test
+about every 15 minutes, and every false alarm costs a retest and a strike.
+
+The cutoffs are configuration, not constants: software that has an
+assessed claim sets the cutoffs for it and locks them.
+
+| Target | Sample repetition | Sample proportion | Lane repetition | Lane proportion |
+| --- | --- | --- | --- | --- |
+| H = 1.0, h = 0.5 | 41 | 337 | 81 | 824 |
+| H = 2.0, h = 0.5 | 21 | 202 | 81 | 824 |
+| H = 3.0, h = 0.75 (reset) | 15 | 124 | 55 | 719 |
+| H = 3.526, h = 0.88 (the D19 estimate) | 13 | 97 | 47 | 668 |
+
+All at α = 2⁻⁴⁰. With the default build limits the last row can be
+written, and nothing weaker than the reset row.
+
+### 9.3 Failure handling (§4.3 item 2)
+
+- **Notification.** A running failure is the non-fatal alarm of the Zkr
+  text: `seed` reports `BIST` from the failure until one `seed` access has
+  seen it, however much later, and delivers nothing meanwhile. A fatal
+  failure is `DEAD` until reset, with the noise source switched off.
+  `mentropystat` tells M-mode which test, lanes and lags failed and how
+  often.
+- **Intermittent or persistent.** A failure during any start-up test,
+  including the retest after a running failure, is fatal. A running
+  failure is a strike; 2^24 samples in a row without a failure (about 15
+  minutes) clear the strikes; the third strike is fatal. The samples are
+  counted from the failure, so the 1,024 of the retest are among them.
+  Both numbers are configuration (`strikes`, `calm`), with the same
+  one-sided limits.
+- **Evidence for (a), "extremely likely intermittent".** A failure is
+  treated as intermittent only if the source then passes a full start-up
+  test and, for it to be forgotten, 2^24 further samples under all tests.
+  A strike records that a count crossed its cutoff, nothing more. Under
+  the model of 9.2 a healthy source does that less than once in 3,000
+  years, so three within the forgiveness time are taken as a fault and
+  end the source.
+- **Evidence for (b), "a permanent failure is detected and ends in an
+  error".** A fault that stays fails the retest, which is fatal: for a
+  stuck or periodic lane within 58 samples of the first failure (3.2 ms).
+  A fault that goes away and
+  comes back within 15 minutes is fatal at its third occurrence. A fault
+  that comes back less often than that is, by this rule, intermittent;
+  every occurrence still wipes the buffer and raises the alarm.
+
+### 9.4 §4.3 point by point, after the change
+
+| Item | State in RTL | Left |
+| --- | --- | --- |
+| 1 Approved continuous tests | Met: §4.4.1 and §4.4.2 on the 4-bit sample | — |
+| 2 Failure notification, intermittent and persistent | Met in mechanism (9.3) | board evidence that real failures behave as assumed |
+| 3 False-alarm probability | 2⁻⁴⁰ per test, documented with the cutoffs (9.2) | the claim itself (H_submitter, sections 4.5 and 7) |
+| 4 Start-up tests over 1,024 samples | Met: every test, sample and lane | — |
+| 5 On-demand test | An accepted `mentropycfg` write, or a reset. Once locked, a reset only | name one of them in the integration guide |
+| 6 Tests before conditioning | Met: there is no conditioning | — |
+| 7 Documentation | header of `rtl/karu_entropy.v`, this section | rates and rationale per failure mode on board data |
+| 8 Failure modes | stuck lane, lane patterns of period 1 to 4, biased lane, stuck or dominant sample: tested (9.5) | lanes locked to each other; weak coupling; loss of jitter that leaves no short period |
+| 9 Edge of the operating range | not addressed | data over temperature and supply |
+
+### 9.5 Evidence (simulation and replay; `make entropy-test`)
+
+- **The block against a reference model.** `test/dbg/board/entropy_health.py`
+  is the health logic in Python. `test/entropy_replay.py` feeds the same
+  symbols to the RTL (`test/tb_entropy_replay.sv`) and to the model and
+  compares every failure and the status register after it: healthy
+  symbols, every kind of fault on every lane and lag, strikes, forgiveness,
+  a failure during start-up, rows that each start from reset, and 60
+  random cases with random cutoffs and `seed` accesses (212 failures).
+  They agree everywhere, and a model that differs by one in any one
+  setting does not.
+- **Directed cases and mutants.** `test/tb_entropy.sv` has each test at its
+  cutoff and one sample short of it, the alarm and its owner, the strikes,
+  the limits and the status register (4,073 checks). 86 one-mechanism
+  mutants of the module are all caught.
+- **The criteria of §4.5**, at H = 3.0 and the reset cutoffs
+  (`entropy_health.py criteria`). They are supplementary: the block
+  implements the approved tests of §4.4. (a) More than 100/H = 33.3
+  identical samples: a repetition count with cutoff 15 trips by the 15th
+  of them, by construction; simulated with 34 and 35 repeats, 200 of 200
+  each, all detected by the 15th sample (a few earlier, where the healthy
+  samples before the fault happened to end with the repeated value). (b) One value at P* = 0.354 for 50,000 samples:
+  20 of 20, the slowest after 3,926 samples. A case counts only if the
+  healthy samples before the fault raise no failure and the failure comes
+  while the fault lasts.
+- **Failure modes** (same command, same rule): a lane stuck at 0 or 1 is
+  detected at its 55th sample, a lane with a pattern of period 2, 3 or 4
+  at its 56th to 58th, a lane biased to 0.74 within four windows, a stuck
+  sample at its 15th; none missed. 200,000 uniform samples raise no
+  failure.
+- **The board captures replayed** (`make entropy-test ENTROPY_DATA=…
+  ENTROPY_RESTART=…`), at the reset cutoffs, in the RTL and in the model:
+
+  | Dataset | Failures | Longest sample repetition (cutoff 15) | Largest sample window count (124) | Largest lane repetition count, any lag (55) | Largest lane window count (719) |
+  | --- | --- | --- | --- | --- | --- |
+  | D18, 10⁶ consecutive samples | none; ends running | 6 | 53 | 25 (lag 1) | 586 |
+  | D19, 10⁶ consecutive samples | none; ends running | 6 | 55 | 24 (lag 2; 22 at lag 1) | 578 |
+  | R19, 1,000 restarts of 1,000, each from reset | none | 5 | 55 | 21 | 578 |
+
+  A row of R19 has 1,000 samples, fewer than the 1,024 of the start-up
+  test: no row reaches the running state, so R19 shows no false alarm in
+  the first 1,000 samples after these restarts and nothing about what
+  follows a completed start-up test. At much tighter cutoffs (7, 79, 24
+  and 633: the D19 estimate at α = 2⁻²⁰) D18 and D19 give 2 and 1
+  failures, at the same samples in RTL and model.
+- **Cost** (Vivado 2026.1, out-of-context synthesis of
+  `karu_entropy_src` for the VCU118 part, estimates before placement):
+  `karu_entropy` grows from 413 CLB LUTs and 332 flip-flops to 721 and
+  576 in the hierarchical utilization report (from 533 to 907 LUT
+  primitives before packing). The path from its registers to the value
+  the core reads has ten logic levels as before, 3.1 ns against 2.8 ns;
+  the loop check finds only the rings.
+
+Not shown by any of this: that the target is met, or how the source fails
+in practice. On a healthy board, every interval read on 2026-11-20 ended
+with zero failures (the record has which intervals were read). The boot chain ran
+on this RTL on the board on 2026-11-20: through the island ROM, OpenSBI,
+U-Boot (which drew `seed` words) and Linux, with the source on and off,
+and the authentication ROM drew its nonces from `seed`. Still with
+simulation coverage only: induced health-test failures, strikes and
+`DEAD` on a running system.
+
+### 9.6 For software that writes `mentropycfg`
+
+The CSR has more fields than in `85f07e58…`: the two sample cutoffs
+`[43:37]` and `[53:44]`, the strike number `[56:54]` and the clean-sample
+count `[61:57]`. A constant in the old format leaves them zero, and a zero
+sample cutoff fails on the next kept sample, which during the start-up
+test is fatal: `seed` reports `DEAD` until reset. Change a field by
+read-modify-write:
+
+```asm
+    csrr  t0, 0x7C9         # mentropycfg: keep what is there
+    li    t1, 0xffff
+    not   t1, t1
+    and   t0, t0, t1        # replace one field, here the interval
+    ori   t0, t0, 31        # k = 32
+    csrw  0x7C9, t0
+    li    t1, 1 << 63       # the lock alone: set that bit
+    csrs  0x7C9, t1
+```
+
+The capture payloads (`test/dbg/board/getnoise.S`) do it this way. Nothing
+in the boot path (fu-boot, the island ROM, OpenSBI, U-Boot, Linux) writes
+`mentropycfg`.
 
 ## References
 

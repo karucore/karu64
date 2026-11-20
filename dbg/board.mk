@@ -161,12 +161,12 @@ dbg-burst-analysis-test:
 # leave the target unexamined. Not part of a gate list.
 DBG_BOARD_AUTH    = $(BUILD)/dbg/board-auth-rehearsal
 DBG_BOARD_AUTH_TB ?= test/dbg/tb_jtag_core.v
-$(DBG_BOARD_AUTH)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/remote_bitbang.cc \
+$(DBG_BOARD_AUTH)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v test/dbg/remote_bitbang.cc \
   dbg/karudbg.f $(filter %.v,$(shell cat dbg/karudbg.f)) $(wildcard rtl/*.vh rtl/*.sv dbg/*.vh) $(DBG_AUTH_WIN_DIR)/rom.hex dbg/board.mk
 	mkdir -p $(DBG_BOARD_AUTH)
-	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_NO_V \
+	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR -DKARU_NO_V \
 	  -GROM_HEX='"$(abspath $(DBG_AUTH_WIN_DIR)/rom.hex)"' --top-module tb_jtag_core --Mdir $(DBG_BOARD_AUTH)/obj \
-	  -CFLAGS -DKARUDBG_CORE_TARGET $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv -f dbg/karudbg.f \
+	  -CFLAGS -DKARUDBG_CORE_TARGET $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v -f dbg/karudbg.f \
 	  $(abspath test/dbg/remote_bitbang.cc) > $(DBG_BOARD_AUTH)/build.log 2>&1 || { tail -20 $(DBG_BOARD_AUTH)/build.log; exit 1; }
 
 DBG_BOARD_AUTH_RUN = python3 $(DBG_BOARD_SRC)/auth_rehearse.py --openocd $(OPENOCD) --out $(DBG_BOARD_AUTH) \
@@ -177,8 +177,8 @@ dbg-board-auth-rehearsal-test: $(DBG_BOARD_AUTH)/obj/Vtb_jtag_core
 	$(DBG_BOARD_AUTH_RUN) --tag window locked wrong-response por expiry por authenticate por replay por fresh-nonce
 	grep -q 'Debugger is not authenticated to target Debug Module' $(DBG_BOARD_AUTH)/window-openocd.log
 	$(DBG_BOARD_AUTH_RUN) --tag no-hold --plusarg +auth_hold=0 no-hold
-	$(DBG_BOARD_AUTH_RUN) --tag entropy-off --plusarg +auth_trng_opst=0 entropy-off
-	$(DBG_BOARD_AUTH_RUN) --tag entropy-dead --plusarg +auth_trng_opst=3 entropy-off
+	$(DBG_BOARD_AUTH_RUN) --tag entropy-off --plusarg +auth_seed_opst=0 entropy-off
+	$(DBG_BOARD_AUTH_RUN) --tag entropy-dead --plusarg +auth_seed_opst=3 entropy-off
 	$(DBG_BOARD_AUTH_RUN) --tag disabled --plusarg +auth_lc=2 disabled
 	$(DBG_BOARD_AUTH_RUN) --tag open --plusarg +auth_lc=0 open
 	$(DBG_BOARD_AUTH_RUN) --tag mutant-key --mutate key --expect-fail $(DBG_BOARD_AUTH_UNLOCK) authenticate
@@ -205,12 +205,12 @@ dbg-board-auth-rehearsal-test: $(DBG_BOARD_AUTH)/obj/Vtb_jtag_core
 # with their own message. The model differs from the one above only in its
 # ROM.
 DBG_BOARD_AUTH_SHA3 = $(BUILD)/dbg/board-auth-sha3
-$(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/remote_bitbang.cc \
+$(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v test/dbg/remote_bitbang.cc \
   dbg/karudbg.f $(filter %.v,$(shell cat dbg/karudbg.f)) $(wildcard rtl/*.vh rtl/*.sv dbg/*.vh) $(DBG_AUTH_SHA3_DIR)/rom.hex dbg/board.mk
 	mkdir -p $(DBG_BOARD_AUTH_SHA3)
-	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_NO_V \
+	timeout 900 verilator --cc --exe --build -j $(DBG_JOBS) -Wno-fatal -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR -DKARU_NO_V \
 	  -GROM_HEX='"$(abspath $(DBG_AUTH_SHA3_DIR)/rom.hex)"' --top-module tb_jtag_core --Mdir $(DBG_BOARD_AUTH_SHA3)/obj \
-	  -CFLAGS -DKARUDBG_CORE_TARGET $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv -f dbg/karudbg.f \
+	  -CFLAGS -DKARUDBG_CORE_TARGET $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v -f dbg/karudbg.f \
 	  $(abspath test/dbg/remote_bitbang.cc) > $(DBG_BOARD_AUTH_SHA3)/build.log 2>&1 || { tail -20 $(DBG_BOARD_AUTH_SHA3)/build.log; exit 1; }
 DBG_BOARD_AUTH_SHA3_RUN = python3 $(DBG_BOARD_SRC)/auth_rehearse.py --openocd $(OPENOCD) --out $(DBG_BOARD_AUTH_SHA3) \
 	--model $(DBG_BOARD_AUTH_SHA3)/obj/Vtb_jtag_core

@@ -209,6 +209,224 @@ likely explanation, not a proven one, and this mapped full-debug netlist
 fails 200 MHz by 1.08 ns as it stands. The 200 MHz ASIC goal remains open,
 as before.
 
+## FPGA image — 2026-11-20
+
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8
+UBOOT_NETBOOT_DIR=$PWD/_build/u-boot-v2026.10-netboot`, with the default define
+list (`KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR`, 75 MHz, Vivado 2026.1).
+Compared with `85f07e58…` it has the redesigned health tests of the
+entropy block (`rtl/karu_entropy.v`: the two SP 800-90B tests on the 4-bit
+sample, lane tests at lags 1 to 4, the alarm latch, strikes and
+`mentropystat`), no `mdbgrng`, and the hardware limit on the
+authentication window (2³¹ clocks). Its RTL is that of `f3493b17…` below,
+which it replaces: the difference is the boot ROM's firmware, compiled by
+the bare-metal compiler again, and the file modes. **Board-tested on
+2026-11-20**, accepted with documented exceptions: see the
+[acceptance record](BOARD_ACCEPTANCE-2026-11-20.md).
+
+- **Build.** 2026-11-19 22:29 to 2026-11-20 00:10 UTC (synthesis 23,
+  placement 35, routing 25 minutes), from karu64 `f014194` and karudeb
+  `db180ff`, **karu64 with uncommitted changes**. The diff and the new
+  files are kept in `_build/vcu118-2026-11-19b-sources/` with their hashes.
+  No file that the image is built from changed during the build. Changed
+  during it, on the test side: the two proof additions of the second
+  review (`test/dbg/formal/c3_miter.v`, `c9own_karudbg_island.vh`,
+  `compose_c9c10_karudbg_core.vh`, `test/dbg/run_auth_formal.py`,
+  `run_auth_compose.py`), a comment in `test/dbg/check_auth_bypass.py`,
+  and documents. The functional gate passed on the tree the build started from (22:28 UTC, 455 inputs) and again, with those test-side changes, during the build (23:25 UTC, 456 inputs; [README](README.md)).
+- **The define list and the parameters** are those of `f3493b17…` and, but
+  for the entropy block's cutoffs and `AUTH_WINDOW_LOG2` = 31, of
+  `85f07e58…`.
+- **Final timing:**
+  - setup WNS +0.008 ns, TNS 0, over 278,548 endpoints. The worst path is
+    in the DDR4 interface's clock domain (+0.008 ns); `cpu_clk` has
+    +0.255 ns;
+  - hold WHS +0.011 ns (`cpu_clk` +0.011 ns, the DDR4 domain +0.013 ns);
+    pulse width +0.005 ns;
+  - all 16 bus-skew constraints pass, with at least 2.39 ns margin.
+- The router ended at +0.002 ns; the flow's post-route `phys_opt_design`
+  left +0.008 ns.
+- DRC at `write_bitstream`: 0 errors. One critical warning in the log, the
+  known `BOARD_PART_PIN` message from the DDR4 IP's board file.
+- The self-checking constraints ran: `KARUDBG_BSCAN_CONSTRAINTS`,
+  `KARU_LOOP_CHECK no combinational loop outside the ring oscillators`,
+  `KARU_ROSC_CONSTRAINTS rings=4`, the four `KARU_ROSC_PLACED` lines in the
+  same slices as `85f07e58…` (`SLICE_X100Y450` to `SLICE_X112Y451`), and
+  `KARU_SYSMON_CONSTRAINTS monitor … at SYSMONE4_X0Y1 in SLR1, with the
+  rings`. New: four `KARU_PRIVATE` lines, one for each file that holds the
+  authentication key (below).
+- Resources: 377,901 LUTs (32.0%), 91,757 registers, 451.5 block-RAM tiles,
+  29 DSPs, 1 SYSMONE4. The implementation is the same as the superseded build's below: the utilisation report is identical and so is the timing report. The 14,664 LUTs more than `85f07e58…` are
+  discussed under the superseded build; the per-module report of this
+  image is `_build/post-route-z7-hier.rpt`.
+- **Read back from the routed design** (`_build/vcu118_ddr_route.dcp`,
+  read-only queries, `_build/post-route-z7.log`): setup into the entropy
+  block's registers +1.444 ns, out of them +3.230 ns, inside the block
+  +5.411 ns; out of the window counter into `auth_unlock_q` +9.598 ns;
+  no cell named for the removed TRNG port; `report_drc` on loops: no
+  LUTLP-1, four LUTLP-2 (the rings of 3, 5, 7 and 9 LUTs).
+- **Boot ROM.** `_build/vcu118_fuboot.hex` (image `f15d7740…`) was compared
+  byte for byte with its inputs: fu-boot (11,808 bytes) at 0, OpenSBI
+  `fw_jump` (`cbbbe5ce…`) at `0x30000`, U-Boot `2026.10-dirty`
+  (`7a27c424…`, 802,453 bytes) at `0x120000`, and the device tree
+  (`784e2762…`) at `0x1FC000`; the regions between them are empty.
+  **Against the ROM of the board-accepted `85f07e58…` it differs in 5
+  bytes, all in the build date that U-Boot prints** (`Nov 19 2026 - 22:30:01 +0000`
+  here). fu-boot, OpenSBI, the device tree, the boot command and every
+  other byte of U-Boot are the same, so this ROM's U-Boot is the binary
+  that booted on the board on 2026-11-19 but for that string.
+- **Compilers.** fu-boot and U-Boot were built by
+  `$RISCV/bin/riscv64-unknown-elf-gcc` (`-dumpmachine`:
+  `riscv64-unknown-elf`; GCC 16.1.0), taken by absolute path. The Makefile
+  now does that when `$RISCV` has the compiler, `make toolchain-check`
+  refuses a compiler that does not target what its name says, and the
+  compiler of each binary is recorded when the ROM is packed
+  (`_build/vcu118_fuboot_toolchain.txt`) and repeated in the ROM manifest
+  of the bundle. `flow/build_uboot.sh` cleans a U-Boot tree whose recorded
+  compiler differs before it builds. The same compiler built the firmware
+  of the simulations that ran on these sources (`image-boot-test`,
+  `uboot-tftp-test`, `uboot-boot-test`: all pass).
+- **Island ROM.** `_build/vcu118_auth_rom.hex` (`f518b750…`), rebuilt with
+  the same compiler, is byte-identical to that of `85f07e58…`, with the
+  same key (fingerprint `276bf6e96d8edecc`). Its flags:
+  `-DTRNG_TRIES=200000 -DWINDOW_CYCLES=1073741824ull -DAUTH_ROM_NEXT=0x1000
+  -DAUTH_ROM_NO_MTVEC -DAUTH_ALG_SHA3`. `_build/vcu118_auth_record.json`
+  records the bitstream hash, the ROM flags and hash and the key
+  fingerprint, and the bundle was packed only after that record verified.
+- **File modes.** The key is in the island ROM, and so in the three
+  checkpoints and in the bitstream. For an image with `KARU_DBG_AUTH` the
+  Makefile now runs Vivado with `umask 077`, and the flow sets those four
+  files to mode 0600 and checks it: the log has `KARU_PRIVATE` for
+  `vcu118_ddr_synth.dcp`, `vcu118_ddr_postplace.dcp`,
+  `vcu118_ddr_route.dcp` and `vcu118_ddr.bit`. The bundle is 0600 and
+  strips group and other access from its members. The bitstreams in
+  `_build/fpga_archive/` were set to 0600 by hand on 2026-11-19; until then
+  the `.bit` and `.dcp` files of every image with a key were 0664 in a
+  home directory that the group can enter.
+- None of these checks decodes the `.bit` file, as before.
+
+The bitstream SHA-256 is
+`ddb168e1081c9b73c29cd5a16ab777ee8106a52d382469b5b741b094bc096aad`; the
+bundle `_build/vcu118_programming.tgz` (mode 600, with the key) is
+`88dce485fadad7c63ba42e07bd7ed5f2124d69bbef8ca2f1a53b7b8c54817342`. This
+image's reports are in `_build/fpga_rpt/`; the accepted image and the
+superseded build are kept, each with its bundle and reports, in
+`_build/fpga_archive/2026-11-18-85f07e58/` and
+`_build/fpga_archive/2026-11-19-f3493b17/`.
+
+## FPGA build — 2026-11-19 (`f3493b17…`, superseded)
+
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8
+UBOOT_NETBOOT_DIR=$PWD/_build/u-boot-v2026.10-netboot`, with the default define
+list (`KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR`, 75 MHz, Vivado 2026.1).
+Compared with `85f07e58…` below it has the redesigned health tests of the
+entropy block (`rtl/karu_entropy.v`: the two SP 800-90B tests on the 4-bit
+sample, lane tests at lags 1 to 4, the alarm latch, strikes and
+`mentropystat`), no `mdbgrng`, and the hardware limit on the
+authentication window (2³¹ clocks). **Superseded by `ddb168e1…` (above) and
+never programmed**: its fu-boot and U-Boot came from a Linux-target
+compiler, as the boot ROM items below explain. The RTL is the same in
+both. Kept in `_build/fpga_archive/2026-11-19-f3493b17/`.
+
+- **Build.** 2026-11-19, 19:30 to 21:20 UTC (1 h 50 min: synthesis 24,
+  placement 36, routing 25 minutes), from karu64 `f014194` and karudeb
+  `db180ff`, **karu64 with uncommitted changes**. The diff and the new
+  files are kept in `_build/vcu118-2026-11-19-sources/` with their hashes.
+  No file that the image is built from changed during the build. Three
+  test-side files did (`dbg/auth.mk`, `test/dbg/check_auth_bypass.py`,
+  `test/dbg/board/auth_rehearse.py`), five test files are new, and so did
+  documents. The functional gate passed on the build's sources just before
+  (19:29 UTC, 450 inputs) and on the tree with the test-side changes
+  after (21:25 UTC, 455 inputs; [README](README.md)).
+- **The define list and the parameters** are those of `85f07e58…`, read
+  from the two synthesis logs: the same `KARU_DEFINES` line, and the bound
+  parameters differ only in the entropy block's cutoffs and limits and in
+  `AUTH_WINDOW_LOG2` = 31. The five tool commands are the same.
+- **Final timing:**
+  - setup WNS +0.008 ns, TNS 0, over 278,548 endpoints. The worst path is
+    in the DDR4 interface's clock domain, from the AXI width converter into
+    the DDR4 controller's write-response FIFO; `cpu_clk` has +0.255 ns;
+  - hold WHS +0.011 ns (on `cpu_clk`); pulse width +0.005 ns;
+  - all 16 bus-skew constraints pass, with at least 2.39 ns margin.
+- The router ended at +0.002 ns; the flow's post-route `phys_opt_design`
+  left +0.008 ns. Nothing of the new logic is among the 30 reported worst
+  paths.
+- DRC at `write_bitstream`: 0 errors. One critical warning in the log, the
+  known `BOARD_PART_PIN` message from the DDR4 IP's board file.
+- The self-checking constraints ran: `KARUDBG_BSCAN_CONSTRAINTS`,
+  `KARU_LOOP_CHECK no combinational loop outside the ring oscillators`,
+  `KARU_ROSC_CONSTRAINTS rings=4`, the four `KARU_ROSC_PLACED` lines in the
+  same slices as `85f07e58…` (`SLICE_X100Y450` to `SLICE_X112Y451`), and
+  `KARU_SYSMON_CONSTRAINTS monitor … at SYSMONE4_X0Y1 in SLR1, with the
+  rings`.
+- Resources: 377,901 LUTs (32.0%), 91,757 registers, 451.5 block-RAM tiles,
+  29 DSPs, 1 SYSMONE4. That is 14,664 LUTs and 631 registers more than
+  `85f07e58…`. The registers are about what the new logic adds. The LUTs
+  are not: the whole entropy source is 778 LUTs and the authentication
+  block 406, against 214,850 in the vector arithmetic unit. Synthesis
+  already ends 18,818 LUT primitives apart, and the two totals are the two
+  seen before (376,035 LUTs on November 17, 362,437 on November 18, which
+  the notes below call a difference between two optimisation runs). It is
+  not attributed further: no per-module report of `85f07e58…` was kept.
+  This image's is `_build/post-route-z6-hier.rpt`. The placement differs
+  as well: most block RAM is in SLR2 here and was in SLR1 there. The
+  boot memory has 418 block RAMs, and the design's 451 are as many as in
+  `85f07e58…`: the larger U-Boot fills block RAMs that were already
+  there.
+- **Read back from the routed design** (`_build/vcu118_ddr_route.dcp`,
+  read-only queries, `_build/post-route-z6.log`):
+  - the entropy block (`u_entropy/entropy`) is 703 LUTs (895 LUT
+    primitives before pairing), 576 flip-flops and 34 carry chains; out of
+    context it was 721 and 576, and the block of `85f07e58…` 413 and 332.
+    With the rings' sampler and the burst capture the source is 778 LUTs
+    and 696 flip-flops. Setup into the block's registers +1.444 ns, from
+    the core's CSR address through the write decode to a cutoff field's
+    register, 9 levels. Out of them +3.230 ns, 17 levels: from the count of
+    samples seen, through the tests' verdict and `seed`'s read data, into a
+    CSR register. Inside the block +5.411 ns. Hold into it +0.024 ns;
+  - the window counter is 32 flip-flops in `cpu/auth`, on `cpu_clk`. Out
+    of it into `auth_unlock_q` +9.598 ns, 3 levels; into it +11.869 ns;
+  - no cell is named for the removed TRNG port;
+  - `report_drc` on loops: no LUTLP-1, four LUTLP-2 (the rings of 3, 5, 7
+    and 9 LUTs).
+- **Boot ROM.** `_build/vcu118_fuboot.hex` (image `2639b44e…`) was compared
+  byte for byte with its inputs: fu-boot (12,848 bytes) at 0, OpenSBI
+  `fw_jump` (`cbbbe5ce…`) at `0x30000`, U-Boot `2026.10-dirty`
+  (`4a823f6c…`, 899,245 bytes) at `0x120000`, and the device tree
+  (`784e2762…`) at `0x1FC000`; the regions between them are empty. OpenSBI,
+  the device tree and the boot command are byte-identical to `85f07e58…`.
+- **fu-boot and U-Boot were compiled by a different compiler than for
+  `85f07e58…`.** The build's `PATH` had `~/.local/bin` before `$RISCV/bin`,
+  and `~/.local/bin/riscv64-unknown-elf-gcc` is a link to the Linux-target
+  compiler (`riscv64-unknown-linux-gnu`, the same GCC 16.1.0 sources;
+  U-Boot's own build record names its include directory). That compiler
+  writes unwind tables by default and the bare-metal one does not, so each
+  binary carries an `.eh_frame` section that it did not have: 1,040 bytes
+  in fu-boot (11,808 before) and 96,792 in U-Boot (802,453 before), which
+  is the whole difference in size. U-Boot now ends 1,875 bytes below the
+  device-tree slot; the packer checks that it fits. fu-boot from the same
+  sources and compiler boots in `image-boot-test`, and U-Boot's simulation
+  configuration from the same compiler in `uboot-boot-test`; the U-Boot
+  binary of this ROM, the netboot configuration, has run nowhere. The
+  Makefile now takes the bare-metal compiler by absolute path and checks
+  it, and `ddb168e1…` above was built that way.
+- **Island ROM.** `_build/vcu118_auth_rom.hex` (`f518b750…`) is
+  byte-identical to that of `85f07e58…`, with the same key (fingerprint
+  `276bf6e96d8edecc`): that ROM already drew its nonce from `seed`. Its
+  flags are now `-DTRNG_TRIES=200000 -DWINDOW_CYCLES=1073741824ull
+  -DAUTH_ROM_NEXT=0x1000 -DAUTH_ROM_NO_MTVEC -DAUTH_ALG_SHA3`.
+  `_build/vcu118_auth_record.json` records the bitstream hash, the ROM
+  flags and hash and the key fingerprint, and the bundle was packed only
+  after that record verified.
+- None of these checks decodes the `.bit` file, as before.
+
+The bitstream SHA-256 is
+`f3493b179ea848de9ac522463788339d0cd316d7f30bb86f541b87cd38730b63`; the
+bundle `_build/vcu118_programming.tgz` (mode 600, with the key) is
+`32ceafcdca623c118338bc8268d9c65468eb64b5a55c87fc4edeab53b97560d1`. This
+build, its bundle, its reports and its logs are kept in
+`_build/fpga_archive/2026-11-19-f3493b17/`.
+
 ## FPGA image — 2026-11-18 evening
 
 `make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8

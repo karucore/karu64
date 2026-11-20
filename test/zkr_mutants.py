@@ -34,11 +34,16 @@ M = [
  ("sseed_not_writable",     "                        mseccfg_sseed <= new_v_w[9];\n", ""),
  ("useed_not_writable",     "                        mseccfg_useed <= new_v_w[8];\n", ""),
  ("mseccfg_extra_bit",      "{54'b0, mseccfg_sseed, mseccfg_useed, 8'b0}", "{54'b0, mseccfg_sseed, mseccfg_useed, 8'h01}"),
- ("mseccfg_absent",         "12'h015,12'h747,12'h7c8,12'h7c9,", "12'h015,12'h7c8,12'h7c9,"),
+ ("mseccfg_absent",         "12'h015,12'h747,12'h7c8,12'h7c9,12'h7ca,", "12'h015,12'h7c8,12'h7c9,12'h7ca,"),
+ ("mentropystat_absent",    "12'h015,12'h747,12'h7c8,12'h7c9,12'h7ca,", "12'h015,12'h747,12'h7c8,12'h7c9,"),
  # the legality term and !trap_req overlap for a CSR instruction's own trap, so
  # removing either one alone changes nothing; both together must be caught
  ("trapping_access_reported", "assign zkr_fire_o = op_req && !rst && !trap_req && (csr_exc_o == EXC_NONE) &&", "assign zkr_fire_o = op_req && !rst &&"),
- ("select_swapped",         "op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd1 : 2'd2;", "op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd2 : 2'd1;"),
+ ("select_swapped",         "op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd1 :\n                       op_addr == 12'h7c9 ? 2'd2 : 2'd3;",
+                            "op_addr == 12'h015 ? 2'd0 : op_addr == 12'h7c8 ? 2'd2 :\n                       op_addr == 12'h7c9 ? 2'd1 : 2'd3;"),
+ ("status_reads_configuration", "op_addr == 12'h7c9 ? 2'd2 : 2'd3;", "op_addr == 12'h7c9 ? 2'd2 : 2'd2;"),
+ ("status_reads_zero",      "(op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9 || op_addr == 12'h7ca) ? zkr_rdata_i :",
+                            "(op_addr == 12'h015 || op_addr == 12'h7c8 || op_addr == 12'h7c9) ? zkr_rdata_i :"),
  ("write_strobe_stuck",     "assign zkr_we_o = wen_w;", "assign zkr_we_o = 1'b1;"),
 ]
 BAD = re.compile(r"FAIL|ERROR|FATAL|ASSERT|\*\*TIMEOUT\*\*|\*\*TRAP\*\*")

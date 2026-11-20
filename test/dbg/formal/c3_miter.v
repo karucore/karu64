@@ -12,6 +12,13 @@
 // assertions. The runner also builds karudbg from a formal-only copy of
 // dbg/karudbg.v with one extra output, f_obs_o: the registers that the
 // induction has to tie together (dmactive_q, deact_pending_q, cmd_state_q).
+//
+// The gate's next state. Lemma C3 holds it at 0 in both copies, so one
+// input serves both. With C3_SPLIT_NEXT defined (glue lemma C3n of
+// test/dbg/run_auth_compose.py, which leaves the next state free) each copy
+// has an input of its own: in the cycle before a grant takes effect both
+// DMs are locked and their next states may differ, since the grant depends
+// on what the hart does.
 module karudbg_c3 (
     input wire clk,
     input wire rst,
@@ -28,7 +35,13 @@ module karudbg_c3 (
     input wire authbusy_i,
     // the gate, shared (held closed by the property block)
     input wire debug_enable_i,
+`ifdef C3_SPLIT_NEXT
+    // the gate's next state, free and separate for each copy
+    input wire a_debug_enable_next_i, b_debug_enable_next_i,
+`else
+    // the gate's next state, shared (held at 0 by the property block)
     input wire debug_enable_next_i,
+`endif
     // hart, debug page and System Bus: free and separate for each copy
     input wire a_hart_halted_i, b_hart_halted_i,
     input wire a_hart_resume_ack_i, b_hart_resume_ack_i,
@@ -52,6 +65,10 @@ module karudbg_c3 (
     wire a_halt, b_halt, a_resume, b_resume, a_resume_auth, b_resume_auth, a_ndm, b_ndm;
     wire a_sba_valid, b_sba_valid;
     wire [63:0] a_obs, b_obs;
+`ifndef C3_SPLIT_NEXT
+    wire a_debug_enable_next_i = debug_enable_next_i;
+    wire b_debug_enable_next_i = debug_enable_next_i;
+`endif
 
     karudbg a (
         .clk(clk), .rst(rst), .dmi_reset_i(dmi_reset_i),
@@ -66,7 +83,7 @@ module karudbg_c3 (
         .sba_req_valid_o(a_sba_valid), .sba_req_ready_i(a_sba_req_ready_i), .sba_req_addr_o(), .sba_req_data_o(),
         .sba_req_size_o(), .sba_req_write_o(), .sba_resp_valid_i(a_sba_resp_valid_i), .sba_resp_ready_o(),
         .sba_resp_data_i(a_sba_resp_data_i), .sba_resp_error_i(a_sba_resp_error_i),
-        .debug_enable_i(debug_enable_i), .debug_enable_next_i(debug_enable_next_i), .lc_auth_i(lc_auth_i),
+        .debug_enable_i(debug_enable_i), .debug_enable_next_i(a_debug_enable_next_i), .lc_auth_i(lc_auth_i),
         .auth_valid_o(a_auth_valid), .auth_write_o(a_auth_write), .auth_wdata_o(a_auth_wdata),
         .auth_rdata_i(auth_rdata_i), .authbusy_i(authbusy_i), .dmactive_o(a_dmactive), .f_obs_o(a_obs));
 
@@ -83,7 +100,7 @@ module karudbg_c3 (
         .sba_req_valid_o(b_sba_valid), .sba_req_ready_i(b_sba_req_ready_i), .sba_req_addr_o(), .sba_req_data_o(),
         .sba_req_size_o(), .sba_req_write_o(), .sba_resp_valid_i(b_sba_resp_valid_i), .sba_resp_ready_o(),
         .sba_resp_data_i(b_sba_resp_data_i), .sba_resp_error_i(b_sba_resp_error_i),
-        .debug_enable_i(debug_enable_i), .debug_enable_next_i(debug_enable_next_i), .lc_auth_i(lc_auth_i),
+        .debug_enable_i(debug_enable_i), .debug_enable_next_i(b_debug_enable_next_i), .lc_auth_i(lc_auth_i),
         .auth_valid_o(b_auth_valid), .auth_write_o(b_auth_write), .auth_wdata_o(b_auth_wdata),
         .auth_rdata_i(auth_rdata_i), .authbusy_i(authbusy_i), .dmactive_o(b_dmactive), .f_obs_o(b_obs));
 endmodule

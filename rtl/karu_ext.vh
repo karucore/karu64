@@ -276,9 +276,10 @@
 
 //  --- Zkr (entropy source) ---
 //  Opt-IN only (default OFF; keeps all current builds byte-identical). Adds the
-//  seed CSR (0x015), mseccfg (0x747) with its SSEED/USEED fields, and the two
-//  custom M-mode CSRs of the entropy source, mnoise (0x7C8) and mentropycfg
-//  (0x7C9). The entropy source itself (rtl/karu_entropy.v) is outside the core
+//  seed CSR (0x015), mseccfg (0x747) with its SSEED/USEED fields, and the
+//  three custom M-mode CSRs of the entropy source, mnoise (0x7C8),
+//  mentropycfg (0x7C9) and mentropystat (0x7CA, read-only). The entropy
+//  source itself (rtl/karu_entropy.v) is outside the core
 //  and connects through the zkr_* ports of karu64.
 `ifdef KARU_ZKR
     `ifndef KARU_EN_ZKR

@@ -9,9 +9,7 @@ module tb_auth;
     reg rst = 1;
     reg [1:0] lc = 1;
     reg strap = 0, revoke = 0;
-    reg [1:0] opst = 2;
-    reg [15:0] entropy = 16'hbeef;
-    wire trng_ack, debug_enable, lc_auth, sys_reset, authbusy;
+    wire debug_enable, lc_auth, sys_reset, authbusy;
     reg dm_active = 1, dmi_valid = 0, dmi_write = 0;
     reg [31:0] dmi_wdata = 0;
     wire [31:0] dmi_rdata;
@@ -26,9 +24,11 @@ module tb_auth;
     reg [31:0] word;
     reg [63:0] value;
 
-    karudbg_auth #(.AUTH_ROM_BASE(ROM), .AUTH_ROM_END(ROM + 64'h1_0000)) dut (
+    // The hardware window limit of this instance: 2^12 clocks, longer than
+    // any other case here keeps a window open.
+    localparam integer WLOG2 = 12;
+    karudbg_auth #(.AUTH_ROM_BASE(ROM), .AUTH_ROM_END(ROM + 64'h1_0000), .WINDOW_LOG2(WLOG2)) dut (
         .clk(clk), .rst(rst), .lc_i(lc), .hold_strap_i(strap), .revoke_i(revoke),
-        .trng_opst_i(opst), .trng_data_i(entropy), .trng_ack_o(trng_ack),
         .debug_enable_o(debug_enable), .lc_auth_o(lc_auth), .sys_reset_o(sys_reset),
         .dm_active_i(dm_active), .dmi_valid_i(dmi_valid), .dmi_write_i(dmi_write),
         .dmi_wdata_i(dmi_wdata), .dmi_rdata_o(dmi_rdata), .authbusy_o(authbusy),
@@ -72,6 +72,7 @@ module tb_auth;
     function [2:0] st(input [31:0] s); st = s[23:21]; endfunction
     function [2:0] err(input [31:0] s); err = s[20:18]; endfunction
 
+    integer wcase;
     initial begin
         // ---- OPEN: enabled from the first cycle; fw_lock revokes ----
         por(0, 0);
@@ -168,10 +169,8 @@ module tb_auth;
         csr(1, 1, 0, value); check(value[31:0] == 32'h22222222, "second pop");
         csr(1, 1, 0, value); check(value[31:0] == 32'h33333333, "third pop");
         csr(1, 1, 0, value); check(!value[32] && value[31:0] == 0, "empty pop is invalid, no effect");
-        // TRNG
-        opst = 2; csr(3, 1, 0, value); check(value[31:30] == 2 && value[15:0] == 16'hbeef, "ES16 entropy");
-        opst = 1; csr(3, 1, 0, value); check(value[31:30] == 1 && value[15:0] == 0, "WAIT carries no entropy");
-        opst = 2;
+        // There is no entropy CSR in this block: select 3 reads zero and does nothing.
+        csr(3, 1, 64'hffff_ffff_ffff_ffff, value); check(value == 0, "select 3 (formerly mdbgrng) reads zero");
         // The ROM has consumed response words, so any session reset now
         // closes the window in hardware (contract 4.1).
         csr(4, 0, 0, value); check(value[25] && value[2:0] == 0, "response consumption is recorded");
@@ -281,6 +280,38 @@ module tb_auth;
         debug_mode = 0;
         por(1, 1);
         check(!debug_enable, "POR re-locks");
+
+        // ---- the hardware window limit ----
+        // The window is open for 2^WLOG2 clocks after the edge that accepts
+        // the REQUEST: an unlock that commits at the end of clock 2^WLOG2
+        // succeeds, one in the clock after it does not, and without any
+        // unlock the window closes by itself, also while the hart is still
+        // held in reset (the timer is not the hart's).
+        for (wcase = 0; wcase < 4; wcase = wcase + 1) begin
+            por(1, 1);
+            if (wcase == 3) core_rst = 1;                           // the hart never leaves reset
+            @(negedge clk); dmi_valid = 1; dmi_write = 1; dmi_wdata = 32'h10a50001;
+            @(negedge clk); dmi_valid = 0; dmi_write = 0;          // window clock 1
+            repeat ((1 << WLOG2) - 6) @(negedge clk);
+            status(word);                                           // three clocks
+            check(st(word) == 2, "four clocks before the limit the window is still open");
+            repeat (2) @(negedge clk);                              // window clock 2^WLOG2
+            if (wcase == 1) @(negedge clk);                         // ... and one more
+            if (wcase < 2) begin
+                csr_fire = 1; csr_sel = 0; csr_we = 1; csr_wdata = 1; issuing = 1;
+                @(negedge clk); csr_fire = 0; csr_we = 0; issuing = 0;
+            end else repeat (2) @(negedge clk);
+            if (wcase == 0) check(debug_enable, "an unlock in the last clock of the window commits");
+            else check(!debug_enable, wcase == 1 ? "an unlock one clock after the window limit is refused"
+                                                 : "no unlock: nothing is enabled when the window limit passes");
+            status(word);
+            check(st(word) == 3, wcase == 0 ? "the window limit closes the window after that unlock too" :
+                                 wcase == 3 ? "a hart held in reset does not stop the window timer"
+                                            : "the window limit closes the window in hardware");
+            core_rst = 0;
+            cw(0, 1);
+            if (wcase != 0) check(!debug_enable, "no unlock after the window limit");
+        end
 
         $display("karudbg_auth unit: PASS (%0d checks)", checks);
         $finish;

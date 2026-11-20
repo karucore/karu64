@@ -6,7 +6,12 @@
 #	Output: $UBOOT_DIR/u-boot.bin  (load at 0x8020_0000 = OpenSBI fw_jump target).
 #
 #	Env:  UBOOT_REF (default v2026.10)   UBOOT_DIR (default ../u-boot-$UBOOT_REF)
-#	      CROSS_COMPILE (default: first available RISC-V toolchain)
+#	      CROSS_COMPILE (default: the bare-metal toolchain of $RISCV, else the
+#	      first RISC-V toolchain on PATH). The Makefile passes its XCHAIN.
+#
+#	$UBOOT_DIR/karu-toolchain.txt records the compiler that built u-boot.bin:
+#	its path, what `gcc -dumpmachine` says it targets, and its version. A
+#	name on PATH does not say which compiler it is.
 #
 #	The tree in UBOOT_DIR must be the release named by UBOOT_REF: a tree left
 #	from an earlier release is refused, not built under the new name. One
@@ -22,7 +27,9 @@ ZKR_DRIVER=drivers/rng/riscv_zkr_rng.c
 ZKR_DRIVER_SHA=af767fdb58632a4b8fcfb2ee19920b88fbf367ecd854ae277c602644283039d2
 ZKR_PATCHED_SHA=94e649a111bcb219a734c15d0d9f69369dba6aa9f33acf03a57aa142204cc329
 if [ -z "${CROSS_COMPILE:-}" ]; then
-	if command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then
+	if [ -n "${RISCV:-}" ] && [ -x "$RISCV/bin/riscv64-unknown-elf-gcc" ]; then
+		CROSS_COMPILE="$RISCV/bin/riscv64-unknown-elf-"
+	elif command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then
 		CROSS_COMPILE=riscv64-unknown-elf-
 	elif command -v riscv64-unknown-linux-gnu-gcc >/dev/null 2>&1; then
 		CROSS_COMPILE=riscv64-unknown-linux-gnu-
@@ -34,6 +41,16 @@ if [ -z "${CROSS_COMPILE:-}" ]; then
 	fi
 fi
 export CROSS_COMPILE
+cc_path=$(command -v "${CROSS_COMPILE}gcc") || { echo "ERROR: no compiler ${CROSS_COMPILE}gcc" >&2; exit 1; }
+cc_machine=$("${CROSS_COMPILE}gcc" -dumpmachine)
+cc_name=$(basename "${CROSS_COMPILE}gcc" -gcc)
+if [ "$cc_machine" != "$cc_name" ]; then
+	echo "ERROR: $cc_path is named for $cc_name but targets $cc_machine." >&2
+	echo "       Set CROSS_COMPILE to the prefix of the compiler meant." >&2
+	exit 1
+fi
+cc_record="$cc_path targets $cc_machine; $("${CROSS_COMPILE}gcc" --version | head -1)"
+echo "== compiler: $cc_record =="
 
 if [ ! -d "$UBOOT_DIR" ]; then
 	echo "== cloning U-Boot $UBOOT_REF =="
@@ -120,5 +137,15 @@ if [ -n "${UBOOT_NETBOOT_CMD:-}" ]; then
 fi
 
 #	RISC-V links -pie unconditionally; the bare-metal GNU ld.bfd can't, so use lld.
+#	Every object must come from the compiler that the record names. Kbuild
+#	rebuilds when a command line changes, not when the same name starts to
+#	mean another compiler, so a tree whose record is missing or differs is
+#	cleaned first.
+if [ "$(cat karu-toolchain.txt 2>/dev/null)" != "$cc_record" ]; then
+	echo "== compiler record missing or changed: make clean =="
+	make clean >/dev/null
+fi
+rm -f karu-toolchain.txt
 make -j"$(nproc)" LD=ld.lld u-boot.bin
+printf '%s\n' "$cc_record" > karu-toolchain.txt
 echo "== built $(pwd)/u-boot.bin ($(stat -c%s u-boot.bin) bytes) =="

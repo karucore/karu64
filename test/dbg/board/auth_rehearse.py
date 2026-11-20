@@ -13,16 +13,20 @@ for the latter, KARU_BOARD_AUTH_KEY names the key file it was built with
 What stands in for the board:
 
   switches   plusargs of the model: +auth_lc=<0..3>, +auth_hold=<0|1>,
-             +auth_trng_opst=<0..3> (0 is a source that stays in BIST);
+             +auth_seed_opst=<0..3> (0 is a source that stays in BIST);
              the defaults are AUTH, held, entropy available
   the reset  the step "por": OpenOCD's SRST, which +por_on_srst makes the
              power-on reset of the whole model, then a JTAG re-init. The
-             model is started with +por_on_srst and +auth_trng_lfsr, so that
+             model is started with +por_on_srst and +auth_seed_lfsr, so that
              the nonce source runs on across resets as a physical one does
   time       the simulation ROM's window is 400,000 clock cycles, not 2^30,
              so no duration is checked
   Linux      absent: the boot evidence over SSH is not asked for, and the
-             reboot cases cannot run here. The model has no seed CSR either
+             reboot cases cannot run here
+  seed       the model has the seed CSR, served by a bench source
+             (test/dbg/karudbg_test_seed.v) and not by the entropy block:
+             the ROM draws its nonce from it, and the plusargs above choose
+             its status and its words
 
 OpenOCD cannot be restarted within one model run, so a case after "por" may
 meet an OpenOCD that examined the target earlier; the phase then leaves the
@@ -63,7 +67,7 @@ def free_port():
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
-server = subprocess.Popen([args.model, "0", str(args.timeout), "+por_on_srst", "+auth_trng_lfsr", *args.plusarg],
+server = subprocess.Popen([args.model, "0", str(args.timeout), "+por_on_srst", "+auth_seed_lfsr", *args.plusarg],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 openocd = None
 status = 1

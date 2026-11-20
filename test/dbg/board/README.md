@@ -134,6 +134,14 @@ target starts at `0x80000000`.
 
 Run everything from the repository root. Use a fresh artifact directory per
 campaign, for example `export KARU_BOARD_OUT=$PWD/_build/dbg/board-accept-$(date +%Y%m%d)`.
+Keep one host process on the console port for the whole session
+([test plan](../../../dbg/BOARD_TEST_PLAN.md)): a boot froze on 2026-11-20
+after the port changed hands while the kernel was printing. A wrapper that
+runs phases needing an examined hart (stages C and D, and `linux_kernel_bp.py`)
+should stop when OpenOCD fails to examine the target, rather than run the
+later phases against it. This does not apply to `auth_phase.py`:
+`auth-server.cfg` defers examination on purpose, and a refused examine of
+a locked target is one of its passing checks.
 
 1. Select the kind of image on the board, for example
    `export KARU_BOARD_IMAGE=rom2m-auth`, and build the fixture for it into
@@ -219,7 +227,13 @@ it the payload stops with status `TRAP` at its first CSR access. The
 capture runs in DRAM and is the same on every map, but the phase is a
 fixture phase and needs the fixture of the selected image kind. DIP switch
 4 off (on holds the source off, and the capture ends with status
-`TIMEOUT`). The hart in the
+`TIMEOUT`). Leave the switch alone during a capture: in images built from
+2026-11-19 on, switching the source off ends the run (the loss flag), but
+in `d7ff00dc…` and `85f07e58…` the samples on either side of the gap are
+recorded as one run. The same holds for the burst block's sampling
+period (`0x1000_0848`): from 2026-11-19 on a write to it ends the run, in
+the two older images it changes the spacing silently. Nothing in the
+capture phases changes it within a run. The hart in the
 state `baremetal_phase.py` leaves it in: reset-halted, fixture loaded. The
 payload built into the artifact directory:
 `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`. A reset clears a
@@ -242,7 +256,7 @@ the hart, the source may be left in test mode until the next reset.
 | File | Content |
 | --- | --- |
 | `getnoise-k<k>.bin` | One byte per symbol, in capture order: bits [3:0] the symbol (lane i in bit i, one sampled ring per lane), bit 7 on the first symbol of a run. No bit is combined with another |
-| `getnoise-k<k>.json` | k, symbols requested and stored, run lengths, losses, polls, `mentropycfg` before, during and after, the two cutoffs, SHA-256 of the `.bin` and of the payload, time, `KARU_BOARD_GETNOISE_NOTE`, and the temperature readout (`0x1000_0860`: die temperature, VCCINT, VCCAUX; zero on images built before 2026-11-19) before and after, raw and decoded. The phases record no bitstream identity; put it in the note |
+| `getnoise-k<k>.json` | k, symbols requested and stored, run lengths, losses, polls, `mentropycfg` before, during and after, the cutoffs and failure settings it holds, SHA-256 of the `.bin` and of the payload, time, `KARU_BOARD_GETNOISE_NOTE`, and the temperature readout (`0x1000_0860`: die temperature, VCCINT, VCCAUX; zero on images built before 2026-11-19) before and after, raw and decoded. The phases record no bitstream identity; put it in the note |
 | `getnoise-results.json`, `getnoise-commands.jsonl` | Case results and OpenOCD trace, as for every phase |
 
 A capture fails, and the phase exits non-zero, on a payload status other
@@ -570,6 +584,9 @@ a defect that it should catch.
 | `test_getnoise_burst.py`, `test_burst_analysis.py` | Self-tests of the burst capture and of the analysis of bursts, without a board |
 | `getnoise_analyze.py` | Offline analysis of the captures |
 | `test_getnoise.py` | Self-test of the three without a board |
+| `getnoise_restart.py` | Delayed warm-restart data for SP 800-90B section 3.1.4 (1,000 restarts of 1,000 symbols) |
+| `sp80090b_health.py` | Replay of captures through the per-lane tests of the images up to `85f07e58…`, and the section 4.5 criteria for them |
+| `entropy_health.py` | Python copy of the health tests of the current `rtl/karu_entropy.v`: cutoffs for a claim and a false-alarm probability, replay of captures, the section 4.5 criteria and the failure modes. `make entropy-test` compares the RTL with it |
 
 The Linux selftest binaries and the installed `openssl_zvk_bench` come from
 karudeb and are not part of this repository.

@@ -124,7 +124,9 @@ def capture(k):
         encoding='one byte per symbol: bits [3:0] symbol, lane i in bit i; bit 7 first symbol of a run',
         k=k,interval=k-1,requested=COUNT,stored=r['stored'],runs=len(runs),run_lengths=runs,longest_run=max(runs),min_run=MIN_RUN,
         losses=r['losses'],polls=r['polls'],cfg_before=hexed['cfg_before'],cfg_used=hexed['cfg_used'],cfg_after=hexed['cfg_after'],
-        rct_cutoff=(r['cfg_before']>>16)&0x3ff,apt_cutoff=(r['cfg_before']>>26)&0x7ff,noise_after=r['noise_after'],
+        rct_cutoff=(r['cfg_before']>>16)&0x3ff,apt_cutoff=(r['cfg_before']>>26)&0x7ff,
+        symbol_rct_cutoff=(r['cfg_before']>>37)&0x7f,symbol_apt_cutoff=(r['cfg_before']>>44)&0x3ff,
+        strikes=(r['cfg_before']>>54)&7,calm_log2=(r['cfg_before']>>57)&31,noise_after=r['noise_after'],
         load=hex(LOAD),buffer=hex(BUF),seconds=round(seconds,3),sha256=digest,payload_sha256=hashlib.sha256(payload).hexdigest(),
         sysmon_before=before,sysmon_after=after,
         time=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),note=NOTE),indent=1)+'\n')

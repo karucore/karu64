@@ -17,7 +17,10 @@ module karudbg_core #(
     // inside it) and its contents; see dbg/karudbg_island.v.
     parameter [63:0] AUTH_ROM_BASE=64'h0000_0000_0001_0000,
     parameter [63:0] AUTH_ROM_END=64'h0000_0000_0002_0000,
-    parameter ISLAND_ROM_HEX=""
+    parameter ISLAND_ROM_HEX="",
+    // KARU_DBG_AUTH: the window closes 2^AUTH_WINDOW_LOG2 clocks after an
+    // accepted REQUEST, in hardware; 0 leaves that to the ROM's deadline.
+    parameter integer AUTH_WINDOW_LOG2=0
 ) (
     input wire  clk,
     input wire  rst,
@@ -97,9 +100,6 @@ module karudbg_core #(
     input wire [1:0] lc_i,
     input wire hold_strap_i,
     input wire revoke_i,
-    input wire [1:0] trng_opst_i,
-    input wire [15:0] trng_data_i,
-    output wire trng_ack_o,
     // Boot hold or relock reset, one flop: reset the hart's bus responders
     // with it, as for ndmreset_o.
     output wire auth_reset_o
@@ -125,10 +125,10 @@ module karudbg_core #(
     wire [1:0] auth_priv;
     wire auth_dm_active;
     assign core_rst = rst || hart_reset_i || ndmreset_o || auth_reset_o;
-    karudbg_auth #(.AUTH_ROM_BASE(AUTH_ROM_BASE), .AUTH_ROM_END(AUTH_ROM_END)) auth (
+    karudbg_auth #(.AUTH_ROM_BASE(AUTH_ROM_BASE), .AUTH_ROM_END(AUTH_ROM_END),
+                   .WINDOW_LOG2(AUTH_WINDOW_LOG2)) auth (
         .clk(clk), .rst(rst), .lc_i(lc_i), .hold_strap_i(hold_strap_i),
-        .revoke_i(revoke_i), .trng_opst_i(trng_opst_i), .trng_data_i(trng_data_i),
-        .trng_ack_o(trng_ack_o), .debug_enable_o(debug_enable),
+        .revoke_i(revoke_i), .debug_enable_o(debug_enable),
         .debug_enable_next_o(debug_enable_next), .lc_auth_o(lc_auth),
         .sys_reset_o(auth_reset_o), .dm_active_i(auth_dm_active),
         .dmi_valid_i(auth_dmi_valid), .dmi_write_i(auth_dmi_write),

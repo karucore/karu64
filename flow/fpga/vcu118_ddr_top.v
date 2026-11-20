@@ -358,9 +358,8 @@ module vcu118_ddr_top (
 
 	//	===== Zkr: the entropy source behind seed, mnoise and mentropycfg =====
 	//	It resets with the hart, so a reboot runs its start-up test again.
-	wire [1:0]	trng_opst;
-	wire [15:0]	trng_data;
-	wire		trng_ack;
+	//	The debug authentication ROM draws its nonce from seed, like any
+	//	other M-mode software: there is no other port.
 	//	The registers of its burst capture (karu_noise_burst.v) are in the
 	//	xbar's system-control block, at 0x1000_0840..0x1000_0858. Register 4,
 	//	0x1000_0860, is the die temperature and supply readout
@@ -378,22 +377,19 @@ module vcu118_ddr_top (
 		.clk(clk), .rst(soc_rst), .en_i(strap_entropy),
 		.csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
 		.csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata),
-		.trng_opst_o(trng_opst), .trng_data_o(trng_data), .trng_ack_i(trng_ack),
 		.reg_re_i(sysreg_re), .reg_raddr_i(sysreg_raddr), .reg_rdata_o(burst_rdata),
 		.reg_we_i(sysreg_we), .reg_waddr_i(sysreg_waddr), .reg_wdata_i(sysreg_wdata)
 	);
 `else
-	//	No entropy source: the authentication block's TRNG port reads DEAD,
-	//	so its ROM can never build a challenge and never unlocks.
-	assign trng_opst = 2'd3;
-	assign trng_data = 16'b0;
+	//	No entropy source and no seed CSR: an authentication ROM for such an
+	//	image is built without a nonce source (dbg/fpga.mk), so it can never
+	//	build a challenge and never unlocks.
 	assign burst_rdata = 64'b0;
-	wire		_unused_straps = &{strap_entropy, trng_ack, sysreg_re, sysreg_we,
+	wire		_unused_straps = &{strap_entropy, sysreg_re, sysreg_we,
 								   sysreg_raddr, sysreg_waddr, sysreg_wdata, 1'b0};
 `endif
 `ifndef KARU_DBG_AUTH
-	assign trng_ack = 1'b0;
-	wire		_unused_auth_straps = &{strap_lc, strap_hold, trng_opst, trng_data, 1'b0};
+	wire		_unused_auth_straps = &{strap_lc, strap_hold, 1'b0};
 `endif
 
 `ifdef KARU_DBG
@@ -413,10 +409,11 @@ module vcu118_ddr_top (
 	//	hands over to the boot ROM at 0x1000. The island shadows
 	//	0x1_0000..0x2_3fff of the boot memory; the boot ROM layout keeps
 	//	that range empty (Makefile, "U-Boot-in-ROM").
+	//	The window closes in hardware 2^31 clocks (28.6 s) after a REQUEST;
+	//	the ROM's own deadline is 2^30 (dbg/fpga.mk), so it comes first.
 	karudbg_core #(.RESET_PC(64'h0001_0000), .EXT_TIME(1),
-				   .ISLAND_ROM_HEX("vcu118_auth_rom.hex")) cpu (
+				   .ISLAND_ROM_HEX("vcu118_auth_rom.hex"), .AUTH_WINDOW_LOG2(31)) cpu (
 		.lc_i(strap_lc), .hold_strap_i(strap_hold), .revoke_i(1'b0),
-		.trng_opst_i(trng_opst), .trng_data_i(trng_data), .trng_ack_o(trng_ack),
 		.auth_reset_o(auth_reset),
 `else
 	karudbg_core #(.RESET_PC(64'h0000_1000), .EXT_TIME(1)) cpu (
