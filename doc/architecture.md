@@ -574,15 +574,13 @@ controller can retain bus ownership or block maintenance indefinitely. See the
 The latest full-debug CPU replay passes 2872/2872 preserved ACT4 reference
 ELFs, and all 16 ordinary subjects match base-debug cycle counts with the
 extensions idle. The focused four-state SBA probe passes 30,740 checks and
-rejects eight coherence/ordering mutations. The final combined functional gate
-passes with 274 unchanged input hashes. All twelve mapped comparisons are
-complete, and the full two-trigger FPGA image passes routed acceptance at
-75 MHz at its October 29 checkpoint. The October 30 registered-pause follow-up
-is newer RTL; its full-row timing is recorded separately in the debug
-measurements. The November 15 full-debug image subsequently passes the
-[physical board campaign](../dbg/BOARD_ACCEPTANCE.md), including GDB, triggers,
-SBA/coherence, a ten-minute soak and post-detach Linux/KVM acceptance.
-The 200 MHz ASIC timing goal remains open.
+rejects eight coherence/ordering mutations. The combined functional gate
+passed on the sources of 2026-11-19
+([record](../dbg/README.md#current-combined-validation-record)).
+The VCU118 debug image, with full two-trigger debug, meets routed timing at
+75 MHz and is [board-tested](../dbg/BOARD_ACCEPTANCE-2026-11-20.md),
+including GDB, triggers, SBA/coherence, a ten-minute soak and post-detach
+Linux/KVM acceptance. The 200 MHz ASIC timing goal remains open.
 Authentication and technology-specific ASIC signoff remain integration work;
 consult the plan for current results.
 
@@ -596,7 +594,7 @@ every normal V build because RVA23U64 requires it; `KARU_NO_ZVBB` is the area
 opt-out, and `KARU_NO_ZVBB KARU_ZVKB` retains the smaller subset. Vector crypto
 (Zvk*) is opt-in via the `KARU_ZVK*` flags and needs V. Disabled instructions raise a vectoring
 cause-2 illegal-instruction exception and their units are not instantiated.
-`KARU_ZKR` is opt-in as well: it adds the Zkr `seed` CSR, `mseccfg` and two
+`KARU_ZKR` is opt-in as well: it adds the Zkr `seed` CSR, `mseccfg` and three
 custom entropy CSRs to the CSR file and a set of `zkr_*` ports, and expects
 `rtl/karu_entropy.v` and a platform noise source behind them
 ([FPGA](fpga.md), [ASIC obligations](../flow/asic/README.md#entropy-source-obligations-karu_zkr)).

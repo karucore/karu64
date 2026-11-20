@@ -1,17 +1,15 @@
-# Board test plan: debug image with Zkr, authentication and the 2 MiB ROM
+# Board test plan: the VCU118 debug image
 
-For the VCU118 debug image built on 2026-11-18 from this tree. It is the
-first image with the 2 MiB boot ROM, the Zkr entropy source, debug
-authentication and the SW12 straps. **Executed on 2026-11-18: every stage
-passes**, apart from the known OpenOCD translation results; the
-[acceptance record](BOARD_ACCEPTANCE-2026-11-18.md) has the results and the
-deviations. Two of them concern this plan: ask for the CPU reset button by
-its label `CPU_RESET` (PROG clears the FPGA), and allow about 4.5 minutes
-per boot and 30–55 s per SSH connection (the harness defaults now do).
-A newer image, `85f07e58…`, was built the same evening:
-[section 7](#7-the-next-image-burst-capture-temperature-readout-sha3-authentication-u-boot-v202610)
-has its identity and the steps it adds. It was tested on 2026-11-19; see the
-[record](BOARD_ACCEPTANCE-2026-11-19.md).
+For the VCU118 debug image ([FPGA guide](../doc/fpga.md#debug-image)): the
+2 MiB boot ROM, the Zkr entropy source with its health tests, the burst
+capture and the temperature readout, debug authentication with SHA3-256
+(algorithm `0x04`) and the SW12 straps, and U-Boot v2026.10. The current
+bitstream is `ddb168e1…`. Its latest run is the
+[2026-11-20 record](BOARD_ACCEPTANCE-2026-11-20.md): accepted with
+documented exceptions (translation fails with the known pristine-OpenOCD
+walker results). Ask for the CPU reset button by its label `CPU_RESET`
+(PROG clears the FPGA), and allow about 4.5 minutes per boot and 30–55 s
+per SSH connection (the harness defaults do).
 
 **The SW12 switches are hard to reach.** Change them as rarely as possible:
 group the cases by switch setting, change one switch per step, and use JTAG
@@ -19,60 +17,76 @@ reconfiguration (a full power-on, straps sampled again) or the software
 reset (hart, peripherals and entropy source; not the authentication block)
 instead of the CPU reset button where the test allows.
 
-**Keep one process on the console port.** On 2026-11-20 a boot froze when
-one host process released the serial port and another reopened it while
-the kernel was printing ([record](BOARD_ACCEPTANCE-2026-11-20.md#finding-a-boot-froze-after-a-console-port-hand-over)).
+**Keep one process on the console port.** A boot froze once when one host
+process released the serial port and another reopened it while the kernel
+was printing ([record](BOARD_ACCEPTANCE-2026-11-20.md#finding-a-boot-froze-after-a-console-port-hand-over)).
 Open the port once, before the first reset, and keep it open: to drive
 U-Boot, use one process that drives the prompt and then keeps capturing.
 If a boot stops on the console, read GPIO LED 3 (the FPGA's CTS input)
 before any reset.
 
 **Keep a fallback image on the lab host.** The failure tables say to go
-back to the previous image; copy its bundle over before the session.
+back to the previous accepted image, `85f07e58…` (archived on the build
+host in `_build/fpga_archive/2026-11-18-85f07e58/`); copy its bundle over
+before the session.
 
 | | |
 |---|---|
-| Bitstream `_build/vcu118_ddr.bit` | SHA-256 `d7ff00dc494d8354ce596b3e7ebb07aabb2df92f9df186d8a3870b9a972a3e80`, 80,159,322 bytes |
-| Bundle `_build/vcu118_programming.tgz` | SHA-256 `5e93e662769d1f352daf71a5fa5389d2b6ea7e8e5d6a5fbcc01e149db9ed869d` |
+| Bitstream `_build/vcu118_ddr.bit` | SHA-256 `ddb168e1081c9b73c29cd5a16ab777ee8106a52d382469b5b741b094bc096aad`, 80,159,322 bytes |
+| Bundle `_build/vcu118_programming.tgz` | SHA-256 `88dce485fadad7c63ba42e07bd7ed5f2124d69bbef8ca2f1a53b7b8c54817342`, mode 600: it holds the authentication key |
 | Configuration | `KARU_RVA23S64`, `KARU_DBG`, `KARU_DBG_FULL`, `KARU_DBG_AUTH`, `KARU_ZKR`; 75 MHz |
-| Timing | met: setup +0.051 ns, hold +0.011 ns; no DRC errors |
-| Boot ROM | OpenSBI v1.9 (`cbbbe5ce…`), U-Boot 2025.01 (`0d305f3f…`), device tree `784e2762…` (`rva23s64-zkr-ddr`) |
-| Island ROM | `c6efbc76…`: the `TEST` algorithm, nonce from `seed`, window of 2^30 cycles (14.3 s) |
-| Sources | karu64 `d58aa6f` and karudeb `8dfc019`, each with uncommitted changes; `_build/vcu118_build_inputs.json` on the build host lists them and has the hash of every input |
+| Timing | meets 75 MHz: setup +0.008 ns, hold +0.011 ns, pulse width +0.005 ns; no DRC errors |
+| Boot ROM | OpenSBI v1.9 `cbbbe5ce…`, U-Boot 2026.10 with the Zkr time-out patch (`7a27c424…`, 802,453 bytes), device tree `784e2762…` (`rva23s64-zkr-ddr`); fu-boot and U-Boot built by `$RISCV/bin/riscv64-unknown-elf-gcc` (recorded in the ROM manifest of the bundle) |
+| Island ROM | `f518b750…`: algorithm `0x04`, SHA3-256 with a shared secret, key fingerprint `276bf6e96d8edecc`; nonce from `seed`; window of 2^30 cycles (14.3 s), and a hardware limit of 2³¹ clocks (28.6 s) behind it |
+| Entropy block | health tests on the 4-bit sample and on each lane; `mentropycfg` (`0x7C9`) reset value `0x30c7c1eb3c37000f`; `mentropystat` (`0x7CA`) |
+| Sources | karu64 `f014194` with uncommitted changes (the diff and the new files are in `_build/vcu118-2026-11-19b-sources/` on the build host), karudeb `db180ff` |
 
 The figures and their evidence are in
-[measurements](MEASUREMENTS.md#fpga-image--2026-11-18). Check the bitstream
+[measurements](MEASUREMENTS.md#fpga-image--2026-11-20). Check the bitstream
 hash after the transfer; `_build/vcu118_rom_manifest.txt` in the bundle
-repeats it, with the boot command that is baked into the ROM.
+repeats it, with the boot command that is baked into the ROM. The bundle's
+`vcu118_auth_record.json` ties the key to this bitstream.
+
+**Handling the bundle.** The bundle and the bitstream hold the
+authentication key, like the key file. On the board host unpack the bundle
+with `umask 077` into a directory of mode 0700, and keep the bitstream
+there:
+
+```sh
+umask 077; mkdir -m 700 ~/karu-ddb168e1 && tar -C ~/karu-ddb168e1 -xzf vcu118_programming.tgz
+```
+
+**Which image is on the board.** U-Boot's banner tells the images apart:
+this one prints `U-Boot 2026.10-dirty (Nov 19 2026 - 22:30:01 +0000)`, the
+fallback `(Nov 18 2026 - 21:33:44 +0000)`. With debug access, `mentropycfg`
+reads `0x30c7c1eb3c37000f` after reset in this image only.
 
 ## 1. What the lab host needs
 
 | Item | Where it comes from | Note |
 |---|---|---|
-| This repository at the build's sources | git, once the working tree of the build host is committed and pushed | The image was built from uncommitted changes; `_build/vcu118_build_inputs.json` on the build host lists them (it is not in the bundle) |
-| `karudeb` at the build's sources | git, likewise | New device-tree variant `rva23s64-zkr-ddr` |
-| `_build/vcu118_programming.tgz` | copy from the build host | Bitstream, `.ltx`, ROM manifest, and the device tree that is in the ROM |
+| This repository and `karudeb` at the build's sources | git | The device-tree variant `rva23s64-zkr-ddr` is karudeb's |
+| `_build/vcu118_programming.tgz` | copy from the build host | Bitstream, `.ltx`, ROM manifest, the device tree that is in the ROM, the authentication record and key |
 | Kernel `Image` | the lab's accepted kernel, `3b45e852…`, release `7.4.0-rc3-zvk-dirty` | See section 2 |
 | NFS root | unchanged | |
 
-The lab host builds the bare-metal fixtures itself (`make dbg-board-fixture`,
-`make dbg-getnoise-fixture`); they are small and need only the RISC-V
-compiler.
+The lab host builds the bare-metal fixtures itself (`make
+dbg-board-fixture dbg-getnoise-fixture dbg-getnoise-burst-fixture
+dbg-seedcap-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`); they are small and need
+only the RISC-V compiler.
 
 ## 2. Boot files: keep each bitstream with its own device tree
 
-The ROM manifest in the bundle names the device tree to serve. For this
-image it is the `zkr` tree:
+The ROM manifest in the bundle names the device tree to serve:
 
 | Bitstream | Device tree to serve as `board.dtb` | Kernel |
 |---|---|---|
-| this image | `784e2762…` (`rva23s64-zkr-ddr`; it is `vcu118_rom_board.dtb` in the bundle) | the accepted `3b45e852…` |
-| `d5e603cd…` (2026-11-17, archived on the build host) | `c477784a…` (`rva23s64-ddr`) | the same |
-| `0b994847…` (board-accepted 2026-11-16/17) | `d617ba56…` | the same |
+| this image, and the fallback `85f07e58…` | `784e2762…` (`rva23s64-zkr-ddr`; it is `vcu118_rom_board.dtb` in the bundle) | the accepted `3b45e852…` |
+| images without the Zkr CSRs (`d5e603cd…`, `0b994847…` and older) | the plain tree (`c477784a…`, or `d617ba56…` for `0b994847…`) | the same |
 
-- **Never serve the `zkr` tree to an older bitstream.** Linux would execute
-  a `seed` access that the hardware answers with an illegal-instruction
-  exception, early in boot and without a fallback.
+- **Never serve the `zkr` tree to an image without the Zkr CSRs.** Linux
+  would execute a `seed` access that the hardware answers with an
+  illegal-instruction exception, early in boot and without a fallback.
 - Serving the plain `c477784a…` tree to this image is safe and is the way
   to make Linux leave `seed` alone: OpenSBI still enables the CSR, Linux
   never reads it.
@@ -84,9 +98,9 @@ image it is the `zkr` tree:
   on its release string.
 - The boot command baked into this image's U-Boot carries
   `random.trust_cpu=off`: Linux mixes what `seed` delivers into its pool
-  and does not count it as entropy. The source is uncharacterised, so this
-  is deliberate. The first-boot time to "crng init done" may be longer than
-  before.
+  and does not count it as entropy. No min-entropy is claimed for the
+  source ([SP 800-90B assessment](../doc/sp800-90b-assessment.md)), so this
+  is deliberate.
 
 ## 3. Switches
 
@@ -106,289 +120,165 @@ request. That is the hold, not a hang.
 
 ## 4. Order of work
 
-Stop at the first stage that fails and use section 5.
+Stop at the first stage that fails and use section 5. With the switches all
+off, stages B, C, D, G and F run without a switch change; A and E need
+them. A session usually runs B first, then C, D and G from one OpenOCD,
+then F, and groups A and E by switch setting.
 
-### Stage A: first boot without the new sources of risk
+### Stage A: boot with the entropy source off
 
 1. Serve the files of section 2. Set SW12 to off, off, off, **on**.
-2. Program the bitstream and capture the UART from the first character.
+2. Program the bitstream (or press `CPU_RESET`) and capture the UART from
+   the first character.
 3. Expect, in order: the fu-boot banner and "copying boot chain from ROM",
    `OpenSBI v1.9` with `zkr` in "Boot HART ISA Extensions" and
-   "Platform Reboot Device : syscon-reboot", U-Boot, Linux, the NFS root, a
-   login prompt.
+   "Platform Reboot Device : syscon-reboot", U-Boot 2026.10, which prints
+   "No RNG device" once before it starts Linux and boots on (a hang there
+   would be the released Zkr driver, without the time-out patch), Linux,
+   the NFS root, a login prompt.
 4. `KARU_BOARD_ZKR=1 python3 test/dbg/board/linux_zkr.py`: the device tree
    and `/proc/cpuinfo` list `zkr`. With position 4 on this shows that the
    boot does not depend on the entropy source.
 
-This stage exercises, for the first time on hardware: the 2 MiB ROM and
-its layout, the hart starting in the authentication island ROM and handing
-over to fu-boot, the new scratch SRAM address, OpenSBI finding `zkr` and
-writing `mseccfg`, and Linux reading a `seed` that reports `BIST`.
-
 ### Stage B: the same with the entropy source on
 
-1. SW12 all off. Press CPU reset.
-2. The same console sequence, then `linux_zkr.py` again.
-3. Check the console for duplicated characters (the 2026-11-16 symptom; the
-   fix is in this image and has not been seen on a board).
+1. SW12 all off; reset.
+2. The same console sequence, without "No RNG device": U-Boot puts a
+   `kaslr-seed` into the device tree it hands to Linux (`/chosen`). Then
+   `linux_zkr.py` again.
+3. At the U-Boot prompt (stop autoboot with a key, from the one process
+   that holds the console), `rng list` shows the driver and `rng 0 10`
+   prints sixteen bytes from `seed` (device 0, 0x10 bytes).
 4. `python3 test/dbg/board/linux_reboot.py` with the UART capture: three
    software reboots, each through the boot ROM and OpenSBI.
 
 ### Stage C: debug acceptance, lifecycle `OPEN`
 
 Follow [the harness README](../test/dbg/board/README.md) with
-`KARU_BOARD_IMAGE=rom2m-auth` and a fixture built for it. Two expectations
-are new and are checked by the harness itself: a reset-halt stops at
-`0x10000`, and the fixture lives at `0x208000`. Translation (step 6) is
-still expected to fail with a pristine OpenOCD, as in the last campaign.
+`KARU_BOARD_IMAGE=rom2m-auth` and fixtures built for it. The harness checks
+that a reset-halt stops at `0x10000` and that the fixture lives at
+`0x208000`. Translation (step 6) is expected to fail with a pristine
+OpenOCD.
 
-### Stage D: raw noise
+### Stage D: noise and restart data
 
-With SW12 position 4 off and OpenOCD running as in stage C:
-`make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`, then
-`getnoise_capture.py`, which captures at k = 1, 2, 4, 8, 16 and 32 by
-default, then `getnoise_analyze.py` on the capture files. Put the
-conditions of each run into `KARU_BOARD_GETNOISE_NOTE`; the note is stored
-beside the capture. This is characterisation, not a pass or fail: bring
-the capture files back. Beyond the single run:
+With SW12 position 4 off and OpenOCD running as in stage C. This is
+characterisation and data collection, not a pass or fail: bring every
+`.bin` and `.json` back. Put the conditions of each run (cold start or
+reset, link up or down, what ran before) into the phase's note variable;
+the phases read the die temperature and supplies themselves.
 
-- repeat after several cold starts (reconfiguration) and several CPU
-  resets, to see how much the lanes' frequencies and the nonces move;
-- capture under different activity if a way to produce it is at hand, and
-  note the conditions. The capture runs with the hart under the debugger,
-  so Linux cannot provide the load; the Ethernet link being up or down is
-  one difference that is easy to make;
-- keep the raw four-bit symbols; the analysis of the four lanes together
-  is the open question, and it needs the simultaneous values.
+1. **k-sweep:** `getnoise_capture.py` captures at k = 1, 2, 4, 8, 16 and 32
+   (`KARU_BOARD_GETNOISE_NOTE`).
+2. **Burst capture:** `getnoise_burst.py` takes 32 bursts of 32,768 symbols
+   at each of the periods 1, 2, 4, …, 256 clocks, about 9 MiB through the
+   debugger (`KARU_BOARD_BURST_NOTE`). Then `getnoise_analyze.py` on the
+   burst and k-sweep files together: the burst capture at 256 clocks and
+   the k = 1 capture should agree, and the analysis says whether they do.
+   Repeat after reconfigurations and `CPU_RESET` presses, and once with
+   the Ethernet cable unplugged, one artifact directory per run (a run
+   overwrites the files of the one before).
+3. **Operational restart data:** `seed_restart.py`, 1,000 restarts with the
+   first 1,000 samples of each read through `seed` (about 3 minutes), for
+   SP 800-90B section 3.1.4. Then `ea_restart -n -v seed-restart-rows.bin 4
+   <estimate>` with the k = 16 estimate of `ea_non_iid`.
+4. **Delayed warm restarts:** `getnoise_restart.py`, the same through
+   GetNoise (about 6 minutes), for comparison.
 
-If `seed` reports `DEAD` (the source failed its start-up test), the capture
-still works: test mode switches a dead source back on.
+If `seed` reports `DEAD`, the GetNoise capture still works: test mode
+switches a dead source back on. The burst phase then stops with "the noise
+source is off".
+
+### Stage G: health tests
+
+1. **Read `mentropystat` before every reset**, with the hart halted for a
+   moment and without a reset (an abstract read of CSR `0x7CA`;
+   `b.rawread(0x7ca)` in the harness), and note the time since the last
+   reset. Any reset clears it. `1` is running with no failure since reset.
+2. **A long run:** leave the board running Linux with SW12 all off for
+   hours and read `mentropystat` before the next reset. The tests run while
+   the source is outside test mode, about 18,300 samples per second.
+3. **Induced failures:** `entropy_fault.py` (about 17 minutes, most of it
+   the 2^24-sample forgiveness case): a start-up failure, each test,
+   strikes to `DEAD`, forgiveness, and the limits and lock, on the real
+   rings, by stricter cutoffs. It resets the SoC, so take the readings of
+   steps 1 and 2 first.
 
 ### Stage E: authentication
 
-`test/dbg/board/auth_phase.py`, one case per run. The
-[harness README](../test/dbg/board/README.md#authentication) has the
-table of cases with the switch positions and what must be seen. For every
-case: set the switches, press CPU reset, start a fresh
-`openocd -f test/dbg/board/auth-server.cfg`, then
-`KARU_BOARD_AUTH_CASE=<case> python3 test/dbg/board/auth_phase.py`. Each
-case first checks from the Debug Module that the switches are what it
+`test/dbg/board/auth_phase.py`, one case per run, with
+`KARU_BOARD_AUTH_ALG=SHA3` (so that a case stops if the board runs an image
+with a `TEST` ROM) and the key in `KARU_BOARD_AUTH_KEY`, by default
+`_build/vcu118_auth_key.txt`, where the bundle puts it. The
+[harness README](../test/dbg/board/README.md#authentication) has the table
+of cases with the switch positions and what must be seen. A case runs
+from a fresh `openocd -f test/dbg/board/auth-server.cfg` (start it anew for
+every case; it does not reset the board), then
+`KARU_BOARD_AUTH_CASE=<case> python3 test/dbg/board/auth_phase.py`. Before
+most cases, set the switches and give the power-on (`CPU_RESET`, or a JTAG
+reconfiguration of the same bitstream). Three cases take no power-on of
+their own:
+
+- `authenticate` may follow `locked` on the same power-on, which leaves the
+  window unused;
+- `reboot` runs in the power cycle of a passed `authenticate`, once Linux
+  is up: a power-on would clear the grant it checks;
+- `reboot-locked` runs in the power cycle of `no-hold`, once Linux is up.
+
+Each case first checks from the Debug Module that the switches are what it
 needs and says so if they are not. Keep one artifact directory for the
 series: `replay` and `fresh-nonce` use the challenges recorded by earlier
 cases.
 
-Suggested order:
+Grouped by switch setting:
 
-1. `open` (positions 1 to 3 off). It is also the strap read-back: the
-   lifecycle and hold bits of `mdbgauth`, and with position 4 on, `seed`
-   staying in `BIST`. Do this first; it confirms the switch wiring and
-   polarity before any case depends on them.
-2. `locked`, `authenticate`, `fresh-nonce`, `wrong-response`, `replay`,
-   `expiry` (positions 1 and 3 on, 4 off).
-3. `no-hold` (1 on, 3 off), `entropy-off` (1, 3 and 4 on), `disabled`
-   (2 on).
-4. `reboot` in the power cycle of a passed `authenticate`, and
-   `reboot-locked` after `no-hold`, both with Linux up.
+1. off, off, off, on: `open`, the strap read-back (lifecycle and hold bits
+   of `mdbgauth`, and `seed` staying in `BIST` with the source off);
+2. on, off, on, on: `entropy-off`;
+3. on, off, on, off: `locked` and `authenticate` on one power-on, then
+   `reboot` with Linux up; then `fresh-nonce`, `wrong-response`, `replay`
+   and `expiry`, each on its own power-on;
+4. on, off, off, off: `no-hold`, then `reboot-locked` with Linux up;
+5. on, on, off, off: `disabled`; then all off.
 
-`authenticate` is the first time the ROM draws its nonce from the real
-rings: the challenge takes at least 57 ms to appear, the entropy source's
-start-up test. The response algorithm is the simulation-only TEST
-algorithm, which anyone can compute, so a pass shows that the mechanism
-works and nothing about protection.
-
-The same client and OpenOCD were rehearsed against the simulated target
-with the same ROM source (`make dbg-board-auth-rehearsal-test`). Not
-rehearsable: the BSCAN transport with a locked target, the switches and
-the reset button, the ROM constants that differ on the FPGA (nonce from
-`seed`, the 14.3 s window), and the cases that need Linux.
+What to expect: a challenge at least 57 ms after the power-on (the entropy
+source's start-up test), unlock about 0.2 s after the request, and in
+`expiry` the window closed by the ROM's deadline at about 14.3 s; the
+hardware limit (28.6 s) is not reached in any case. A pass shows that a
+debugger without the key is kept out; the key is in the bitstream and in
+the bundle, so it keeps out no one who has either. The same client and
+OpenOCD are rehearsed against the simulated target
+(`make dbg-board-auth-rehearsal-test`, `make
+dbg-board-auth-sha3-rehearsal-test`); not rehearsable are the BSCAN
+transport with a locked target, the switches, the power-on, and the cases
+that need Linux.
 
 ### Stage F: Linux acceptance
 
 `board_accept.sh` as for every image, with the lab's kernel, then the KVM
-guests. A guest's `seed` access traps to the host by design; the
-acceptance does not depend on Zkr inside a guest.
+guests and the post-Linux phases. A guest's `seed` access traps to the host
+by design; the acceptance does not depend on Zkr inside a guest.
 
 ## 5. If something fails
 
 | Symptom | First thing to try | What it tells |
 |---|---|---|
-| Nothing on the UART after programming | Check SW12 positions 1 to 3 are off; press CPU reset | With 1 and 3 on the hart is held by design |
-| No fu-boot banner with SW12 all off | Reprogram `d5e603cd…` or `0b994847…` with its own device tree | The island ROM hand-over or the 2 MiB ROM is at fault; there is no switch that bypasses them |
-| Stops in or after OpenSBI | Position 4 on, CPU reset | If it then boots, the entropy path is involved |
+| Nothing on the UART after programming | Check SW12 positions 1 to 3 are off; reset | With 1 and 3 on the hart is held by design |
+| No fu-boot banner with SW12 all off | Program the fallback `85f07e58…` | The island ROM hand-over, the 2 MiB ROM or the RTL is at fault; there is no switch that bypasses them |
+| Stops in or after OpenSBI | Position 4 on, reset | If it then boots, the entropy path is involved |
+| U-Boot hangs after "Net:" or before "Starting kernel" | Note position 4. A hang only with it on means the Zkr driver waits without bound (a ROM built without the patch) | With it off, something else: program the fallback |
 | Linux stops early | Serve the plain `c477784a…` tree (and run `linux_zkr.py` with `KARU_BOARD_ZKR=0`) | If it then boots, Linux's use of `seed` is involved |
-| Debugger cannot attach | SW12 positions 1 and 2 off, CPU reset | `OPEN` must behave as an image without authentication |
+| The console stops during a boot | Read GPIO LED 3 before any reset; then check that one host process holds the port | See the console practice above |
+| `seed` is `DEAD` (U-Boot "No RNG device" with switch 4 **off**, no challenge in `authenticate`) | Read `mentropystat` first (below) | The start-up test failed, or a third running failure |
+| Debugger cannot attach | SW12 positions 1 and 2 off, reset | `OPEN` must behave as an image without authentication |
 | Harness refuses to start | Read its message: fixture or image kind does not match | `KARU_BOARD_IMAGE` and the fixture must be for the same map |
-
-An image without authentication and Zkr can be built from the same tree
-with `VCU118_DBG_EXT_DEFINES=KARU_DBG_FULL`; it uses the plain device tree
-and the harness kind `rom2m`.
-
-## 6. What to bring back
-
-- The UART capture from the first boot of each stage.
-- The harness artifact directory (`KARU_BOARD_OUT`), with `SHA256SUMS`.
-- The GetNoise capture files and their JSON sidecars, with a note of the
-  conditions of each (cold start or reset, idle or network active).
-- The SW12 positions used for every run.
-- For any failure: the last console lines, the switch positions, and which
-  row of section 5 was tried.
-
-## 7. The next image: burst capture, temperature readout, SHA3 authentication, U-Boot v2026.10
-
-*Built 2026-11-18, 21:32 to 23:40 UTC; tested on 2026-11-19, all stages pass ([record](BOARD_ACCEPTANCE-2026-11-19.md)).* Sections 1 to 6
-were written for bitstream `d7ff00dc…` and apply to this image as well,
-with the changes below. The image adds the burst capture for the entropy
-source, the temperature and supply readout, the shared-secret
-authentication algorithm and U-Boot v2026.10 with the patched Zkr driver
-([Zkr follow-up plan](../doc/zkr-followup-plan.md)). All of them were tested
-in simulation, and on the board on 2026-11-19
-([record](BOARD_ACCEPTANCE-2026-11-19.md)).
-
-| | |
-|---|---|
-| Bitstream `_build/vcu118_ddr.bit` | SHA-256 `85f07e58354646ff3102fe3ddfe8c2e91005b5171b895391aea7ea3795f2639a`, 80,159,322 bytes |
-| Bundle `_build/vcu118_programming.tgz` | SHA-256 `fbdec6e42c75f0c5e236beeede5314f2e7962afb6935bc6615ebf852d6510f38`, mode 600: it holds the authentication key |
-| Configuration | as `d7ff00dc…` (`KARU_RVA23S64`, `KARU_DBG`, `KARU_DBG_FULL`, `KARU_DBG_AUTH`, `KARU_ZKR`; 75 MHz), plus the capture block and the readout |
-| Timing | met: setup +0.002 ns, hold +0.011 ns; no DRC errors |
-| Boot ROM | OpenSBI `cbbbe5ce…` (the same as `d7ff00dc…`), U-Boot 2026.10 with the Zkr time-out patch (`0e560318…`), device tree `784e2762…` (the same) |
-| Island ROM | `f518b750…`: algorithm `0x04`, SHA3-256 with a shared secret, key fingerprint `276bf6e96d8edecc`; nonce from `seed`, window of 2^30 cycles (14.3 s) |
-| Sources | karu64 `a39f3da` and karudeb `db180ff`, karu64 with uncommitted changes; `_build/vcu118-2026-11-18c-sources/` on the build host holds them (the diff and the new files) |
-
-The device tree and the kernel are those of section 2's first row. The
-bundle's `vcu118_auth_record.json` ties the key to this bitstream: packing
-the bundle refused to add a key that is not the one in its island ROM.
-
-**Stage E, authentication.** The ROM now answers with algorithm `0x04`:
-`auth_phase.py` computes the response from the key file in
-`KARU_BOARD_AUTH_KEY`, by default `_build/vcu118_auth_key.txt`, which is
-where the bundle puts it when it is unpacked at the root of the repository.
-Set `KARU_BOARD_AUTH_ALG=SHA3` for every case, so that a case stops with a
-message if the board still runs a `TEST` image. The cases, switches and
-expectations are unchanged. A pass now also shows that a debugger without
-the key is kept out; the key is in the bitstream and in the bundle, so it
-keeps out no one who has either. On `d7ff00dc…` the burst phase stops at
-its first case with "no capture block in this image", and the readout
-reads zero.
-
-**Stage A and B, first boot.** As before, and look at U-Boot's lines:
-
-- the banner names 2026.10;
-- with SW12 position 4 on (entropy source off) U-Boot prints
-  "No RNG device" once before it starts Linux, about 0.1 s later than
-  before, and boots. A hang at that point would be the released Zkr
-  driver, without the time-out patch;
-- with position 4 off there is no such line: U-Boot then puts a
-  `kaslr-seed` into the device tree it hands to Linux. Whether the kernel
-  uses it depends on its configuration (`CONFIG_RANDOMIZE_BASE`);
-- `linux_zkr.py` and `linux_reboot.py` as before. Reboot is the test of
-  U-Boot's reset path.
-- At the U-Boot prompt (stop autoboot with a key), `rng 0 10` prints sixteen
-  bytes from `seed` (device 0, 0x10 bytes; `rng 16` would ask for device 0x16
-  and print "No RNG device"). `rng list` shows whether the driver is there.
-
-**Stage D2, burst capture.** With position 4 off and OpenOCD running as in
-stage C:
-
-    make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT    # also builds the bare-metal fixture
-    python3 test/dbg/board/getnoise_burst.py
-    python3 test/dbg/board/getnoise_analyze.py $KARU_BOARD_OUT/getnoise-burst-p*.bin
-
-By default this takes 32 bursts of 32,768 symbols at each of the periods
-1, 2, 4, …, 256 clocks: about 9 MiB read back through the debugger. It is
-characterisation, not a pass or fail; the phase itself fails only if the
-bookkeeping does not agree. Then:
-
-- run the k-sweep of stage D again (`getnoise_capture.py`) in the same
-  session, and give its files to the analysis together with the burst
-  files: the burst capture at 256 clocks and the k = 1 capture should
-  agree, and the analysis says whether they do;
-- repeat the burst capture after each of three reconfigurations and three
-  CPU_RESET presses, with the link up, and once with the Ethernet cable
-  unplugged. One artifact directory per run, or move the files: a run
-  overwrites the files of the one before;
-- write into `KARU_BOARD_BURST_NOTE`, for every run: the bitstream, cold
-  start or reset, link up or down. The FPGA's die temperature and supply
-  voltages are read by the phase itself (the readout at `0x1000_0860`) and
-  stored in the sidecar, before and after each capture;
-- bring back all `.bin` and `.json` files. The analysis can be redone
-  later; the captures cannot.
-
-**If something fails.**
-
-| Symptom | Try |
-| --- | --- |
-| U-Boot hangs after "Net:" or before "Starting kernel" | Note position 4. With it on the entropy source is off and `seed` stays in `BIST`: a hang there and not with position 4 off means the Zkr driver waits without bound, so the ROM was built without the patch; boot with position 4 off, and rebuild. A hang with position 4 off is something else: serve the previous image |
-| Burst phase: "no capture block in this image" | The image predates the capture block |
-| Burst phase: "the noise source is off" | Position 4 is on, or `seed` reports `DEAD`; `getnoise_capture.py` still works on a dead source and shows why |
-| Burst phase: payload status `ABORTED` | The source was off during a burst: position 4 was switched on, or the source failed. Note it and repeat. The files of the previous run are kept |
-| Burst phase: payload status `TIMEOUT` | A burst did not complete although the source stayed on. Note it, keep the console and the artifact directory, and repeat once |
-| Authentication: "the ROM asks for algorithm TEST" | The board runs an older bitstream: reprogram this one |
-| Authentication: the response is refused with SHA3 | Check the key file: `python3 flow/auth_record.py verify --record _build/vcu118_auth_record.json --bit _build/vcu118_ddr.bit --key $KARU_BOARD_AUTH_KEY` prints `key` for this bitstream's key and fails for any other |
-| Burst phase: payload status `LOCKED` or `BUSY` | Something locked `mentropycfg` or left test mode on; a reset clears both |
-
-## 8. The 2026-11-20 image: health tests on the sample, no `mdbgrng`, a hardware window limit
-
-*Built 2026-11-19 22:29 to 2026-11-20 00:10 UTC; board-tested on 2026-11-20, accepted with documented exceptions ([record](BOARD_ACCEPTANCE-2026-11-20.md)).* It follows `85f07e58…` (section 7), whose
-steps apply with the changes below. What is new is in the entropy block and
-the authentication block. The boot ROM is the accepted image's: the same
-OpenSBI, device tree, boot command, fu-boot and island ROM byte for byte,
-and the same U-Boot except the 5 bytes of its build date.
-
-It replaces `f3493b17…`, built earlier on 2026-11-19 from the same RTL and
-never programmed: that build's fu-boot and U-Boot came from a Linux-target
-compiler ([measurements](MEASUREMENTS.md)). Do not use it.
-
-| | |
-|---|---|
-| Bitstream `_build/vcu118_ddr.bit` | SHA-256 `ddb168e1081c9b73c29cd5a16ab777ee8106a52d382469b5b741b094bc096aad`, 80,159,322 bytes |
-| Bundle `_build/vcu118_programming.tgz` | SHA-256 `88dce485fadad7c63ba42e07bd7ed5f2124d69bbef8ca2f1a53b7b8c54817342`, mode 600: it holds the authentication key |
-| Configuration | as `85f07e58…` |
-| Timing | meets 75 MHz: setup +0.008 ns, hold +0.011 ns, pulse width +0.005 ns; no DRC errors |
-| Boot ROM | OpenSBI `cbbbe5ce…`, U-Boot 2026.10 with the Zkr time-out patch (`7a27c424…`, 802,453 bytes), device tree `784e2762…`. 5 bytes differ from the ROM of `85f07e58…`, all in U-Boot's build date |
-| Compilers | fu-boot and U-Boot: `$RISCV/bin/riscv64-unknown-elf-gcc`, which targets `riscv64-unknown-elf` (recorded in the ROM manifest of the bundle) |
-| Island ROM | `f518b750…`, byte-identical to that of `85f07e58…`: algorithm `0x04`, key fingerprint `276bf6e96d8edecc`, the nonce from `seed` |
-| Sources | karu64 `f014194` with uncommitted changes (the diff and the new files are in `_build/vcu118-2026-11-19b-sources/`), karudeb `db180ff` |
-
-**Handling the bundle.** The bundle and the bitstream hold the
-authentication key, like the key file. On the board host unpack the bundle
-with `umask 077` into a directory of mode 0700, and keep the bitstream
-there:
-
-```sh
-umask 077; mkdir -m 700 ~/karu-ddb168e1 && tar -C ~/karu-ddb168e1 -xzf vcu118_programming.tgz
-```
-
-**Which image is on the board.** The boot looks the same as with
-`85f07e58…`. U-Boot's banner tells them apart: this image prints
-`U-Boot 2026.10-dirty (Nov 19 2026 - 22:30:01 +0000)`, the accepted one
-`(Nov 18 2026 - 21:33:44 +0000)`. With debug access, `mentropycfg` (`0x7C9`) reads
-`0x30c7c1eb3c37000f` after reset in this image only.
-
-**What changed, as seen from the board.**
-
-| Change | What to expect |
-| --- | --- |
-| Health tests on the 4-bit sample and on each lane at lags 1 to 4 ([assessment, section 9](../doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)); reset cutoffs 15 and 124, 55 and 719 | Nothing, if the rings behave as in the captures: `seed` works as before, the first word 57 ms after reset. If the tests trip on the real rings, `seed` reports `DEAD`: U-Boot prints "No RNG device" with switch 4 **off**, `linux_zkr.py` still passes (it checks discovery, not delivery), the `authenticate` case gets no challenge |
-| A running failure latches `BIST` until a `seed` access; the third within 15 minutes is `DEAD` | Not visible unless a failure happens |
-| `mentropycfg` (`0x7C9`) has more fields; reset value `0x30c7c1eb3c37000f` | The capture sidecars show it in `cfg_before` and `cfg_after`, with the new fields decoded. The payloads keep the fields; rebuild the fixtures from this tree |
-| `mentropystat` (`0x7CA`), read-only: state, alarm, strikes, last failure, failure count | No phase reads it yet. With the hart halted, the harness's `rawread(0x7ca)` returns it: `1` is running with no failure since reset |
-| GetNoise: the loss flag is also set when switch 4 turns the source off, when `mentropycfg` is written in test mode, and when the burst block's period is written | A capture with switch 4 on ends with `TIMEOUT` as before, now with one loss counted per poll |
-| `mdbgrng` (`0x7C3`) is gone | Nothing: this ROM already read `seed`. Any tool that read `0x7C3` gets an illegal instruction |
-| The authentication window closes in hardware 2³¹ clocks (28.6 s) after the `REQUEST` | Nothing in the cases: the ROM's own deadline, 14.3 s, still comes first, and `expiry` should see the window close there as before |
-
-**Order of work.** As section 7: stage B (boot, `linux_zkr.py`, the U-Boot
-prompt with `rng 0 10`), stage A (switch 4 on), stage C, stages D and D2
-with rebuilt fixtures, stage E with `KARU_BOARD_AUTH_ALG=SHA3` and the key
-from the bundle, stage F.
-
-**What this image is for.**
-
-- Leave it running and read `mentropystat` at the end of the session,
-  before any reset: a failure count of zero after hours is the first board
-  evidence about the new tests. Note the time since the last reset with it.
-- A k = 16 capture and a restart capture as on 2026-11-19, to compare with
-  D19 and R19; the health tests do not run in test mode, so the captures
-  themselves are unaffected.
+| Burst phase: "no capture block in this image" | The image predates the capture block | |
+| Burst phase: payload status `ABORTED` or `TIMEOUT` | Note it and repeat once; keep the console and the artifact directory | The source was off during a burst, or a burst did not complete |
+| Burst or GetNoise phase: payload status `LOCKED` or `BUSY` | A reset clears both | Something locked `mentropycfg` or left test mode on |
+| `seed_restart.py` repeats restarts | Read the reasons in `seed-restart.json` | `LATE`: the payload started after the first output; `ALARM`: a health-test failure in the first samples |
+| Authentication: "the ROM asks for algorithm TEST" | Program this bitstream | The board runs an older image |
+| Authentication: the response is refused with SHA3 | `python3 flow/auth_record.py verify --record _build/vcu118_auth_record.json --bit _build/vcu118_ddr.bit --key $KARU_BOARD_AUTH_KEY` | It prints `key` for this bitstream's key and fails for any other |
+| The authentication window closes before 14 s | Report the time | Not expected |
 
 **If `seed` is ever `DEAD`.** What the tests found is in `mentropystat`, and
 the entropy block is reset with the SoC (`soc_rst` in
@@ -408,13 +298,19 @@ scripts included. So, in this order:
    as read over JTAG (the status word and the absence of a challenge), and
    record that the cause could not be read.
 3. Only then capture with `getnoise_capture.py` (test mode switches a dead
-   source back on) and compare with D19.
+   source back on) and compare with the latest k = 16 capture.
 
-**If something fails.**
+An image without authentication and Zkr can be built from the same tree
+with `VCU118_DBG_EXT_DEFINES=KARU_DBG_FULL`; it uses the plain device tree
+and the harness kind `rom2m`.
 
-| Symptom | Try |
-| --- | --- |
-| `seed` is `DEAD` right after reset, switch 4 off | The start-up test failed on the real rings. Follow the three steps above; then switch 4 on to boot without the source, or go back to `85f07e58…` |
-| U-Boot or Linux behaves as with switch 4 on, but later | A third running failure made the source `DEAD`; same steps |
-| The authentication window closes before 14 s | Not expected: report the time. The hardware limit is 28.6 s |
-| The boot stops before or in U-Boot, where `85f07e58…` did not | The boot ROM is the accepted one but for U-Boot's build date, so suspect the RTL: note the last UART line, go back to `85f07e58…`, and report both |
+## 6. What to bring back
+
+- The UART capture of the whole session, from one process.
+- The harness artifact directory (`KARU_BOARD_OUT`), with `SHA256SUMS`.
+- The capture and restart files and their JSON sidecars, with the
+  conditions of each run.
+- Every `mentropystat` reading, with the time since the last reset.
+- The SW12 positions used for every run, and how each power-on was given.
+- For any failure: the last console lines, the switch positions, and which
+  row of section 5 was tried.

@@ -6,6 +6,58 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Measured — the rings' jitter is mostly shared; no entropy claim yet
+
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md) section 1:
+  the argument for a min-entropy claim (the ring model of arXiv:2102.02196,
+  the predictor given each ring's previous phase, the frequencies and
+  every shared influence, worst case over the phase) needs each ring's own
+  jitter. Measured from the burst captures by the covariance of two rings'
+  phase increments, the jitter seen against the sampling clock is 90 to
+  100 % correlated between the rings at the spans the bursts resolve; the
+  smallest eigenvalue of the rings' correlation matrix is about zero. So
+  each ring's own share is not established, and no claim is made. The
+  per-lane parameters (k = 16, the target cutoffs) had been chosen from
+  the total jitter, which the per-lane fits cannot split.
+- `test/dbg/board/entropy_claim.py`: the bound for a credited share, and
+  `--pairs`, the pairwise covariance estimator, with `--self-test`
+  (generated rings of known correlation).
+- Next: a bitstream with counters that time the rings against each other,
+  to measure each ring's own jitter, and the spacing chosen from it.
+
+### Added — operational restart data and induced failures on the board
+
+- `test/dbg/board/seedcap.S` and `seed_restart.py`: the operational restart
+  data of SP 800-90B section 3.1.4. After each of 1,000 debugger resets,
+  the hart is started in a payload within a few milliseconds, which reads
+  the first 1,000 samples that `seed` delivers, from the first output on,
+  and shows that it was in time and kept up. `make dbg-seedcap-fixture`
+  builds it; `make dbg-seedcap-test` checks it on the Zkr simulation bench
+  (`test_seedcap.py`).
+- `test/dbg/board/entropy_fault.py`: induced health-test failures on the
+  real rings, by stricter cutoffs: a start-up failure, each of the four
+  tests, the alarm latch and strikes to `DEAD`, forgiveness after 2^24
+  samples, and the configuration limits and lock.
+
+### Changed — the documentation states the current status only
+
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md) is an
+  assessment of the current design. Its verdict had described image
+  `85f07e58…` (approved tests on the sample "not met"), with the redesign
+  appended as section 9; the analysis of the earlier per-lane tests is in
+  the history (commit `f014194`). It now leads with the 2026-11-20 data and
+  scopes what a claim would need.
+- Stacked dated statuses, "before/now" comparisons and image-history
+  narratives were replaced by the current status in the README, the FPGA
+  guide, the Zkr and authentication plans, the authentication contract,
+  `dbg/README.md`, the harness README, the ASIC handoff, the area matrix,
+  the architecture, flows and RVA23S64 notes, the KVM README and the Keccak
+  throughput notes. Dated material moved to dated records:
+  [dbg/VALIDATION_HISTORY.md](dbg/VALIDATION_HISTORY.md) (the earlier gate
+  runs and validation records) and
+  [dbg/BOARD_ACCEPTANCE.md](dbg/BOARD_ACCEPTANCE.md) (the transport smoke
+  test of 2026-11-16).
+
 ### Tested — VCU118 board session, 2026-11-20
 
 - Image `ddb168e1…` is accepted with documented exceptions: translation
@@ -13,12 +65,17 @@ yet; unreleased changes appear first, followed by merged checkpoints.
   matrix hit its time limit and was completed by phase 13 (92 pairs). The
   record is [dbg/BOARD_ACCEPTANCE-2026-11-20.md](dbg/BOARD_ACCEPTANCE-2026-11-20.md).
 - Every interval of the redesigned health tests read between resets
-  (`mentropystat`), about 100 minutes in total, ended with zero failures on
-  the real rings; other intervals were cleared by resets without a reading,
-  and the tests do not run in test mode. Replay of the day's captures
-  agrees. This shows no false alarms in those intervals; detection of a
-  failing source, and the 28.6 s hardware window limit, have simulation
-  coverage only.
+  (`mentropystat`), about 2.4 hours in total, the longest 55 minutes, ended
+  with zero failures on the real rings; other intervals were cleared by
+  resets without a reading, and the tests do not run in test mode. Replay
+  of the day's captures agrees.
+- 1,000 operational restarts, samples through `seed` from the first output,
+  pass NIST's restart test (X_max 98, cutoff 132; H_r = H_c = 3.688).
+- Induced failures (stricter cutoffs) show on the real rings: a fatal
+  start-up failure, each test firing and named in `mentropystat`, the
+  latched alarm, strikes to `DEAD`, forgiveness after 2^24 samples
+  (920.5 s), and the limits and lock. The 28.6 s hardware window limit has
+  simulation coverage only.
 - Six SHA3 authentication cases pass with reconfiguration as the power-on;
   the ROM's 14.3 s deadline closed the window, so the new 28.6 s hardware
   limit has no board evidence.
@@ -131,7 +188,7 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 ### Changed — Zkr health tests on the 4-bit sample, alarm latch, strikes, configuration limits (in bitstream `ddb168e1…`)
 
 Items 1 to 3 of the work list of the
-[SP 800-90B assessment](doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19).
+[SP 800-90B assessment](doc/sp800-90b-assessment.md#5-health-tests-4).
 Tested in simulation, by replay of board captures, and on the board in
 bitstream `ddb168e1…` on 2026-11-20, where every interval read between
 resets ended with zero failures. Induced health-test failures (detection,
@@ -154,7 +211,7 @@ the old tests.
   number `[56:54]` and the clean-sample count `[61:57]`; a write that
   leaves them zero stops the source, so change a field by
   read-modify-write
-  ([example](doc/sp800-90b-assessment.md#96-for-software-that-writes-mentropycfg)).
+  ([example](doc/sp800-90b-assessment.md#56-for-software-that-writes-mentropycfg)).
   The reset values are for a target of 3 bits per 4-bit sample at a
   false-alarm probability of 2⁻⁴⁰ per test (15 and 124 on the symbol, 55
   and 719 per lane; before, 41 and 821 per lane) and are by default the
@@ -718,7 +775,7 @@ on 2026-11-18; see above.
 - Use the XCVU9P's 18-bit instruction register and USER4 opcode `0x23924`.
   Physical OpenOCD discovery, halt, PC/DCSR reads and resume now pass on the
   debug image; Linux remains responsive after detach. See the
-  [board smoke test](dbg/README.md#board-transport-smoke-test--2026-11-16).
+  [board smoke test](dbg/BOARD_ACCEPTANCE.md#transport-smoke-test-before-the-campaign--2026-11-16).
 
 ### Added — debug authentication RTL (`KARU_DBG_AUTH`, plan milestone A1)
 

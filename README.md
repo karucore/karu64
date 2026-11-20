@@ -27,9 +27,9 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
 
 - [FPGA bring-up](doc/fpga.md) — VCU118 build/programming instructions,
   UART capture, Linux netboot, memory map and board acceptance.
-- [Current diagnostics](doc/release-diagnostics-2026-09-14.md) — board
-  results through 2026-10-07, routed FPGA timing and reference synthesis
-  measurements.
+- [Profile-image diagnostics](doc/release-diagnostics-2026-09-14.md) — board
+  results of the non-debug profile images (the latest from 2026-10-07),
+  routed FPGA timing and reference synthesis measurements.
 - [doc/architecture.md](doc/architecture.md) — the core micro-architecture:
   pipeline and issue model, functional units, FPU, vector unit, privilege/MMU,
   the build-time configuration knobs, and RVA23 feature coverage.
@@ -84,10 +84,9 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   v0.2) runs at 75 MHz, meets routed timing and passes Linux 7.2.6-zvk board
   acceptance (2026-10-07) plus the Zvknhk software checks: OpenSSL 4.0.2
   17/17, riscv-pqc `xtest` 39/39, ML-KEM/ML-DSA KATs 720/720 and 20/20
-  encoding-conformance cases. The previous 1W2R FP register-file image
-  (`b11d5efb…3b809`) passed board acceptance, the FP probe and on-board
-  Berkeley TestFloat-3e (36 functions, 0 errors); earlier images passed the
-  KVM guest and extended vector ABI suites. Image-specific results are in
+  encoding-conformance cases. On-board Berkeley TestFloat-3e (36 functions,
+  0 errors) and the FP probe last ran with image `b11d5efb…3b809` and have
+  not been repeated on this one. Image-specific results are in
   [the diagnostics](doc/release-diagnostics-2026-09-14.md).
 - Full Zvbb is cross-checked against Spike by `make zvbb-test-all`. Zvk known
   answers, decode, multi-element-group `.vs` semantics and Keccak are covered
@@ -239,8 +238,8 @@ The top-level core wires together:
   add stage runs).
 - `karu_csr`: M/S/U CSRs, Sstc timer and fcsr/frm/fflags. FPU op completions
   sticky-OR into fflags. With the opt-in `KARU_ZKR` it also has `seed`,
-  `mseccfg` and the two custom entropy CSRs, served by `karu_entropy`
-  outside the core.
+  `mseccfg` and the three custom entropy CSRs (`mnoise`, `mentropycfg`,
+  `mentropystat`), served by `karu_entropy` outside the core.
 - `karu_regfile` / `karu_fregfile`: integer and FP register files
   (separate 1W2R files; FP port B also reads FMA's third source at issue).
 
@@ -373,27 +372,26 @@ access checks remain active. Opt-in execution-based debug is documented in
 [the karudbg implementation and testing plan](dbg/README.md). Independently
 selectable autoexec, address triggers and SBA extend the base DM. The plan
 records the current source-hashed functional gate, six-configuration mapped
-comparison and remaining acceptance gates. The full two-trigger VCU118 image
-was rebuilt on 2026-11-15 with the fixes of the
-[2026-11-15 security review](doc/security-review-2026-11-15.md) and passes
-routed timing at 75 MHz. The November 16
-[physical debug campaign](dbg/BOARD_ACCEPTANCE.md) passes run control,
-FP/vector state, triggers, SBA/coherence, GDB, a ten-minute soak and
-post-detach Linux/KVM acceptance, with OpenOCD software-translation and
-boot/detach policy findings documented separately. The
-[November 18 campaign](dbg/BOARD_ACCEPTANCE-2026-11-18.md) repeats it on the
-image with Zkr, authentication, the 2 MiB boot ROM and software reboot. See also
+comparison and remaining acceptance gates. The VCU118 debug image, bitstream
+`ddb168e1…`, has the full two-trigger debug configuration with Zkr,
+authentication, the 2 MiB boot ROM and software reboot, and meets routed
+timing at 75 MHz. Its [board acceptance](dbg/BOARD_ACCEPTANCE-2026-11-20.md)
+on 2026-11-20 passes run control, FP/vector state, triggers, SBA/coherence,
+GDB, a ten-minute soak and post-detach Linux/KVM acceptance; OpenOCD's
+software address translation fails with known walker results, and the
+OpenOCD and boot/detach findings are documented in
+[the campaign record](dbg/BOARD_ACCEPTANCE.md). See also
 [FPGA programming and acceptance](doc/fpga.md).
 
 Debug has no authentication by default: whoever can drive JTAG has M-mode
 control (review finding S6, open). The opt-in `KARU_DBG_AUTH` build adds a
-lifecycle gate and a boot-ROM challenge–response path. It is work in
-progress: the RTL and its tests exist, but there is no production signature
-verifier and the formal work is partial. Since 2026-11-17 the VCU118 debug
-image is built with it, with the lifecycle on DIP switches. Every
-authentication case passed on the board on 2026-11-18 with the image built
-that day, but its ROM still verifies with a non-cryptographic test
-algorithm, so it validates the mechanism and protects nothing. See
+lifecycle gate and a boot-ROM challenge–response path. The VCU118 debug
+image has it, with the lifecycle on DIP switches; its ROM verifies a
+SHA3-256 MAC under a key shared with the debugger host (algorithm `0x04`)
+and draws its nonce from `seed`. On the FPGA the key is in the bitstream, so
+the image validates the mechanism ahead of an ASIC and protects nothing on
+the board. There is no production signature verifier, and the formal
+composition is partial. See
 the [plan](doc/debug-auth-plan.md), the
 [contract](doc/debug-auth-contract.md) and the
 [ASIC obligations](flow/asic/README.md#debug-authentication-obligations-karu_dbg_auth).
@@ -402,22 +400,16 @@ The opt-in `KARU_ZKR` build adds the Zkr `seed` CSR and an entropy source:
 one sampled ring oscillator per raw bit on the FPGA, health tests, and a
 GetNoise test interface for raw samples. Bits are never combined, so that
 the source can be assessed against a stochastic model of ring-oscillator
-jitter. It is in the VCU118 debug image built on 2026-11-18, which runs on
-the board: Linux uses `seed` without crediting it (`random.trust_cpu=off`).
-The first raw-noise captures are in the
-[acceptance record](dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture); no
-entropy figure has been established, and the parameters are provisional.
-To characterise the rings, the FPGA source now has a burst capture that
-samples them every 1 to 256 clocks in its test mode. It is in bitstream
-`85f07e58…` and ran on the board on 2026-11-19
-([record](dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)): the
-noise model can now be fitted, and lanes 2 and 3 show a dependence.
-Since bitstream `ddb168e1…` the health tests are SP 800-90B's approved
-tests on the 4-bit sample plus lane tests, with a latched alarm and a
-strike count; on the board on 2026-11-20 every interval read between
-resets, about 100 minutes in total, ended with zero failures on the real
-rings ([record](dbg/BOARD_ACCEPTANCE-2026-11-20.md)). The source is
-not SP 800-90B compliant and no min-entropy is claimed
-([assessment](doc/sp800-90b-assessment.md)).
+jitter. The health tests are SP 800-90B's approved tests on the 4-bit
+sample, with lane tests beside them, a latched alarm and a strike count; a
+burst capture samples the rings every 1 to 256 clocks in test mode, for
+characterisation. The VCU118 debug image has it, and Linux uses `seed`
+without crediting it (`random.trust_cpu=off`). No min-entropy is claimed:
+NIST's statistical estimate is 3.556 bits per 4-bit sample and the restart
+tests pass, but most of the jitter the board shows is shared between the
+four rings, and how much of it is each ring's own has not been measured
+([assessment](doc/sp800-90b-assessment.md), which has the plan to a
+claim). The board results are in the
+[acceptance record](dbg/BOARD_ACCEPTANCE-2026-11-20.md).
 See [the FPGA guide](doc/fpga.md) and the
 [Zkr follow-up plan](doc/zkr-followup-plan.md).

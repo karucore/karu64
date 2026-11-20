@@ -1,23 +1,12 @@
 # Zkr follow-up plan
 
-Status: **plan, 2026-11-18.** When it was written nothing here was
-implemented. It follows the
-first board session of the Zkr image (bitstream `d7ff00dc…`), whose
-GetNoise captures are summarised in
-[the acceptance record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture)
-and kept in `_build/dbg/board-accept-20261118-rom2m-auth/` on the lab host.
-
-*Status, 2026-11-18, later the same day.* Z1 and Z2 are implemented in RTL,
-Z3 in the board scripts and the analysis, Z4's temperature and supply
-readout in RTL, and Z5 in the U-Boot build. All of it is tested in
-simulation and is in VCU118 bitstream `85f07e58…`, built at 23:40 UTC with
-timing met. **It ran on the board on 2026-11-19**
-([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)): the burst capture fits
-the noise model for the first time, and shows a dependence between lanes 2
-and 3. Section 7 of
-[the board test plan](../dbg/BOARD_TEST_PLAN.md) has the steps. The notes
-under each item say what was built, what was decided where the plan left a
-choice, and what is not done.
+Status: **Z1 to Z5 done; Z6 in progress.** Z1 to Z5 and the first four
+items of Z6 are done, in or on the VCU118 debug image, bitstream
+`ddb168e1…`, which is [board-tested](../dbg/BOARD_ACCEPTANCE-2026-11-20.md). The notes under each
+item say what was built, what was decided where the plan left a choice, and
+what is not done. The plan was written after the first raw-noise captures
+of the Zkr source
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture)).
 
 ## 1. Why
 
@@ -49,14 +38,14 @@ somewhere between 64 and 128 clocks per sample.
   source may ignore, and the field then reads back the fixed rate.
 - A change of P restarts the start-up test, as a change of k does.
 
-*Status, 2026-11-18: implemented, simulated.*
+*Status: done; in the VCU118 image.*
 - **Where the field lives: in the capture block of Z2, not in
   `mentropycfg`, and it works only in test mode.** The period register is
   one of the capture block's registers. Outside the entropy block's test
   mode (`mnoise` `noise_test` clear), and whenever `mentropycfg` is locked,
   the noise source runs at the build's period (`SAMPLE_DIV`, 256) and the
   register cannot be written. So `seed`, the health tests and the
-  authentication ROM see the source exactly as in the accepted image, by
+  authentication ROM always see the source at the build's period, by
   construction and not by a reset value; the CSR contract is unchanged;
   and an ASIC entropy block is not touched: `rtl/karu_entropy.v` gained
   only two status outputs (test mode, lock).
@@ -75,13 +64,14 @@ somewhere between 64 and 128 clocks per sample.
   `getnoise_capture.py` can be pointed at a period below 256 too.
 - Tests: `make noise-burst-test` (periods 1, 2, 3, 5, 8 and 256 against a
   record of every symbol of the source; the first symbol after test mode
-  comes a full build period after the one before it; 33 mutants).
+  comes a full build period after the one before it; one-mechanism
+  mutants).
 
 ### Z2. Burst capture for characterisation
 
 - An FPGA-only block that records N consecutive raw 4-bit samples at period
   P into block RAM, then holds them for readout. For example, N = 32K
-  samples is four 36 Kb BRAM tiles. The image uses about 318 of 2160.
+  samples is four 36 Kb BRAM tiles, of the device's 2160.
 - Read out through the debugger (SBA) or the hart, at leisure. A memory-mapped
   window on the FPGA crossbar needs no change to the core or to the CSR
   contract.
@@ -94,11 +84,8 @@ somewhere between 64 and 128 clocks per sample.
   for four times finer time resolution, with the buffer in that domain.
 - Not part of the ASIC entropy block; `rtl/karu_entropy.v` stays as it is.
 
-*Status, 2026-11-18: implemented, simulated; block RAM and loops checked in
-an out-of-context synthesis, then in bitstream `85f07e58…`, where the
-routed paths into the four RAMs have at least +2.88 ns setup and +0.053 ns
-hold. On the board on 2026-11-19: eight runs of 9 periods × 32 bursts,
-all complete.*
+*Status: done; in the VCU118 image. Every board burst capture so far is
+complete ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#noise-capture-and-entropy-estimates)).*
 - `flow/fpga/karu_noise_burst.v`, instantiated next to the noise source in
   `flow/fpga/karu_entropy_src.v`. A burst is 32,768 consecutive raw symbols
   (2,048 words of 16), in four 36 Kb block RAMs. Out of context, Vivado
@@ -142,9 +129,10 @@ all complete.*
   (`karu_rosc_rng` with `SIM = 1`), whose F and sigma^2 are known: the fit
   must recover them. Mutants as for the current tests.
 
-*Status, 2026-11-18: implemented, validated on generated data and on the
-simulated source.* *2026-11-19: eight board runs analysed with it
-([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).*
+*Status: done; validated on generated data and on the simulated source,
+and used for every board burst capture
+([2026-11-19](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2),
+[2026-11-20](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#noise-capture-and-entropy-estimates)).*
 - `test/dbg/board/getnoise_burst.S` and `getnoise_burst.py`: 32 bursts by
   default at each of the periods 1, 2, 4, …, 256, written in the capture
   format with one run per burst; the sidecar has the period and a
@@ -176,27 +164,27 @@ simulated source.* *2026-11-19: eight board runs analysed with it
   has the list): a lane whose correlation outlasts an eighth of a burst
   gets F and sigma^2 but no per-bit figure; wander inside a burst raises
   sigma^2 and is only partly kept out; coherence and shared wander need
-  the 32 bursts. On the board (2026-11-19) the model fits each lane, but
-  the fitted jitter variance grows faster than in proportion to the
-  spacing, so the real rings' jitter is not purely the model's white
-  noise.
+  the 32 bursts. On the board the model fits each lane, but the fitted
+  jitter variance grows faster than in proportion to the spacing (no lane
+  meets the analysis's 25 % criterion), so the real rings' jitter is not
+  purely the model's white noise. The ring frequencies relative to the
+  clock depend on the bitstream's routing, so the characterisation belongs
+  to a bitstream.
 
 ### Z4. Repeat captures
 
-Still open from the board test plan (stage D), and worth doing with Z2:
+Captures beyond a single session, worth doing with Z2:
 
 - after several cold starts (reconfiguration) and several CPU resets;
 - under different activity, at least Ethernet link up and down;
 - with the FPGA temperature recorded (SYSMON) next to each capture.
 
-*Status, 2026-11-18: readout implemented and simulated; the captures are
-a procedure for the board session.* *2026-11-19: captured on the board
-after three reconfigurations, two CPU resets, one software reset, with the
-link up and down, and with the die temperature and supplies read before
-and after every capture
+*Status: done at room temperature; a wider temperature range is open.*
+Captures were taken after reconfigurations, CPU resets and a software
+reset, with the link up and down, and with the die temperature and
+supplies read before and after every capture
 ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).
-The temperature stayed between 23.9 and 24.9 °C, so the behaviour over a
-wider temperature range is still open.*
+The die stayed between 23.9 and 25.2 °C in every session.
 - `flow/fpga/karu_sysmon.v` reads the FPGA's die temperature, VCCINT and
   VCCAUX from the system monitor (SYSMONE4, in its default mode) every
   14 ms and shows them, with an update count, in one 64-bit register at
@@ -234,11 +222,10 @@ wider temperature range is still open.*
 - Rebuild the ROM, check its manifest, and rerun stage A of the board test
   plan.
 
-*Status, 2026-11-18: build and simulation done; in the ROM of bitstream
-`85f07e58…` (802,453 bytes with the lab's baked boot command,
-`0e560318…`). On the board on 2026-11-19: with the source on, `rng 0 10`
-prints 16 bytes and U-Boot supplies a `kaslr-seed`; with it off, `rng`
-answers "No RNG device" at once and the boot goes on.* `flow/build_uboot.sh` now builds v2026.10
+*Status: done; in the ROM of the VCU118 image. On the board, with the
+source on, `rng 0 10` prints 16 bytes and U-Boot supplies a `kaslr-seed`;
+with it off, `rng` answers "No RNG device" at once and the boot goes on.*
+`flow/build_uboot.sh` builds v2026.10
 (801,805 bytes with the configuration below and no boot command, of the
 slot's 901,120) and refuses a tree that holds another release, instead of
 building it under the new name.
@@ -256,47 +243,53 @@ building it under the new name.
 
 ### Z6. SP 800-90B: joint-source assessment and health-test coverage
 
-*Added 2026-11-19.* The [SP 800-90B assessment](sp800-90b-assessment.md)
-finds the source not compliant. The noise-source sample is the 4-bit vector of
-the four rings, not four separate bits; its non-IID statistical estimate is
-3.53 bits per sample at the shipped spacing, and a delayed warm-restart
-experiment passes the restart tool, but the health tests run per lane only,
-fail the alternative-test criteria of §4.5, and rest on an assumed entropy;
-the operational restart requirement is untested. The work, in order:
+The [SP 800-90B assessment](sp800-90b-assessment.md) treats the 4-bit
+vector of the four rings as the noise-source sample. It makes no claim yet:
+the jitter measured against the sampling clock is mostly shared between
+the rings, so each ring's own jitter, which a claim may credit, is not
+known. The work, with its state:
 
-- RCT and APT (W = 512) on the 4-bit sample, with cutoffs from the assessed
-  entropy and a documented false-alarm rate; keep the lane tests as
-  diagnostics; add a test for short periodic patterns.
-- A failure indication a consumer can read, distinct from start-up, and a
-  rule that ends a recurring operational failure in `DEAD`.
-- A fixed configuration: build-time constants or a boot-time lock for k and
-  the cutoffs.
-- Operational restart data: power-on or reconfiguration restarts, samples
-  read through `seed` from the first `ES16` on.
-- Data over temperature and supply, more boards or placements, and cold
-  restarts; a physical rationale (the Z3 model with flicker and wander) for
-  the entropy claim.
+- **Done:** SP 800-90B's repetition count and adaptive proportion test
+  (W = 512) on the 4-bit sample, with cutoffs for a documented target and
+  false-alarm rate, and lane tests beside them, including a repetition
+  count at lags 1 to 4 for short periodic patterns.
+- **Done:** a failure indication a consumer can read, distinct from
+  start-up, and a rule that ends a recurring operational failure in `DEAD`.
+- **Done in hardware:** a configuration that software can only make
+  stricter. The lock in the boot chain is open.
+- **Done:** operational restart data, 1,000 restarts with samples read
+  through `seed` from the first output, which pass NIST's restart test.
+  Not at that count by power-on.
+- **Done:** the argument's bound (`test/dbg/board/entropy_claim.py`):
+  given each ring's own jitter, the min-entropy of a sample with the
+  predictor given everything the rings share. **Measured with it:** the
+  rings' phase increments are 90 to 100 % correlated at the spans the
+  bursts resolve, so that input is not known.
+- **Open:** a bitstream with counters that time the rings against each
+  other, to measure each ring's own jitter; the spacing (k) chosen from it,
+  set and locked by the boot firmware; then the claim. Data over
+  temperature and supply, more boards or placements, and power-on
+  restarts, to widen it.
 
-*Status, 2026-11-19: the first three items are implemented in RTL, tested
-in simulation and built into bitstream `ddb168e1…` (2026-11-20, timing met;
-[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)); on the
-board on 2026-11-20 (below). (A first build that evening, `f3493b17…`, had a boot ROM from the
-wrong compiler and was replaced before it was used.)*
+*Status: the first four are done, on the VCU118 image `ddb168e1…`
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)); the measurement that
+stops a claim is in
+[section 1 of the assessment](sp800-90b-assessment.md#1-entropy-claim-none-yet).*
 - `rtl/karu_entropy.v` runs the two approved tests on the 4-bit sample and,
   per lane, a repetition count at lags 1 to 4 and the adaptive proportion
   test. A running failure latches the `BIST` alarm until a `seed` access
   has seen it; the third without 2^24 clean samples in between is fatal.
-  A new read-only CSR, `mentropystat` (`0x7CA`), reports the state, the
+  A read-only CSR, `mentropystat` (`0x7CA`), reports the state, the
   alarm, the strikes and what failed last.
-- The cutoffs and the failure numbers stay writable through `mentropycfg`.
-  The reset values are for a target of 3 bits per 4-bit sample (the rate
-  the Zkr text asks) and a false-alarm probability of 2⁻⁴⁰ per test: 15
+- The cutoffs and the failure numbers are writable through `mentropycfg`.
+  The reset values are for 3 bits per 4-bit sample (the rate the Zkr text
+  asks, and the claim) and a false-alarm probability of 2⁻⁴⁰ per test: 15
   and 124 on the sample, 55 and 719 per lane. They are the weakest
   configuration unless a build widens the limits: software can only make
-  the tests stricter. Three bits is a target, not an established claim.
-- `seed` is the entropy block's only consumer: the authentication block's
-  own port and CSR (`mdbgrng`) are removed, and its ROM reads `seed`.
-- GetNoise: the loss flag of `mnoise` is now also set when the source is
+  the tests stricter.
+- `seed` is the entropy block's only consumer: the authentication ROM reads
+  `seed`.
+- GetNoise: the loss flag of `mnoise` is also set when the source is
   switched off, when `mentropycfg` is written in test mode, and when the
   burst block's sampling period is written, so a run never spans a stopped
   source or a change of spacing.
@@ -304,34 +297,22 @@ wrong compiler and was replaced before it was used.)*
   one-sided limit, not a constant, so that software with an assessed claim
   can set its cutoffs; the spacing floor does not apply in test mode,
   where `seed` delivers nothing, so the GetNoise k-sweep still works.
-- `make entropy-test` compares the RTL with a Python model of the health
-  logic on generated faults and, with `ENTROPY_DATA=…` and
-  `ENTROPY_RESTART=…`, on board captures: D18 and D19 raise no failure at
-  the reset cutoffs and end running; the restart rows, replayed row by
-  row, raise none either, but each row is shorter than a start-up test.
-  [Section 9 of the assessment](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)
+- Evidence: `make entropy-test` compares the RTL with a Python model of the
+  health logic on generated faults and on the board captures, which raise
+  no failure at the reset cutoffs. On the board, every interval read
+  between resets ended with zero failures (about 2.4 hours), failures
+  induced with stricter cutoffs show the alarm, the strikes, `DEAD`,
+  forgiveness and the limits (`entropy_fault.py`), and the operational
+  restart data passes `ea_restart` (`seed_restart.py`). The non-IID
+  estimate at k = 16 is 3.556 bits per sample.
+  [Section 5 of the assessment](sp800-90b-assessment.md#5-health-tests-4)
   has the cutoffs, the rule for intermittent and persistent failures and
   the evidence.
-- *2026-11-20, on the board* ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)):
-  every interval read between resets (`mentropystat`), about 100 minutes
-  in total, ended with zero failures on the real rings, and none in replay of that
-  day's k = 16 and restart captures; the non-IID estimate at k = 16 was
-  3.556 bits per sample. Two rings run at other frequencies relative to the
-  clock than in `85f07e58…`: the characterisation is per bitstream. An
-  hours-long reading is still open.
-- Not done: the lock in the boot chain; the operational restart data; the
-  data over the operating range; the physical rationale.
+- Not done: each ring's own jitter; the spacing and lock for a claim; the
+  data over the operating range.
 
-## 3. Order
+## 3. Out of scope
 
-Z1 and Z2 belong in one bitstream. Z3's simulation part can start before
-it; Z4 can start on the current image. Z5 is independent of the others but
-changes the boot ROM, so combine it with the next image build.
-
-## 4. Out of scope
-
-- An entropy claim: no figure for `seed` follows from these measurements
-  without an independent assessment, and Linux keeps
-  `random.trust_cpu=off` until then.
-- Changing the production defaults (k, the cutoffs, P) before the
-  characterisation is done.
+- A validated entropy claim: a claim in the
+  [assessment](sp800-90b-assessment.md) would be a self-assessment for one
+  board, bitstream and range, and Linux keeps `random.trust_cpu=off`.

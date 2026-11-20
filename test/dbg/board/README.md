@@ -7,28 +7,18 @@ campaign's artifact directory so that they are version-controlled. Logs,
 traces and results are written to an artifact directory under `_build`,
 never here.
 
-**Status, 2026-11-17.** The scripts were changed after the campaign: paths
-and addresses are configurable, every phase returns an exit status, and the
-autoexec case counts executions. Those changes passed the offline self-test
-and, for the autoexec case, a rehearsal on the simulated target.
-
-Also on 2026-11-17 the boot ROM grew to 2 MiB, which moved the scratch SRAM,
-and the default debug image began to start in the authentication island. The
-phases now take the scratch addresses and the reset vector from the kind of
-image under test ([Image kinds](#image-kinds)).
-
-**Status, 2026-11-18.** Every script ran on the board with the `rom2m-auth`
-image `d7ff00dc…`, in the order of
-[the board test plan](../../../dbg/BOARD_TEST_PLAN.md), which also gives the
-boot files, the switch positions and what to try when a stage fails. All
-phases pass except translation (the known OpenOCD defect); see the
-[2026-11-18 record](../../../dbg/BOARD_ACCEPTANCE-2026-11-18.md). Two limits
-were too short for this board, where an SSH connection takes 30 to 55 s and
-a reboot about 440 s: the SSH probe of `linux_reboot.py` (now
-`KARU_BOARD_SSH_TIMEOUT`, 180 s) and the evidence copy of
-`post_linux_host.py` (now 900 s). The reboot and boot waits now default to
-900 s. Ask for the reset button by its label, `CPU_RESET`: PROG clears the
-FPGA's configuration.
+**Status.** Every script runs on the board with the `rom2m-auth` debug
+image, in the order of [the board test plan](../../../dbg/BOARD_TEST_PLAN.md),
+which also gives the boot files, the switch positions and what to try when
+a stage fails. All phases pass except translation (the known OpenOCD
+defect); the latest record is
+[2026-11-20](../../../dbg/BOARD_ACCEPTANCE-2026-11-20.md). The phases take
+the scratch addresses and the reset vector from the kind of image under
+test ([Image kinds](#image-kinds)). On this board an SSH connection takes
+30 to 55 s and a reboot about 440 s; the defaults allow for it
+(`KARU_BOARD_SSH_TIMEOUT` 180 s, reboot and boot waits 900 s, the evidence
+copy of `post_linux_host.py` 900 s). Ask for the reset button by its label,
+`CPU_RESET`: PROG clears the FPGA's configuration.
 
 The phases halt and reset the hart and overwrite scratch SRAM and DRAM. Sync
 Linux first. Keep one hardware controller active: stop Vivado `hw_server`
@@ -163,8 +153,8 @@ a locked target is one of its passing checks.
 | 8 | `privilege_phase.py` | fixture | |
 | 9 | `crypto_aperture_phase.py` | fixture | |
 | 10 | `soak_phase.py` | fixture | `KARU_BOARD_SOAK_SECONDS` |
-| 10a | `getnoise_capture.py` | fixture; image built with `KARU_ZKR`; DIP switch 4 off; `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: raw noise capture, see [Noise capture](#noise-capture-getnoise). First run on the board 2026-11-18 |
-| 10b | `getnoise_burst.py` | fixture; image with the burst capture block (built after 2026-11-18; `d7ff00dc…` has none); DIP switch 4 off; `make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: bursts of raw noise at sampling periods of 1 to 256 clocks, see [Burst capture](#burst-capture). First run on the board 2026-11-19 |
+| 10a | `getnoise_capture.py` | fixture; image built with `KARU_ZKR`; DIP switch 4 off; `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: raw noise capture, see [Noise capture](#noise-capture-getnoise) |
+| 10b | `getnoise_burst.py` | fixture; image with the burst capture block; DIP switch 4 off; `make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: bursts of raw noise at sampling periods of 1 to 256 clocks, see [Burst capture](#burst-capture) |
 | 11 | `clean_detach_boot.py` | `linux-server.cfg` | Restart OpenOCD with `linux-server.cfg` first. Reset-halts, with the DPC at the image kind's reset vector, then reboots normally and shuts OpenOCD down |
 | 12 | `post_linux_host.py` | Linux over SSH | Copies and runs `post-linux.sh` on the board, collects evidence |
 | 13 | `complete_crypto.py` | Linux over SSH | Completes the OpenSSL matrix if step 12 timed out; gives the matrix verdict |
@@ -227,13 +217,9 @@ it the payload stops with status `TRAP` at its first CSR access. The
 capture runs in DRAM and is the same on every map, but the phase is a
 fixture phase and needs the fixture of the selected image kind. DIP switch
 4 off (on holds the source off, and the capture ends with status
-`TIMEOUT`). Leave the switch alone during a capture: in images built from
-2026-11-19 on, switching the source off ends the run (the loss flag), but
-in `d7ff00dc…` and `85f07e58…` the samples on either side of the gap are
-recorded as one run. The same holds for the burst block's sampling
-period (`0x1000_0848`): from 2026-11-19 on a write to it ends the run, in
-the two older images it changes the spacing silently. Nothing in the
-capture phases changes it within a run. The hart in the
+`TIMEOUT`). Switching the source off during a capture ends the run (the
+loss flag), and so does a write to the burst block's sampling period
+(`0x1000_0848`); nothing in the capture phases changes it within a run. The hart in the
 state `baremetal_phase.py` leaves it in: reset-halted, fixture loaded. The
 payload built into the artifact directory:
 `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`. A reset clears a
@@ -242,7 +228,7 @@ locked `mentropycfg`; nothing else does.
 **What it does.** The phase loads `getnoise.S` into DDR. For each k in
 `KARU_BOARD_GETNOISE_K` it writes the parameter block and runs the payload
 in M-mode until its `ebreak`. The payload saves `mentropycfg`, sets the
-interval to k-1 with the two cutoffs unchanged, enters test mode, and takes
+interval to k-1 with the other fields unchanged, enters test mode, and takes
 one symbol per `csrrw` until it has the requested number. It then leaves
 test mode and writes `mentropycfg` back, on every path that changed them;
 a locked source, or one already in test mode, is refused untouched. While
@@ -371,17 +357,57 @@ never on a formula alone:
 | `--min-word-bits X` | The smaller of the word distribution's figure (99% bound) and the word predictor cap's lower end is at least X |
 | `--require-independent` | Nothing is flagged, coherence and shared wander included, and the capture is large enough to have flagged a correlation of `--max-undetected-phi` (0.05) |
 
-Before 2026-11-17 the per-lane verdict used the D = 1/2 bound alone and
-passed lanes whose bias made the threshold impossible; the word verdict
-used the distribution of single words alone; the independence verdict
-passed for want of data. The self-test keeps one case of each.
+The self-test keeps a case for each way a verdict could pass wrongly: a
+lane whose bias makes the threshold impossible, a word figure from the
+distribution of single words alone, and independence for want of data.
 
-**The capture loop keeps up at k = 1 on the board** (2026-11-18: 10^6
-symbols in one run, no losses). In simulation an idle poll takes about 32
+**The capture loop keeps up at k = 1 on the board** (10^6 symbols in one
+run, no losses). In simulation an idle poll takes about 32
 clocks, and the loop takes every symbol at 128 clocks per symbol (the
 self-test checks this; 64 clocks also worked when measured once). The board
 has 256 clocks per symbol at k = 1; there the loop polled about every 34
 clocks. The run lengths in the sidecar show it either way.
+
+## Operational restart data and induced failures
+
+Both need an image with `mentropystat` (the VCU118 image), lifecycle `OPEN`,
+the entropy source on (SW12 all off), `server.cfg`, and the fixtures of
+`make dbg-board-fixture dbg-seedcap-fixture`. Both reset the SoC, so read
+`mentropystat` first if the interval before them matters.
+
+**`seed_restart.py`** collects the operational restart data of SP 800-90B
+section 3.1.4: `KARU_BOARD_SEEDRESTART_COUNT` (1,000) restarts, and after
+each the first `KARU_BOARD_SEEDRESTART_SAMPLES` (1,000) samples the source
+delivers through `seed`. A restart is a debugger reset (`ndmreset`), which
+resets the hart, the SoC and the entropy source and gates the rings off;
+the hart is held by `haltreq` and halts before its first instruction (the
+phase checks DPC), so the boot ROM never runs. Through raw DMI writes the
+phase then points DPC at `seedcap.S`, already in DRAM, and resumes, about
+6 ms after the reset is released. `seedcap.S` reads `seed` in the reset
+configuration, without test mode, and stores the words from the first
+`ES16` on. It shows that it was in time (it polled `BIST` before the first
+`ES16`) and that it kept up (its longest gap between polls is under one
+word); a restart that fails either check, or ends in a health-test alarm,
+is recorded with its reason and repeated. Output: `seed-restart-rows.bin`
+(one 4-bit sample per byte, row after row, the first sample of a word from
+its bits [15:12]) and `seed-restart.json`. Run `ea_restart` on the rows.
+`make dbg-seedcap-test` checks the payload on the simulation bench: it
+stores exactly the first samples after the start-up test, in order, and
+reports a late start, `DEAD` and an alarm.
+
+**`entropy_fault.py`** shows the failure handling on the real rings.
+Software may only make the tests stricter, and a cutoff far below the reset
+value makes the real source fail that test within seconds. The cases, each
+from a debugger reset (`KARU_BOARD_FAULT_CASES` selects some):
+`startup` (a start-up failure is fatal at once and raises no alarm),
+`each` (each of the four tests fires and `mentropystat` names it, with the
+lanes and lags), `strikes` (the alarm stays until one `seed` access has
+seen it, a `mentropycfg` write clears neither the alarm nor the strike, the
+third running failure is fatal and `seed` reports `DEAD`), `forgive` (2^24
+clean samples, about 15 minutes, clear a strike) and `limits` (weaker
+values are replaced by the build's limits, the spacing outside test mode
+stays at k = 16, measured through `seed`, and the lock freezes the CSR until
+reset). It leaves the hart halted after a reset.
 
 ## Burst capture
 
@@ -393,9 +419,9 @@ payload copies each burst out. It ran on the board on 2026-11-19, eight
 runs ([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2));
 `make dbg-getnoise-burst-test` is its simulation test.
 
-**Needs.** An image with the capture block: `KARU_ZKR`, built from a tree
-after 2026-11-18. Bitstream `d7ff00dc…` has no such block, and the phase
-then stops at its first case with "no capture block in this image". DIP
+**Needs.** An image with the capture block (`KARU_ZKR`); in an image
+without it the phase stops at its first case with "no capture block in
+this image". DIP
 switch 4 off. The hart reset-halted with the fixture loaded, as for
 `getnoise_capture.py`. The payload built into the artifact directory:
 `make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`.
@@ -443,31 +469,30 @@ OpenOCD's `riscv authdata_read` and `riscv authdata_write`. `authlib.py` is
 the client: the mailbox operations, the CHALLENGE and RESPONSE frames and
 the response of the algorithm that the challenge names.
 
-**Algorithm.** Images built from 2026-11-18 on verify `0x04`, a SHA3-256
+**Algorithm.** The VCU118 image verifies `0x04`, a SHA3-256
 shared-secret MAC (contract §5.1). The key is the file
 `_build/vcu118_auth_key.txt` (64 hex digits) that the image build generates
 once and never overwrites; point `KARU_BOARD_AUTH_KEY` at it when the phase
 runs elsewhere. Keep that file, and the bitstream, to yourself: anyone
 with either can authenticate. `KARU_BOARD_AUTH_ALG=SHA3` makes the phase
-stop if the board still runs an image with the older `TEST` ROM.
+stop if the board runs an image with a `TEST` ROM.
 
 **The TEST algorithm protects nothing.** It is the contract's
-simulation-only algorithm `0x80`, which the board images before 2026-11-18
-and the simulation ROM use: the response is a fold of the challenge
+simulation-only algorithm `0x80`, which the simulation ROM uses: the response is a fold of the challenge
 with a key that is printed in the ROM source and in `authlib.py`. Anyone
 can compute it. These cases show that the mechanism works; they say nothing
 about keeping an attacker out, and an image with this ROM is not protected
 in lifecycle `AUTH`. The production algorithm is decision D3 of the plan.
 
-**Every case passed on the board on 2026-11-18**
-([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). It is also
+**On the board** with the current image, `locked`, `authenticate`,
+`wrong-response`, `replay`, `expiry` and `entropy-off` pass with `0x04`
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-20.md)); `open`,
+`fresh-nonce`, `no-hold`, `disabled`, `reboot` and `reboot-locked` last ran
+on the board with a `TEST` ROM
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). Every case is also
 rehearsed on the simulated target with the same ROM source
 (`make dbg-board-auth-rehearsal-test`, and with the `0x04` build and a
-public test key `make dbg-board-auth-sha3-rehearsal-test`). The `0x04` ROM
-ran on the board on 2026-11-19 for `locked`, `authenticate`,
-`wrong-response`, `replay`, `expiry` and `entropy-off`
-([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-19.md#authentication-stage-e));
-the other cases were not rerun with it.
+public test key `make dbg-board-auth-sha3-rehearsal-test`).
 
 **How a case is run.** One case per run, because DIP switch SW12 is read
 only at the power-on reset of the authentication block, which on the board
@@ -485,6 +510,12 @@ is the CPU reset button (or reconfiguration):
 4. `KARU_BOARD_AUTH_CASE=<case> python3 test/dbg/board/auth_phase.py`. With
    the hart held (switch 3 on) there is no hurry; once a case has sent its
    REQUEST the ROM's window is open for 2^30 clock cycles, about 14 s.
+
+Step 2 is left out for three cases: `authenticate` may follow `locked` on
+the same reset; `reboot` runs in the power cycle of a passed
+`authenticate`, and `reboot-locked` in that of `no-hold`, both once Linux
+is up, with only a fresh OpenOCD (step 3), which does not reset the board.
+A reset there would clear the state they check.
 
 Each case first compares what the Debug Module shows (lifecycle, grant,
 window state) with what it needs, and stops with a message that names the
@@ -533,7 +564,7 @@ response it sent. Keep one artifact directory for the whole series.
 **What the rehearsal covers, and what only the board showed.** On the
 simulated target every case except the two reboot cases runs, and with it
 the exchange through pristine OpenOCD against the real ROM source. Not
-covered there, and shown only by the 2026-11-18 board run:
+covered there, and shown only on the board:
 
 - the BSCAN transport and `auth-server.cfg` on the board (the file is only
   parsed, with a dummy adapter);
@@ -584,7 +615,11 @@ a defect that it should catch.
 | `test_getnoise_burst.py`, `test_burst_analysis.py` | Self-tests of the burst capture and of the analysis of bursts, without a board |
 | `getnoise_analyze.py` | Offline analysis of the captures |
 | `test_getnoise.py` | Self-test of the three without a board |
-| `getnoise_restart.py` | Delayed warm-restart data for SP 800-90B section 3.1.4 (1,000 restarts of 1,000 symbols) |
+| `getnoise_restart.py` | Delayed warm-restart data for SP 800-90B section 3.1.4 (1,000 restarts of 1,000 symbols, through GetNoise) |
+| `seedcap.S`, `seed_restart.py` | Operational restart data for SP 800-90B section 3.1.4: after each debugger reset, the first 1,000 samples that `seed` delivers ([below](#operational-restart-data-and-induced-failures)) |
+| `entropy_fault.py` | Induced health-test failures on the real rings, by stricter cutoffs ([below](#operational-restart-data-and-induced-failures)) |
+| `entropy_claim.py` | The bound of the SP 800-90B argument (per-sample min-entropy for a credited share of each ring's jitter, worst case over the previous phase) and `--pairs`, the covariance of the rings' phase increments from the burst captures, with `--self-test` ([assessment, section 1](../../../doc/sp800-90b-assessment.md#1-entropy-claim-none-yet)) |
+| `test_seedcap.py` | Self-test of `seedcap.S` on the Zkr simulation bench (`make dbg-seedcap-test`) |
 | `sp80090b_health.py` | Replay of captures through the per-lane tests of the images up to `85f07e58…`, and the section 4.5 criteria for them |
 | `entropy_health.py` | Python copy of the health tests of the current `rtl/karu_entropy.v`: cutoffs for a claim and a false-alarm probability, replay of captures, the section 4.5 criteria and the failure modes. `make entropy-test` compares the RTL with it |
 

@@ -1,8 +1,7 @@
 # FPGA — VCU118 / xcvu9p
 
 `karu64` targets the **Xilinx VCU118** board (part `xcvu9p-flga2104-2L-e`,
-Virtex UltraScale+ VU9P), built with **Vivado 2026.1** (previously 2025.2.1; the
-full-vector ROM bit was last reproduced on 2026.1). The part provides
+Virtex UltraScale+ VU9P), built with **Vivado 2026.1**. The part provides
 6840 DSP48E2 units and 2160 36-Kib block-RAM tiles. The full-vector ROM
 configuration targets a 75 MHz core clock.
 
@@ -17,141 +16,60 @@ There are two SoC flavours, sharing the same core (`rtl/`) verbatim:
 For the core's micro-architecture see [architecture.md](architecture.md); for
 simulating the SoC see [flows.md](flows.md).
 
-## Debug images
+## Debug image
 
-The notes are newest first. The text after them describes the October 29
-image.
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg` builds the VCU118 debug image with
+the default define list `KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR`, at 75 MHz.
+It has:
 
-**2026-11-20 image (board-tested 2026-11-20, [record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).** Bitstream `ddb168e1…096aad` changes
-three things against `85f07e58…`: the entropy block's health tests are the
-redesigned ones (the two SP 800-90B tests on the 4-bit sample, lane tests
-at lags 1 to 4, a latched alarm, strikes, and the read-only `mentropystat`
-CSR; [assessment, section 9](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19));
-`mdbgrng` (`0x7C3`) is gone; and the authentication window has a hardware
-limit of 2³¹ clocks, 28.6 s, behind the ROM's own 14.3 s. It meets 75 MHz
-(setup +0.008 ns, hold +0.011 ns, no DRC errors;
-[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)). Its boot ROM is the
-accepted image's: fu-boot, OpenSBI, the device tree, the boot command and
-the island ROM are byte-identical to those of `85f07e58…`, and U-Boot
-differs in the 5 bytes of its build date. The
-[board test plan, section 8](../dbg/BOARD_TEST_PLAN.md) has what to expect.
-A first build of the same RTL on 2026-11-19, `f3493b17…`, had fu-boot and
-U-Boot
-from a Linux-target compiler and was replaced before it reached a board
-(see the toolchain paragraph below and the measurements).
+- full debug: autoexec, two address triggers and SBA, reached through the
+  USER4 BSCAN tunnel ([karudbg integration](#optional-karudbg-integration));
+- debug authentication: the lifecycle and the boot hold on DIP switch
+  SW12, the window ROM in the boot island, a SHA3-256 MAC under a key shared
+  with the debugger host (algorithm `0x04`), and a hardware limit on the
+  window of 2³¹ clocks (28.6 s) behind the ROM's own 2³⁰ (14.3 s);
+- Zkr: the `seed` CSR and the ring-oscillator entropy source, with
+  SP 800-90B's health tests on the 4-bit sample and lane tests beside them,
+  `mnoise`, `mentropycfg` and `mentropystat`, the burst capture for
+  characterisation and the die temperature and supply readout
+  ([the DDR4 SoC](#the-ddr4-soc-linux-target));
+- the 2 MiB boot ROM: fu-boot, OpenSBI v1.9, U-Boot v2026.10 with the Zkr
+  time-out patch, the `rva23s64-zkr-ddr` device tree `784e2762…` and the
+  lab's boot command;
+- the software reboot.
 
-**2026-11-18 evening image (board-tested 2026-11-19, [record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).** Bitstream
-`85f07e58…f2639a` adds to `d7ff00dc…` a burst capture for the entropy
-source's characterisation, with a sampling period that can be set in test
-mode; a die temperature and supply readout; debug authentication with
-SHA3-256 and a shared secret (algorithm `0x04`) in place of the
-simulation-only `TEST`; and U-Boot v2026.10 in the boot ROM, with a Zkr
-random-number driver that times out. All of them are described under
-[the DDR4 SoC](#the-ddr4-soc-linux-target) and in the
-[Zkr follow-up plan](zkr-followup-plan.md). It meets 75 MHz (setup
-+0.002 ns, hold +0.011 ns, no DRC errors;
-[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-18-evening)).
-It was board-tested on 2026-11-19 following section 7 of
-[the board test plan](../dbg/BOARD_TEST_PLAN.md) and accepted with
-documented exceptions ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).
-The board results below are for `d7ff00dc…`.
+The current bitstream is `ddb168e1…096aad`. It meets 75 MHz (setup
++0.008 ns, hold +0.011 ns, pulse width +0.005 ns; no DRC errors) and uses
+377,901 LUTs (32.0%), 91,757 registers, 451.5 block-RAM tiles and 29 DSPs
+([measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)). It is
+**board-tested** and accepted with documented exceptions
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)): OpenOCD's software
+address translation fails with known walker results, and the OpenOCD and
+boot/detach findings are in [the campaign record](../dbg/BOARD_ACCEPTANCE.md).
+[The board test plan](../dbg/BOARD_TEST_PLAN.md) has the procedure. The
+preceding accepted image, `85f07e58…`, is kept with its bundle in
+`_build/fpga_archive/2026-11-18-85f07e58/` on the build host.
 
-**2026-11-18 update.** The debug image was rebuilt with Zkr, debug
-authentication, the 2 MiB boot ROM and the SW12 straps, and meets 75 MHz:
-`d7ff00dc…3e80` (setup +0.051 ns, hold +0.011 ns, no DRC errors). Its ROM
-holds OpenSBI v1.9 and the `rva23s64-zkr-ddr` device tree `784e2762…`. It
-**passed the board session of 2026-11-18**
-([the board test plan](../dbg/BOARD_TEST_PLAN.md), stages A to F): boot
-through the island ROM, Zkr discovery in Linux, software reboot, the debug
-campaign on the 2 MiB map, raw-noise capture, Linux and KVM acceptance and
-every authentication case; translation fails with the known OpenOCD walker
-results. See the [acceptance record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)
-and [measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-18).
+**Programming bundle.** `make vcu118-program-bundle` packs
+`_build/vcu118_programming.tgz`, mode 600, from the build outputs:
 
-**2026-11-17 update.** The debug image was rebuilt again and meets 75 MHz:
-`d5e603cd…fd9b2`, with the UART receive fixes, the software reboot and
-OpenSBI v1.9 in the boot ROM. It was never programmed into a board; the
-November 18 image above supersedes it. See
-[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-17).
+- `_build/vcu118_ddr.bit` and `_build/vcu118_ddr.ltx`;
+- `_build/vcu118_rom_manifest.txt`;
+- `_build/vcu118_rom_board.dtb`, the ROM's device tree, to be served as
+  `board.dtb`;
+- `_build/vcu118_auth_record.json` and `_build/vcu118_auth_key.txt`.
 
-**2026-11-15 update.** The debug image was rebuilt from the security-fix
-working tree and meets 75 MHz; see
-[measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-15). The rest of
-this section describes the October 29 image, which is archived with its
-`vcu118_build_inputs.json` and `vcu118_full_verification.json` in
-`_build/fpga_archive/2026-10-29/`. The November 15 image (`0b994847…78b22`)
-subsequently passed the November 16 physical debug campaign, a ten-minute
-soak, post-detach Linux acceptance and both KVM guests. See
-[board acceptance](../dbg/BOARD_ACCEPTANCE.md) for the tool findings and scope.
+The key makes the bundle secret: whoever has it, or the bitstream, can
+unlock the board's debugger. The bundle of `ddb168e1…` has SHA-256
+`88dce485…7342`. Extract it from the repository root on the programming
+host so the `_build/...` paths remain intact. The ROM manifest is read back
+from the packed image, and its OpenSBI, U-Boot, device tree and boot
+command are compared byte for byte with the build inputs. The lab settings
+are server `192.168.42.1`, board `192.168.42.10`, TFTP `Image`/`board.dtb`
+and NFS root `192.168.42.1:/srv/nfs/karudeb,vers=3,tcp,nolock`. Routed
+reports are under `_build/fpga_rpt/`.
 
-The October 30 registered-SBA-pause RTL follow-up has not been rebuilt into
-the October 29 image. The bitstream, bundle and their recorded 75 MHz timing remain
-unchanged; their input manifest describes the October 29 source snapshot,
-rather than the newer working tree. See the
-[timing follow-up](../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30).
-
-On that date the standard `vcu118-ddr-sgmii-rom-rva23s64-dbg` build contained
-`KARU_DBG_FULL`: autoexec, two address triggers and SBA. (Since 2026-11-17 the
-default also has `KARU_DBG_AUTH` and `KARU_ZKR`; see
-[the DDR4 SoC notes](#the-ddr4-soc-linux-target) below.) It completed from the
-review-corrected working tree at HEAD `aa7fbe4`, including uncommitted RTL;
-`_build/vcu118_build_inputs.json` records all 149 production/boot input hashes.
-The companion karudeb commit is `a3e6b70`.
-
-Vivado 2026.1 meets routed timing at 75 MHz: whole-design setup/hold
-+0.010/+0.011 ns, CPU setup/hold +0.048/+0.011 ns, minimum pulse-width slack
-+0.005 ns, 16/16 bus-skew constraints met and zero bitstream DRC errors.
-The design uses 375,881 LUTs, 89,881 registers, 317.5 BRAM tiles and 29 DSPs.
-The CPU's tightest path is vector arithmetic `vs1_q[3]` to FP-result
-`f_relem_q[23]`. The separate 200 MHz mapped-cell target remains open; see
-[the complete measurements](../dbg/MEASUREMENTS.md).
-
-`_build/vcu118_ddr.bit` has SHA-256
-`8c8ea6bd481b782f8c5f69699ca98de3e91e9f6c5fd63806db6a3eb450b14592`.
-The verified `_build/vcu118_programming.tgz` is 14,208,769 bytes, SHA-256
-`279d3319b8b4365481e786e711bf5317f2ff28069c3e66711d9da18216b01137`.
-It contains exactly these paths:
-
-- `_build/vcu118_ddr.bit`
-- `_build/vcu118_ddr.ltx`
-- `_build/vcu118_rom_manifest.txt`
-- `_build/vcu118_rom_board.dtb`
-
-`make vcu118-program-bundle` reproduces the package from the current standard
-build outputs. Extract it from the repository root on the programming host so
-the `_build/...` paths remain intact. The ROM manifest is read back from the
-packed image. Its OpenSBI, U-Boot, profile DTB and 644-byte boot command were
-compared byte for byte with the build inputs. The lab settings remain server
-`192.168.42.1`, board `192.168.42.10`, TFTP `Image`/`board.dtb` and NFS root
-`192.168.42.1:/srv/nfs/karudeb,vers=3,tcp,nolock`. Serve the extracted DTB,
-whose SHA-256 is
-`d617ba564798245c27343e16c86e5d76ea65ed534cc1dfcd5044f74ab3b0cec9`.
-Routed reports are under `_build/fpga_rpt/`; final source/ROM/timing/package
-checks are in `_build/vcu118_full_verification.json`.
-
-The October 29 image itself was never programmed into a board. Its
-November 15 rebuild went through the acceptance that was pending here
-(physical USER4 debugging, watchpoints, autoexec, SBA RAM and MMIO, detach
-and a normal karudeb boot) on November 16, with the pinned pristine
-OpenOCD, and the November 18 image did again; see the notes above and the
-[hardware acceptance steps](#optional-karudbg-integration).
-
-## Previous base-debug image — 2026-10-27
-
-The earlier base-only image is retained as
-`_build/vcu118_ddr.base-2026-10-27.bit`, SHA-256
-`bc5e3d3d1639d02c1657c44759d46fa6afd2e833f4811b9621aca66bab97571c`,
-with its source/timing record in
-`_build/vcu118_build_inputs.base-2026-10-27.json`. It met 75 MHz routed timing
-but had no autoexec, triggers or SBA, and was not board-tested. The new snapshot uses
-12.66% more LUTs than its 333,645. The expanded tool/configuration
-comparison finds the same Vivado build and implementation directives, with
-`KARU_DBG_FULL` added; the RTL checkpoint and rebuilt U-Boot binary also differ.
-The cause of the resource increase has not been isolated. This is not a
-same-RTL FPGA feature comparison, and is separate from the controlled Yosys
-area increments.
-
-## Last board-validated profile image — 2026-10-07
+## Profile image (non-debug)
 
 The RVA23S64 DDR/SGMII ROM image `28085356…abbd7` contains the element-group
 `vkeccak.vi` (`99078e3`, branch `dev-keccak`). Vivado 2026.1 closed routed
@@ -172,23 +90,6 @@ The NFS root must carry karudeb `b3b6abf` or later software (older `vl=25`
 binaries take SIGILL on this image). See also
 [building on one host, booting from another](#building-on-one-host-booting-from-another).
 
-## Previous validated profile image — 2026-09-25
-
-The RVA23S64 DDR/SGMII ROM image `b11d5efb…3b809` contains the 1W2R FP
-register file (`7c2563e`). Vivado 2026.1 closed routed timing at 75 MHz:
-whole-design setup/hold 0.000/+0.012 ns, `cpu_clk` +0.077/+0.012 ns,
-14/14 bus-skew constraints met and zero bitstream DRC errors. The routed
-reports remain on the build host; the programming host received the `.bit`
-and `.ltx` bundle.
-
-The image was programmed on September 25. It boots Linux 7.2.6-zvk from NFS
-and passes `board_accept.sh` (memory, cache, crypto, KVM API and profile checks).
-An FP probe completed. The September 22
-reference image `03eeb088…e73d2` passed additional KVM guest, OpenSSL and
-vector ABI tests, recorded separately by image hash. See
-[diagnostics and result hashes](release-diagnostics-2026-09-14.md) and the
-[matching boot selection](#opt-in-rva23s64-boot-selection).
-
 ## Tool environment
 
 Use the wrapper to load Vivado's settings for one command. It keeps bundled
@@ -204,9 +105,8 @@ The boot/ROM builds compile bare-metal fu-boot, and U-Boot, with the
 `XCHAIN` toolchain. Its default is `riscv64-unknown-elf-` by absolute path,
 `$RISCV/bin/riscv64-unknown-elf-`, when `$RISCV` has that compiler, and
 the name on `PATH` otherwise. The absolute path matters: a name on `PATH`
-does not say which compiler runs (the 2026-11-19 build `f3493b17…` got a
-Linux-target GCC through a link of that name; see
-[measurements](../dbg/MEASUREMENTS.md)). Packing a boot ROM runs
+does not say which compiler runs (a link of that name once gave a build a
+Linux-target GCC; see [measurements](../dbg/MEASUREMENTS.md)). Packing a boot ROM runs
 `make toolchain-check`, which prints the compiler's path, its
 `-dumpmachine` target and its version, and refuses a compiler that does
 not target what its name says. The same line is written to
@@ -352,7 +252,7 @@ instruction-memory latency.
   vendored LiteX core + the `karu_eth` wishbone↔AXI bridge on the `0x1100_0000`
   MMIO window), driving SGMII to the on-board DP83867 PHY. The upstream
   `liteeth` driver and a U-Boot S-mode payload complete the netboot
-  path (v2025.01 in every image built so far; v2026.10 from the next one).
+  path (U-Boot v2026.10).
 - **Hands-off boot ROM:** `flow/boot/vcu118_fuboot.c` (fu-boot) is baked into a
   2 MiB boot ROM together with OpenSBI, U-Boot, and the control DTB. fu-boot
   copies each blob to DRAM and chains OpenSBI → U-Boot → netboot — no JTAG/host
@@ -363,9 +263,8 @@ instruction-memory latency.
 
   The ROM is packed by `flow/build_fuboot_rom.sh` at the offsets defined in
   the Makefile (`FUBOOT_*_OFF`); the same offsets are baked into fu-boot via the
-  generated `flow/boot/fuboot_blobs.h`, so the two must agree exactly. Map since
-  2026-11-17 (the ROM was 1 MiB before, with OpenSBI at `0x10000`, U-Boot at
-  `0x60000` and the DTB at `0xFC000`); the core address is the offset plus `0x1000`:
+  generated `flow/boot/fuboot_blobs.h`, so the two must agree exactly. The
+  map; the core address is the offset plus `0x1000`:
 
   | Blob    | ROM offset  | Region   | copied by fu-boot to |
   |---------|-------------|----------|----------------------|
@@ -386,17 +285,14 @@ instruction-memory latency.
   end, to `0x201000`. The size is one constant, `KARU_BOOT_ROM_PAGES` in
   `rtl/karu_bootmap.vh`, shared by the core's access permissions
   (`rtl/karu_pma.vh`), the boot memory and the bus decode. A full 2 MiB
-  ROM would be 512 of the device's 2,160 block RAMs. The image built on
-  2026-11-18 uses 445.5 block-RAM tiles in all, 128 more than the 1 MiB
-  image's 317.5: that is 384 for the ROM, which is what remains when the two
-  256 KiB stretches of the layout that hold nothing (ROM offsets
-  `0x80000..0xFFFFF`, the unused upper part of the OpenSBI region) are
-  left out. That image meets timing with the doubled address fan-out
-  (`cpu_clk` setup +0.198 ns).
+  ROM would be 512 of the device's 2,160 block RAMs; the ROM takes 384,
+  which is what remains when the two 256 KiB stretches of the layout that
+  hold nothing (ROM offsets `0x80000..0xFFFFF`, the unused upper part of
+  the OpenSBI region) are left out. The debug image uses 451.5 block-RAM
+  tiles in all.
 
   Build the companion firmware with `make -C ../karudeb karu-opensbi` when
-  needed (OpenSBI v1.9 since 2026-11-17; 277,712 bytes of the 956 KiB
-  region). The vector ROM uses `build/karu64/opensbi/fw_jump.bin` and
+  needed (OpenSBI v1.9; 277,712 bytes of the 956 KiB region). The vector ROM uses `build/karu64/opensbi/fw_jump.bin` and
   `build/karu64/karu64-zvk-ddr.dtb` from that checkout, the profile ROM
   `build/karu64/karu64-rva23s64-ddr.dtb`, and the debug image, which is
   built with `KARU_ZKR`, `build/karu64/karu64-rva23s64-zkr-ddr.dtb`; do not
@@ -418,9 +314,8 @@ instruction-memory latency.
   staged files in `../karudeb` (e.g. `TFTP_SERVER=… NFS_SERVER=… GUEST_IP=…
   DTB_VARIANT=zvk-ddr ./scripts/stage-karu64-tftp.sh`) so the baked bootcmd and the
   control DTB agree on the network before building the ROM bit.
-- **Software reboot (added 2026-11-17; on the board since 2026-11-18 in
-  debug image `d7ff00dc…3e80`, eight reboots each through the boot ROM and
-  OpenSBI):**
+- **Software reboot (board-tested; each reboot goes through the boot ROM
+  and OpenSBI):**
   the SoC has a system-control register at `0x1000_0800`, in the upper half
   of the UART's page. A privileged 32-bit write of `0x7777` resets the hart,
   the peripherals and both sides of the DDR AXI path, and the boot ROM runs
@@ -457,7 +352,7 @@ instruction-memory latency.
     check to run: it requires Linux to restart and, from the UART capture,
     the boot ROM and OpenSBI banners in between, since a restart alone would
     not show a hardware reset.
-- **Straps on DIP switch SW12 (added 2026-11-17).** The four GPIO DIP
+- **Straps on DIP switch SW12.** The four GPIO DIP
   switches are read as straps (`dip_i[3:0]`, position 1 is bit 0, on is 1).
   With all four off the image behaves as one without the features they
   control, so each is also the way to take a feature out of the boot if it
@@ -476,9 +371,8 @@ instruction-memory latency.
   useful first control, because the boot then does not depend on the
   entropy source at all. With positions 1 and 3 on the hart is held in
   reset until a debugger asks, by design: that is not a hang.
-- **Entropy source and Zkr (added 2026-11-17; `KARU_ZKR`; on the board
-  since 2026-11-18).** The core gains the `seed` CSR, `mseccfg` with `SSEED` and
-  `USEED`, and two custom M-mode CSRs. Behind them:
+- **Entropy source and Zkr (`KARU_ZKR`).** The core gains the `seed` CSR,
+  `mseccfg` with `SSEED` and `USEED`, and three custom M-mode CSRs. Behind them:
   - `flow/fpga/karu_rosc_rng.v`: four free-running inverter rings (3, 5, 7
     and 9 LUTs), each sampled by one flip-flop; one ring is one raw bit.
     Nothing combines or whitens bits. Its ports are those of OpenTitan's raw
@@ -489,35 +383,32 @@ instruction-memory latency.
     warnings and `check_timing` lists four loops. They are the only loops
     allowed. The flow runs the `LUTLP-1` check right after synthesis and
     stops on any other loop (`KARU_LOOP_CHECK` in the log), because
-    `write_bitstream` would refuse the design two hours later. That is how
-    the first build of this image ended: the value read from `seed`
-    depended combinationally on the value being written to another
-    entropy CSR, which closes a loop through every CSR set and clear
-    instruction. `make zkr-loop-test` now checks that without Vivado.
+    `write_bitstream` would refuse the design two hours later. A loop can
+    also come through the CSR path: if the value read from `seed` depended
+    combinationally on a value being written to another entropy CSR, every
+    CSR set and clear instruction would close one. `make zkr-loop-test`
+    checks that without Vivado.
   - `rtl/karu_entropy.v`: keeps every k-th symbol, runs the health tests,
     packs four symbols into a 16-bit word and buffers eight words. A `seed`
     word is 16 raw bits. Words are released four at a time, because Linux
     and OpenSBI give up after 100 and 1,000 polls. With the default
     parameters the first word is available 56.8 ms after reset at 75 MHz.
-    In the images up to `85f07e58…` the health tests are a repetition count
-    and an adaptive proportion test on each lane. **Since image
-    `ddb168e1…` (2026-11-20; on the board that day, zero failures in every interval read; induced failures in simulation only):** the two SP 800-90B tests on the
-    4-bit symbol as well, a lane repetition count at lags 1 to 4, a `BIST`
-    alarm that stays until a `seed` access has seen it, and a strike count
-    that ends a recurring failure in `DEAD`
-    ([assessment, section 9](sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)).
-  - `mentropycfg` (`0x7C9`) holds k, the test cutoffs and a lock;
-    `mnoise` (`0x7C8`) is the GetNoise test interface of the Zkr rationale
+    The health tests are SP 800-90B's repetition count and adaptive
+    proportion test (W = 512) on the 4-bit symbol and, per lane, a
+    repetition count at lags 1 to 4 and an adaptive proportion test
+    (W = 1024). A running failure raises a `BIST` alarm that stays until a
+    `seed` access has seen it, and a strike count ends a recurring failure
+    in `DEAD` ([SP 800-90B assessment](sp800-90b-assessment.md)).
+  - `mentropycfg` (`0x7C9`) holds k, the four cutoffs, the two failure
+    numbers and a lock; its reset values are the weakest it accepts.
+    `mentropystat` (`0x7CA`, read-only) reports the state, the alarm, the
+    strikes and the last failure. `mnoise` (`0x7C8`) is the GetNoise test
+    interface of the Zkr rationale
     and returns raw symbols with a loss flag while `seed` is held in `BIST`.
     It also works on a source that has failed its tests for good (`seed`
-    then reports `DEAD`), which is when raw samples are most needed.
-    In the tree since 2026-11-19: `mentropycfg` also holds the two symbol
-    cutoffs and the two failure numbers, its reset values are the weakest
-    it accepts, and `mentropystat` (`0x7CA`, read-only) reports the state,
-    the alarm, the strikes and the last failure. The header of
-    `rtl/karu_entropy.v` has the fields.
-  - `flow/fpga/karu_noise_burst.v` (added 2026-11-18, after the board
-    session: **not in bitstream `d7ff00dc…`**): a measurement aid for
+    then reports `DEAD`), which is when raw samples are most needed. The
+    header of `rtl/karu_entropy.v` has the fields.
+  - `flow/fpga/karu_noise_burst.v`: a measurement aid for
     characterising the rings, which `mnoise` is too slow for. In the
     entropy block's test mode, and only then, it sets the sampling period
     of the rings, 1 to 256 clocks, and records bursts of 32,768
@@ -542,13 +433,14 @@ instruction-memory latency.
     symbol is ever delivered as entropy. Test mode is entered through
     `mnoise`, from M-mode or the debugger. S-mode can reach the registers,
     as it can the reset register, but cannot enter test mode.
-  The parameters are provisional: **no entropy figure has been
-  established.** The first raw captures (2026-11-18,
-  [record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md#noise-capture)) show the
-  lanes' bias and no detectable dependence, but at this sampling rate they
-  cannot fit the noise model. The
-  per-lane model is that of arXiv:2102.02196; whether the four lanes are
-  independent has to be measured on the routed design through `mnoise`.
+  **No min-entropy is claimed** ([SP 800-90B assessment](sp800-90b-assessment.md)):
+  most of the jitter the board shows is common to the four rings, and
+  each ring's own jitter has not been measured.
+  The per-lane model is that of arXiv:2102.02196. Burst captures fit it to
+  each lane, with a jitter variance that grows faster than the model's
+  white noise, and the ring frequencies relative to the clock depend on
+  the bitstream's routing
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#noise-capture-and-entropy-estimates)).
   The device tree with `zkr` is karudeb's `rva23s64-zkr-ddr` variant, and
   the build refuses a tree that disagrees with the image. If Linux should
   leave `seed` alone, serve the plain `rva23s64-ddr` `board.dtb`.
@@ -556,20 +448,19 @@ instruction-memory latency.
   `0b994847…` and older): Linux would execute a `seed` access that traps,
   early in boot and with no fallback. The `zkr` variant's boot command
   carries `random.trust_cpu=off`, so Linux mixes what `seed` delivers into
-  its pool without counting it as entropy; that is the right setting until
-  the source has been characterised. Up to `d7ff00dc…` the images carry
-  U-Boot v2025.01, which has no Zkr driver. The driver as released, v2026.10 included,
-  waits without bound on `BIST` or `WAIT`. `flow/build_uboot.sh` now builds
-  v2026.10 with `flow/boot/uboot-zkr-timeout.patch`, which bounds every
-  wait at 100 ms, and enables the driver. Its one use is the `kaslr-seed`
+  its pool without counting it as entropy; that is the right setting while
+  there is no claim. U-Boot's Zkr driver as released,
+  v2026.10 included, waits without bound on `BIST` or `WAIT`.
+  `flow/build_uboot.sh` builds v2026.10 with
+  `flow/boot/uboot-zkr-timeout.patch`, which bounds every wait at 100 ms,
+  and enables the driver. Its one use is the `kaslr-seed`
   property that U-Boot adds to the device tree, which Linux does not count
   as entropy; `rng-seed` is not passed. With the source off U-Boot prints
   "No RNG device" and boots on. `make uboot-boot-test` shows both in
-  simulation. This U-Boot is in bitstream `85f07e58…`, where the board
-  showed both on 2026-11-19: with the source on `rng 0 10` prints 16 bytes
-  and `/chosen` holds a `kaslr-seed`; with it off `rng` answers "No RNG
-  device" at once and the boot goes on
-  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)).
+  simulation. On the board, with the source on `rng 0 10` prints 16 bytes
+  and `/chosen` holds a `kaslr-seed`; with it off U-Boot prints "No RNG
+  device" and the boot goes on
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).
   On the board top the two are joined by `flow/fpga/karu_entropy_src.v`,
   which is also what the simulation benches instantiate, with a
   behavioural model in place of the rings.
@@ -580,7 +471,7 @@ instruction-memory latency.
   combinational loop between the CSR file and the block),
   `make noise-burst-test` (the capture block with the noise model and the
   entropy block: the period, bursts against a record of every symbol of
-  the source, and what test mode confines; 33 mutants),
+  the source, and what test mode confines; one-mechanism mutants),
   `make ddr-noise-burst-test` (its registers through the SoC's bus decode;
   eight mutants) and `make zkr-test-spike` (the access table on Spike);
   all but the last are in `make dbg-test`.
@@ -592,7 +483,7 @@ instruction-memory latency.
   between lanes and the distribution of whole symbols and words.
   `linux_zkr.py` checks that Linux lists `zkr`. `make dbg-getnoise-test`
   runs the payload on the simulated core and the analysis on synthetic
-  model data. All three ran on the board on 2026-11-18.
+  model data. All three run in every board session.
   For the burst capture, `getnoise_burst.py` records bursts at periods of
   1 to 256 clocks with the payload `getnoise_burst.S`, and writes them in
   the same file format, one run per burst, with the period and a
@@ -600,27 +491,26 @@ instruction-memory latency.
   both kinds. `make dbg-getnoise-burst-test` runs the payload and the
   phase on the SoC simulation, where every burst is compared with a copy
   of the simulated source, and `make dbg-burst-analysis-test` validates
-  the analysis of bursts on generated data with known parameters. None of
-  this has run on a board.
+  the analysis of bursts on generated data with known parameters. Both run
+  in the board sessions.
   The [Zkr follow-up plan](zkr-followup-plan.md) has the reasons, what was
-  decided, and what is still open (repeat captures, the board session).
-- **Debug authentication on the board (added 2026-11-17; `KARU_DBG_AUTH`;
-  every board case passed on 2026-11-18, with the `TEST` algorithm).** The hart starts in the authentication
+  decided, and what is still open.
+- **Debug authentication (`KARU_DBG_AUTH`).** The hart starts in the authentication
   island ROM at `0x1_0000`, which hands over to fu-boot at `0x1000`. The
   island keeps its default addresses and is decoded in front of the boot
   ROM, which is why the ROM layout leaves that range empty. The window ROM
   is the one of `test/dbg/auth_rom`, built to take its nonce from `seed`
-  and to wait for the entropy source's start-up test. It verifies with the
-  simulation-only `TEST` algorithm, which is not cryptographic: the
-  production verifier awaits decision D3 of the
+  and to wait for the entropy source's start-up test. It verifies a
+  SHA3-256 MAC under the build tree's key (algorithm `0x04`; the key file
+  is `_build/vcu118_auth_key.txt`, also in the bundle). The key is in the
+  bitstream, and the production verifier awaits decision D3 of the
   [plan](debug-auth-plan.md), so in lifecycle `AUTH` this image is
   functional validation, not protection. A software reboot is a system
   reset: it does not reopen the authentication window, only power-on does
   (on the board: the CPU reset button, or reconfiguration). An image built
-  with authentication but without `KARU_ZKR` gets a ROM that reads the
-  authentication block's own random-number port instead of `seed`; the
-  board ties that port to `DEAD`, so a request is refused and the boot
-  goes on. The island's SRAM is data only in the access permissions:
+  with authentication but without `KARU_ZKR` gets the `-DAUTH_NO_SEED`
+  ROM, which has no nonce source: it makes no challenge, never unlocks,
+  and the boot goes on. The island's SRAM is data only in the access permissions:
   `make sv39-auth-pma-test` checks that through the address translator,
   including `HLVX`, which asks for execute permission and reads through
   the data port.
@@ -682,7 +572,7 @@ the only user pins it adds are the four DIP switches of the straps above.
 `KARU_DDR_HOST_DBG` is rejected in this configuration until
 the separate JTAG-AXI loader's USER-chain coexistence is configured.
 
-Since 2026-11-17 the default is
+The default is
 `VCU118_DBG_EXT_DEFINES="KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR"`:
 
 | Define | Adds | Consequence for the build |
@@ -740,12 +630,9 @@ OpenOCD/GDB, plus pause/abort/reset and negative controls. This verifies the
 tunnel protocol and software integration, rather than a physical FPGA cable
 or primitive timing. The synthesis/placement evidence and outstanding timing
 gates are recorded in [karudbg measurements](../dbg/MEASUREMENTS.md). The
-2026-10-29 full-extension build passed routed setup, hold, pulse-width and
-bus-skew checks with the corrected constraints. The first debug image to pass
-hardware acceptance was the 2026-11-15 rebuild `0b994847…`
-([board acceptance](../dbg/BOARD_ACCEPTANCE.md)); the board-validated profile
-images before it do not contain karudbg. Later images are listed at the top
-of this document, each with what has and has not run on a board.
+current debug image and its board status are at
+[the top of this document](#debug-image); the profile images do not
+contain karudbg.
 
 For board programming on another host, run `make vcu118-program-bundle` and
 transfer `_build/vcu118_programming.tgz`. Its members retain the `_build/...`
@@ -779,8 +666,8 @@ them against each other automatically:
 
 | Piece | Comes from | Fixed when |
 | --- | --- | --- |
-| OpenSBI `fw_jump.bin` (v1.9; v1.8.1 in images before 2026-11-17) | build host, `../karudeb/build/karu64/opensbi/` | bitstream build (in ROM) |
-| U-Boot and its boot command (v2025.01 in images up to `d7ff00dc…`; `flow/build_uboot.sh` now builds v2026.10 in `../u-boot-v2026.10-netboot`) | build host; the command is the one-liner staged under `../karudeb/build/karu64/tftp/<variant>/` | bitstream build (in ROM) |
+| OpenSBI `fw_jump.bin` (v1.9) | build host, `../karudeb/build/karu64/opensbi/` | bitstream build (in ROM) |
+| U-Boot v2026.10 (`flow/build_uboot.sh`, in `../u-boot-v2026.10-netboot`) and its boot command | build host; the command is the one-liner staged under `../karudeb/build/karu64/tftp/<variant>/` | bitstream build (in ROM) |
 | Control DTB for OpenSBI and U-Boot | build host, `../karudeb/build/karu64/karu64-<variant>.dtb` | bitstream build (in ROM) |
 | Kernel `Image` and `board.dtb` for Linux | board host, TFTP root | each boot |
 | Root filesystem | board host, NFS export | each boot |
@@ -823,9 +710,9 @@ sha256sum /srv/tftp/board.dtb
 Either target serves the file given with `DTB=`; use the one that matches
 the image so that the staging directory carries the right name. The kernel
 `Image` that this stages is the board host's own build. Keep the lab's
-accepted `Image` when the point of the session is the bitstream: see
-[the board test plan](../dbg/BOARD_TEST_PLAN.md) for the image built on
-2026-11-18, whose build host has a different kernel binary.
+accepted `Image` when the point of the session is the bitstream:
+[the board test plan](../dbg/BOARD_TEST_PLAN.md) names it (the build host
+has a different kernel binary).
 
 The requirement is on the **served file**: `sha256sum /srv/tftp/board.dtb`
 must equal the `control DTB` line of the manifest. `DTB=` makes the staging
@@ -923,11 +810,13 @@ An address-space limit is not a resident-memory limit.
 
 ## Hardware status and repeat-build checks
 
-The current image passes Linux/NFS-root boot, memory and cache probes,
-Zvknhk OpenSSL checks, `vill_probe` and the KVM API check. The FP probe has
-completed; full TestFloat3 is in progress. The extended vector ABI,
-riscv-pqc and KVM guest results in the release diagnostics belong to the
-September 22 reference image.
+The debug image passes Linux/NFS-root boot, `board_accept.sh` (memory,
+cache, crypto, KVM API and profile checks), both KVM guests, the vector
+selftests, riscv-pqc `xtest` and the Zvknhk OpenSSL pairs
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). On-board TestFloat-3e
+last ran with profile image `b11d5efb…` (36 functions, 0 errors); the
+[release diagnostics](release-diagnostics-2026-09-14.md) record each
+profile image's results by its hash.
 
 For each new build, retain its routed timing reports, rerun `board_accept.sh`
 as root with `perf_run`-enabled cache counters, and record crypto and KVM

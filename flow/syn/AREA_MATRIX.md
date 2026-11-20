@@ -15,11 +15,13 @@ still misses on the IFU/decode-to-double-FMA register path. Only this timing
 row was rerun; the area table and other timing values below retain the
 October 29 source. See the
 [pause follow-up](../../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30)
-for the current result and its scope. The accepted FPGA bundle is unchanged.
+for that result and its scope.
 
-**2026-11-18.** The shipping rows were mapped again after the boot map in
-the access permissions changed (2 MiB ROM), together with the first rows
-for the opt-in `KARU_ZKR`:
+**2026-11-18, the latest mapping.** The shipping rows were mapped again
+after the boot map in the access permissions changed (2 MiB ROM), together
+with the first rows for the opt-in `KARU_ZKR`. They predate the redesign of
+the entropy block's health tests and the removal of the authentication
+block's TRNG port (2026-11-19), which have not been mapped:
 
 | Configuration | kGE | Register-to-register WNS | TNS |
 | --- | ---: | ---: | ---: |
@@ -30,9 +32,9 @@ for the opt-in `KARU_ZKR`:
 The core is 0.15 kGE larger than on October 26 and its timing is the
 October 26 result to the digit. Zkr's CSR-side logic is below the
 resolution of the area mapping, and adds no register-to-register path; the
-entropy block is about 5 kGE. The debug and authentication rows, the IO
-groups and two output strobes that now miss the output budget in the debug
-tops are in
+entropy block was about 5 kGE before the redesign. The debug and
+authentication rows, the IO groups and the output strobe `zkr_fire_o`, which
+misses the output budget in the debug tops, are in
 [karudbg measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18).
 
 These are comparative NanGate45 standard-cell estimates, with memories mapped
@@ -81,8 +83,8 @@ The standard full-debug/two-trigger FPGA image also completed on 2026-10-29:
 CPU, with 16/16 bus-skew constraints and zero bitstream DRC errors. It uses
 375,881 LUTs. Its +12.66% LUT count versus the older base-debug FPGA checkpoint
 is an unisolated source/configuration comparison, not the controlled +0.3316%
-NanGate45 increment. See the measurements for hashes and scope. Board testing
-and 200 MHz mapped timing closure remain open.
+NanGate45 increment. See the measurements for hashes and scope. The 200 MHz
+mapped timing closure remains open.
 
 ## Historical shipping debug comparison — 2026-10-26
 

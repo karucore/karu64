@@ -116,6 +116,29 @@ dbg-getnoise-test: $(DBG_GETNOISE_TEST)/getnoise.symbols $(ZKR_DIR)/Vhtif_h/Vhti
 	  --xchain $(XCHAIN) > $(BUILD)/dbg/getnoise-test.log 2>&1 || { tail -5 $(BUILD)/dbg/getnoise-test.log; exit 1; }
 	@grep 'getnoise self-test: PASS' $(BUILD)/dbg/getnoise-test.log
 
+# Operational restart data and induced health-test failures (seed_restart.py,
+# entropy_fault.py; images with KARU_ZKR and mentropystat, bitstream ddb168e1
+# or later): seedcap.S reads seed from the first ES16 after a reset. Position
+# independent and linked at 0, like getnoise.S.
+DBG_SEEDCAP_TEST  = $(BUILD)/dbg/seedcap-test
+DBG_SEEDCAP_FLAGS = -march=rv64gc_zicsr -mabi=lp64d -nostdlib -static -Wl,-Ttext=0,--no-relax,-e,seedcap
+.PHONY: dbg-seedcap-fixture
+dbg-seedcap-fixture: $(DBG_BOARD_OUT)/seedcap.symbols $(DBG_BOARD_OUT)/payload.symbols
+$(DBG_BOARD_OUT)/seedcap.symbols: $(DBG_BOARD_SRC)/seedcap.S dbg/board.mk
+	mkdir -p $(@D)
+	$(XCHAIN)gcc $(DBG_SEEDCAP_FLAGS) -o $(@D)/seedcap.elf $<
+	$(XCHAIN)objcopy -O binary -j .text $(@D)/seedcap.elf $(@D)/seedcap.bin
+	$(XCHAIN)nm -n $(@D)/seedcap.elf > $@
+
+# Offline self-test of seedcap.S on the Zkr simulation bench (test_seedcap.py).
+# Not part of a gate list.
+.PHONY: dbg-seedcap-test
+dbg-seedcap-test: $(ZKR_DIR)/Vhtif_h/Vhtif_tb
+	@mkdir -p $(BUILD)/dbg
+	python3 $(DBG_BOARD_SRC)/test_seedcap.py --out $(DBG_SEEDCAP_TEST) --bench $(ZKR_DIR)/Vhtif_h/Vhtif_tb \
+	  --xchain $(XCHAIN) > $(BUILD)/dbg/seedcap-test.log 2>&1 || { tail -5 $(BUILD)/dbg/seedcap-test.log; exit 1; }
+	@grep 'seedcap self-test: PASS' $(BUILD)/dbg/seedcap-test.log
+
 # Burst capture: raw noise with the rings sampled every 1 to 256 clocks, from
 # the capture block next to the noise source (getnoise_burst.py, needs an
 # image with KARU_ZKR built after 2026-11-18). getnoise_burst.S is position

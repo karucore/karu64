@@ -232,7 +232,7 @@ the block (Yosys), and `zkr-test-spike` the same access table on Spike.
 `noise-burst-test` is the FPGA entropy source with its burst capture
 (`flow/fpga/karu_noise_burst.v`): the sampling period, bursts against a
 record of every symbol of the simulated source, and what the entropy
-block's test mode confines, with 34 one-mechanism mutants.
+block's test mode confines, with 37 one-mechanism mutants.
 `ddr-noise-burst-test` reaches the capture's registers through the DDR
 SoC's bus decode, from M-mode and, refused, from U-mode and with narrower
 accesses, with eight decode mutants.
@@ -288,12 +288,13 @@ for the configuration manifest and verdicts, and the
 
 ### Hypervisor regressions
 
-Both matched-profile ACT4 reference checkpoints pass 2872/2872. The
-September 25 1W2R FP bitstream passes Linux 7.2.6-zvk board acceptance,
-including KVM API checks. The September 22 image passed both KVM guest
-tests and extended vector ABI coverage. See
-[diagnostics](release-diagnostics-2026-09-14.md) for the exact scope and the
-[FPGA boot procedure](fpga.md#opt-in-rva23s64-boot-selection) for hardware.
+Both matched-profile ACT4 reference checkpoints pass 2872/2872. The latest
+profile image passes Linux 7.2.6-zvk board acceptance, including the KVM API
+check, and the VCU118 debug image passes both KVM guest tests on the board
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). See
+[diagnostics](release-diagnostics-2026-09-14.md) for each profile image's
+scope and the [FPGA boot procedure](fpga.md#opt-in-rva23s64-boot-selection)
+for hardware.
 
 The opt-in H monitor lives in `test/karu_h_test.S` with its maintained linker
 script. It shares firmware between Spike and HTIF; generated ELFs and logs

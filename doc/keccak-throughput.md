@@ -28,17 +28,12 @@ For the six compiler-generated software baselines (RV64GC, +Zbb, +V/Zvbb),
 see [the software comparison](keccak-software-comparison.md). `make keccak-compare`
 reproduces those rows with full-output checks and both hardware targets.
 
-| Operation | Rate | Before cycles/block | After cycles/block | Cycle reduction |
-|---|---:|---:|---:|---:|
-| SHAKE128 absorb | 168 B | 366.75 | 221.75 | 39.5% |
-| SHAKE256 absorb (also SHA3-256 rate) | 136 B | 358.75 | 197.75 | 44.9% |
-| SHAKE128 squeeze | 168 B | 291.88 | 156.88 | 46.3% |
-| SHAKE256 squeeze | 136 B | 273.56 | 144.56 | 47.2% |
-
-Squeeze costs two more cycles per block than the initial 154.88/142.56 result:
-the store instruction now waits for the final B response before retiring, so
-a late AXI error can trap against the correct instruction. Absorb and resident
-permutation costs are unchanged.
+| Operation | Rate | Cycles/block |
+|---|---:|---:|
+| SHAKE128 absorb | 168 B | 228.88 |
+| SHAKE256 absorb (also SHA3-256 rate) | 136 B | 209.56 |
+| SHAKE128 squeeze | 168 B | 163.75 |
+| SHAKE256 squeeze | 136 B | 151.56 |
 
 The state stays in v0–v7. Absorb loads a rate block to v8–v15, XORs it into
 the state, and permutes. Squeeze stores a rate block and permutes for the
@@ -48,56 +43,42 @@ in the L1 before timing. State setup/spill, padding and printing are outside
 the interval. A finite N-block squeeze needs N−1 permutations; this benchmark
 retains the final permutation to measure a steady-state step.
 
-Individual component measurements include their own counter/fetch overhead
-and therefore should not be added as exact instruction costs:
-
-| Component | Before | After |
-|---|---:|---:|
-| Resident 24-round permutation | 135.06 | 79.06 |
-| Resident 12-round permutation | 123.38 | 67.38 |
-| 168 B load | 115.25 | 62.25 |
-| 136 B load | 112.56 | 57.56 |
-| 168 B XOR | 114.06 | 78.06 |
-| 136 B XOR | 114.38 | 64.38 |
-| 168 B store | 159.38 | 80.38 |
-| 136 B store | 141.38 | 68.38 |
-
-The secondary 200-byte load–permute–store wrapper falls from 428.06 to
-234.06 cycles (without a per-iteration vset).
-
-## Element-group `vl` switching — 2026-10-06
-
-`vkeccak.vi` now follows the Zvknhk element-group rules
+**Element-group `vl` switching.** `vkeccak.vi` follows the Zvknhk
+element-group rules
 ([rtl/zvk/README.md](../rtl/zvk/README.md#zvknhk-vkeccakvi-riscv-pqc)): at
 VLEN=256 it must run at `e64,m8,vl=32`, while a rate block is moved at
 `vl=21` or `vl=17` and the 25 live state words at `vl=25`. The resident
 sponge loops therefore switch `vl` twice per block
-(`vsetvli x0,t0,e64,m8,tu,mu` with `t0=32`, then `vsetivli` back to the rate).
-The permutation itself is unchanged. Same simulator configuration as above,
-old sequences on the previous RTL against new sequences on the new RTL:
+(`vsetvli x0,t0,e64,m8,tu,mu` with `t0=32`, then `vsetivli` back to the
+rate). The switch pair costs about 7 cycles per block, 3% to 5% of a rate
+block, and is included above. A squeezed block also includes two cycles
+for the store, which waits for the final B response before retiring, so
+that a late AXI error traps against the correct instruction.
 
-| Operation | Rate | Before | After | Change |
-|---|---:|---:|---:|---:|
-| SHAKE128 absorb | 168 B | 221.75 | 228.88 | +7.13 |
-| SHAKE256 absorb (also SHA3-256 rate) | 136 B | 197.75 | 209.56 | +11.81 |
-| SHAKE128 squeeze | 168 B | 156.88 | 163.75 | +6.87 |
-| SHAKE256 squeeze | 136 B | 144.56 | 151.56 | +7.00 |
-| Resident 24-round permutation | - | 79.06 | 79.38 | +0.32 |
-| Resident 12-round permutation | - | 67.38 | 67.06 | -0.32 |
-| `vl` switch pair (32 <-> rate), new component row | - | - | 7.06 | - |
-| Load 25, permute, store 25 wrapper (now with two `vl` switches) | 200 B | 237.38 | 250.38 | +13.00 |
-| ML-KEM-style out-of-line wrapper | 200 B | 301.06 | 309.06 | +8.00 |
+Individual component measurements include their own counter/fetch overhead
+and therefore should not be added as exact instruction costs:
 
-The switch pair costs about 7 cycles per block, 3% to 5% of a rate block.
-The unrelated load/store component rows moved by up to 5.5 cycles in either
-direction between the two binaries although their instructions are
-identical; with the instruction cache disabled these unrolled loops are
-sensitive to where the body falls relative to the 8-byte fetch word, and the
-136 B absorb difference includes such a shift. Treat single-cycle
-differences between binaries accordingly. The earlier "without a
-per-iteration vset" wrapper row no longer has a legal equivalent at
-`vl=25`; the benchmark's replacement moves a padded 32-word state at
-constant `vl=32` (270.06 cycles) and is not comparable with it.
+| Component | Cycles |
+|---|---:|
+| Resident 24-round permutation | 79.38 |
+| Resident 12-round permutation | 67.06 |
+| `vl` switch pair (32 <-> rate) | 7.06 |
+| 168 B load | 62.25 |
+| 136 B load | 57.56 |
+| 168 B XOR | 78.06 |
+| 136 B XOR | 64.38 |
+| 168 B store | 80.38 |
+| 136 B store | 68.38 |
+| Load 25, permute, store 25 wrapper (with two `vl` switches), 200 B | 250.38 |
+| ML-KEM-style out-of-line wrapper, 200 B | 309.06 |
+| Padded 32-word state at constant `vl=32`, 200 B | 270.06 |
+
+The load, XOR and store rows were measured on the binary before the
+`vl` switches were added. Component rows move by up to 5.5 cycles between
+binaries whose instructions are identical: with the instruction cache
+disabled, these unrolled loops are sensitive to where the body falls
+relative to the 8-byte fetch word. Treat single-cycle differences between
+binaries accordingly.
 
 ## Implemented changes
 

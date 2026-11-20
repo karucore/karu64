@@ -49,12 +49,9 @@ not inside of, and reports the one shape it does not rewrite (a shared
 `wire x =` head with one body per `ifdef` branch). The 2026-09-21 rewrite was
 verified equivalent by a per-file Yosys RTLIL diff before/after, strict
 `iverilog -g2001` parses in eight configurations, the simulation
-regressions, and the Vivado elaboration check. The Genus-cleanup FPGA image
-`03eeb088` passed the September 22 Linux, KVM guest, crypto, vector ABI
-and cache checks; forced vector SM4 matched reference and scalar outputs.
-The later 1W2R FP image `b11d5efb` closes FPGA routed timing and passes
-September 25 board acceptance and the FP probe. See the
-[image-specific board results](../../doc/release-diagnostics-2026-09-14.md).
+regressions, and the Vivado elaboration check. The board results of the
+FPGA images are recorded by image hash in
+[the release diagnostics](../../doc/release-diagnostics-2026-09-14.md).
 
 Use the definitions as well as the file list. **`KARU_ASIC` is required** to
 exclude FPGA power-up initialization. Do not define `SIM_TB`,
@@ -140,12 +137,12 @@ path or any memory macro port. The payload has no reset and is qualified by
 its sequencing state. Four-state capture checks and a stale-address negative
 control exercise that contract. The full-debug CPU replay passes 2872/2872
 preserved ACT4 ELFs, and 16 ordinary subjects have zero idle cycle delta;
-the combined functional gate also passes with 274 unchanged input hashes.
-All twelve mapped comparisons completed at the October 29 checkpoint. The
-October 30 registered-pause follow-up restores full two-trigger input-to-register
-slack to +0.2328 ns; register WNS remains −0.3978 ns, so 200 MHz is still open.
-Other timing and area rows retain the October 29 source. See the
-[current timing scope](../../dbg/MEASUREMENTS.md#registered-sba-pause--2026-10-30).
+the combined functional gate passed on the sources of 2026-11-19
+([record](../../dbg/README.md#current-combined-validation-record)).
+The mapped area and 200 MHz timing rows are of the RTL of 2026-11-18
+([measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)),
+before the 2026-11-19 changes to the authentication and entropy blocks;
+200 MHz is still open.
 Technology-specific physical signoff has its own acceptance gate.
 
 For the combined ASIC top, source [dbg/sources.tcl](../../dbg/sources.tcl)
@@ -209,10 +206,10 @@ none is checked by the generic flow.
 | Reset fan-out | `auth_reset_o` (boot hold and relock) joins the hart-side reset inside `karudbg_core`; fabric responders that share the hart reset must follow it, as for `ndmreset` |
 | Boot-hold strap `hold_strap_i` | A physical-presence input sampled at power-on reset. It only delays boot in `AUTH`. It is treated as adversary-controlled and grants nothing by itself |
 | Revocation `revoke_i` | Optional trusted input; tie low if unused. Once high it disables debug until power-on reset |
-| Nonce source | The core's Zkr `seed` CSR with a health-checked entropy source behind it (`KARU_ZKR`; see the Zkr notes below). The block has no entropy port of its own since 2026-11-19. The nonce is only as good as this source |
+| Nonce source | The core's Zkr `seed` CSR with a health-checked entropy source behind it (`KARU_ZKR`; see the Zkr notes below). The block has no entropy port of its own. The nonce is only as good as this source |
 | Scan and DFT | The scan controller must force `debug_enable` low and reset `karudbg_auth` on scan entry and exit (plan D6). Scan access to the grant, the mailbox or the island SRAM is outside the proof |
 | ROM software | The obligations of plan §6: interrupts off, trap vector in ROM, fresh nonce, fixed-size parsing, constant-time verification, a fault-resistant decision. The simulation ROM under `test/dbg/auth_rom/` does not meet them and must not be shipped; its `TEST` algorithm (`0x80`) must be rejected by a production ROM |
-| Window deadline | The ROM's `WINDOW_CYCLES` limit is a software cutoff with an implementation-dependent tolerance. A hard cutoff needs a worst-case margin in the ROM or a hardware timer (contract §5.3) |
+| Window deadline | The ROM's `WINDOW_CYCLES` limit is a software cutoff with an implementation-dependent tolerance. For a hard cutoff, set the block's `WINDOW_LOG2` (opt-in; 0, the default, is no limit), or give the ROM a worst-case margin (contract §5.3) |
 
 Mapped size, from [measurements](../../dbg/MEASUREMENTS.md): the
 authentication logic is an estimated 21.9 kGE on top of full debug, partly
@@ -270,7 +267,7 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
   the stochastic model and checked for dependence between lanes;
   `test/dbg/board/entropy_health.py cutoffs` turns a claim and a
   false-alarm probability into cutoffs
-  ([assessment, section 9](../../doc/sp800-90b-assessment.md#9-redesign-of-the-health-tests-rtl-2026-11-19)).
+  ([assessment, section 5](../../doc/sp800-90b-assessment.md#5-health-tests-4)).
 - **A policy for the test interface.** `mnoise` gives M-mode raw samples
   and holds `seed` in `BIST` meanwhile. Firmware should set the lock bit of
   `mentropycfg` before leaving M-mode; a production device may want the
@@ -292,19 +289,20 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
   failure in the cycle of a read wins over the read. `rng_val` and `rng_b`
   should therefore come from registers, as they do in the FPGA source.
 
-*Estimates, 2026-11-18* (NanGate45 typical, the flow of
+*Estimates* (NanGate45 typical, the flow of
 [the measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)):
-`karu_entropy` alone is 4.99 kGE in the area mapping and meets 200 MHz
-with +0.95 ns on its tightest path, the one from the incoming symbol to
-the read value. The CSR-side logic in the core is below the resolution of
-the area mapping. `zkr_fire_o` has to wait for the decision that the
-access takes effect. On the bare core it has +1.34 ns against the generic
-output budget of that flow; in the top with full debug and authentication,
-where that decision also passes through the trigger logic, it misses the
-budget by 0.19 ns, and the authentication block's `trng_ack_o` misses it by
-0.23 to 0.29 ns for the same reason. An integration should give these
-strobes a budget of their own or place their consumers next to the CSR
-file.
+there are no ASIC area or timing figures for the current `karu_entropy`,
+whose health tests were redesigned on 2026-11-19; the FPGA build of it
+uses 721 CLB LUTs and 576 flip-flops, and its path from its registers to
+the value the core reads has ten logic levels
+([SP 800-90B assessment](../../doc/sp800-90b-assessment.md)). The CSR-side
+logic in the core is below the resolution of the area mapping.
+`zkr_fire_o` has to wait for the decision that the access takes effect. On
+the bare core of 2026-11-18 it has +1.34 ns against the generic output
+budget of that flow; in the top with full debug and authentication, where
+that decision also passes through the trigger logic, it misses the budget
+by 0.19 ns. An integration should give this strobe a budget of its own or
+place its consumers next to the CSR file.
 
 ## Memory-compiler request
 

@@ -278,3 +278,30 @@ nonresponse, independent fabric resets and cold-power lifecycle behavior
 were not exercised. Authentication, four-trigger hardware, production ASIC
 macros, CDC signoff and full Debug 1.0 compliance remain outside this board
 result. No synthesis, bitstream rebuild or Git write operation was performed.
+
+## Transport smoke test before the campaign — 2026-11-16
+
+The campaign above expanded this smoke test to run control, FP/vector state,
+triggers, SBA, GDB, transport recovery, isolation and a ten-minute soak.
+
+The VCU118 image `0b994847163b0d471816edb2b63f1c5c94d777f9b829f48364d9521512378b22`
+(`KARU_DBG_FULL`, no authentication) boots Linux 7.2.6-zvk from TFTP/NFS.
+Physical USER4 attachment passes with OpenOCD
+`0.12.0+dev-02815-g83e3febc6` (FTDI SMT2-NC adapter, 1 MHz JTAG).
+The binary SHA-256 is
+`1c3079e9c8c52224905e9dbd9185e5908958c5b58414d07ad70b441d0f4283c6`.
+
+The first attempt exposed a board-configuration error: the XCVU9P needs
+an 18-bit outer instruction register and USER4 opcode `0x23924`, as recorded
+in Xilinx's `xcvu9p_flga2104.bsd`. The six-bit simulation values failed the
+IR scan. [vcu118.cfg](vcu118.cfg) now uses the device values.
+
+OpenOCD discovers XLEN=64, two data registers, eight Program Buffer words and
+`vlenb=32`. A controlled halt, PC/DCSR read and resume passes; Linux responds
+to a serial shell command afterwards. Logs: `_build/openocd-board.log`
+(original failed attempt), `_build/openocd-board-ir18.log` (corrected discovery),
+`_build/openocd-board-smoke.log` and `_build/boot.log`. `hw_server` was stopped
+before opening the cable. OpenOCD exits after the test, leaving Linux running.
+This smoke test did not cover memory/MMIO, stepping, triggers, SBA, GDB,
+reset-halt or translation. Those subsequent tests and post-detach acceptance
+are recorded above.

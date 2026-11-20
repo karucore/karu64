@@ -1,26 +1,18 @@
 # karudbg authentication contract (milestone A0)
 
-Status: **contract, 2026-11-15**. This document closes milestone A0 of the
-[authentication plan](debug-auth-plan.md) (revision 3). It fixes the
-interfaces that A1 (RTL) and A2 (ROM) implement and that A3/A4 verify. When
-it was written nothing was implemented.
-
-*Status, 2026-11-17.* The RTL (A1) and the window ROM with the simulation-only
-`TEST` algorithm (A2) implement this contract; see the plan's milestone notes
-for what is tested and how. The VCU118 debug image is built with it.
-
-*Changed on 2026-11-19, in the tree and in bitstream `ddb168e1…`
-(board-tested on 2026-11-20: the ROM drew its nonces from `seed`; the
-2³¹-clock hardware window limit was not reached there and has simulation
-coverage only):* `mdbgrng`
-(`0x7C3`) and the block's TRNG port are removed. The ROM draws its nonce
-from the Zkr `seed` CSR, as the VCU118 image's ROM already did, so
-authentication needs a core with Zkr and an entropy source behind `seed`
-(section 3.2). And the window can be given a hard limit in hardware
-(section 5.3, `WINDOW_LOG2`). Two details that the
-implementation fixes more tightly than the text below, found while writing
-the board client: the RTL also requires `REQUEST` bits [15:8] to be zero,
-and the ROM rejects a response whose length word has bits [31:24] set.
+Status: **contract, implemented.** This document is milestone A0 of the
+[authentication plan](debug-auth-plan.md). It fixes the interfaces that the
+RTL (A1) and the window ROM (A2) implement and that A3/A4 verify; the
+plan's milestone notes say what is tested and how. The VCU118 debug image
+is built with it, with the SHA3-256 algorithm `0x04`
+([board record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). The ROM draws its
+nonce from the Zkr `seed` CSR, so authentication needs a core with Zkr and
+an entropy source behind `seed` (section 3.2). The optional hardware limit
+on the window (section 5.3, `WINDOW_LOG2`) has simulation coverage only: on
+the board the ROM's own deadline closes the window first. Two details that
+the implementation fixes more tightly than the text below: the RTL also
+requires `REQUEST` bits [15:8] to be zero, and the ROM rejects a response
+whose length word has bits [31:24] set.
 
 | A0 item | Section |
 | --- | --- |
@@ -155,8 +147,7 @@ memory mapped.
 | `0x7C2` | `mdbgtx` | Write; reads return 0 | Push one TX word (ROM → host) |
 | `0xFC0` | `mdbgmbst` | Read-only | Mailbox counts, errors and session state |
 
-`0x7C3` was `mdbgrng` until 2026-11-19; it is not implemented now and an
-access to it is an illegal instruction.
+`0x7C3` is not implemented; an access to it is an illegal instruction.
 
 `0x7C0–0x7C2` lie in the machine custom read/write range and `0xFC0` in the
 machine custom read-only range. A write instruction to `mdbgmbst` raises
@@ -455,7 +446,7 @@ holds:
 - the granted mask is not a subset of `perm_req`, or is empty;
 - the padding is nonzero;
 - the window exceeds `WINDOW_CYCLES`. The ROM checks expiry before every step
-  that waits on or takes input from the host or the TRNG, including each
+  that waits on or takes input from the host or `seed`, including each
   restart of the challenge push, and again immediately before the grant, so
   repeated session resets cannot extend the window. This is a software
   cutoff, not a hard one: a pop or the grant can commit after the deadline by
@@ -486,7 +477,7 @@ The plan's recommended defaults are adopted.
 | D2 | No locked-DM "reset into window" command. Re-entry is by POR with the physical strap. |
 | D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (Ed25519, ML-DSA-44 or hybrid) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). Interim, 2026-11-18: the FPGA image uses the shared-secret `SHA3` (`0x04`, §5.1) for validation; this does not settle D3. |
 | D4 | One permission bit, `perm[0]`, granting full debug: run control, abstract commands, Program Buffer and SBA. Mask bits 1–7 are reserved, and `REQUEST` and the ROM reject them. |
-| D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3. A hard cutoff of the window, not of the hold, is available as the opt-in parameter `WINDOW_LOG2` (§5.3, added 2026-11-19). |
+| D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3. A hard cutoff of the window, not of the hold, is available as the opt-in parameter `WINDOW_LOG2` (§5.3). |
 | D6 | The scan controller must force `debug_enable=0` and reset `karudbg_auth` on scan entry and exit. This is a platform obligation, recorded for A7. |
 
 ## 7. `lc=OPEN` equivalence

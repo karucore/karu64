@@ -1,7 +1,7 @@
 # VCU118 acceptance — 2026-11-19: burst capture, SHA3 authentication, U-Boot v2026.10
 
-The board session of image `85f07e58…`, following section 7 of
-[the board test plan](BOARD_TEST_PLAN.md#7-the-next-image-burst-capture-temperature-readout-sha3-authentication-u-boot-v202610)
+The board session of image `85f07e58…`, following
+[the board test plan](BOARD_TEST_PLAN.md) (its section 7 at the time)
 on the lab host. **Accepted, with documented exceptions.** Every stage was
 completed. Two phases did not exit cleanly, as on 2026-11-16 and 2026-11-18:
 - translation, with the six known pristine-OpenOCD walker results of

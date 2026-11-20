@@ -1,7 +1,7 @@
 # VCU118 acceptance — 2026-11-20: health tests on the sample, no `mdbgrng`, window limit
 
 The first board session of image `ddb168e1…`, following
-[section 8 of the board test plan](BOARD_TEST_PLAN.md#8-the-2026-11-20-image-health-tests-on-the-sample-no-mdbgrng-a-hardware-window-limit)
+[the board test plan](BOARD_TEST_PLAN.md) (its section 8 at the time)
 on the lab host, with SW12 changed as rarely as possible. **Accepted, with
 documented exceptions**, as on 2026-11-19:
 
@@ -15,12 +15,16 @@ processes ([Console hand-over](#finding-a-boot-froze-after-a-console-port-hand-o
 The freeze did not recur in four further software reboots, and every later reset and reconfiguration of the session booted; the cause is open.
 
 Every recorded interval of the new health tests on the real rings ended
-with zero failures, about 100 minutes in total
+with zero failures, about 2.4 hours in total, the longest 55 minutes
 ([Health tests](#health-tests-on-the-board)); other intervals were cleared
 by a reset without a reading, and the tests do not run in test mode. That is
 evidence that they do not raise false alarms on this source in those
-intervals; it is not evidence that they detect a failing source, which is
-shown in simulation only.
+intervals. In the afternoon two tests were added
+([Operational restarts and induced failures](#operational-restarts-and-induced-failures)):
+1,000 restarts with the first samples read through `seed` pass NIST's
+restart test, and failures induced with stricter cutoffs show the alarm,
+the strikes, `DEAD`, forgiveness and the configuration limits on the real
+rings.
 
 ## Image and evidence
 
@@ -56,6 +60,8 @@ helper scripts used (`campaign-tools/`). The UART capture is
 | F | all off | Phase 13 | PASS: 92 pairs, none missing or bad |
 | E | on off on off | `locked`, `authenticate` (one power-on); `wrong-response`, `replay`, `expiry` (one each), with SHA3 and the bundle's key | PASS. Unlock 0.19 s after the REQUEST; window last seen open at 14.29 s, closed by 14.35 s; four distinct nonces, all algorithm `0x04` |
 | E | on off on on | `entropy-off` | PASS: window closed 0.21 s after the REQUEST without a challenge; U-Boot printed "No RNG device" once and booted (stage A's time-out path); Linux booted locked |
+| added | all off | `seed_restart.py`: 1,000 restarts, the first 1,000 samples of each through `seed` | PASS: no repeats; `ea_restart` passed ([below](#operational-restarts-and-induced-failures)) |
+| added | all off | `entropy_fault.py`: induced failures, five cases | PASS 5/5 ([below](#operational-restarts-and-induced-failures)) |
 
 Every Stage E power-on was a JTAG reconfiguration of the same bitstream
 (the case records' "CPU reset button" is the harness's fixed text). The
@@ -87,26 +93,68 @@ cannot be read. The tests also do not run while the source is in test mode
 | 10:36 | the debugger phases' last reset-halt | `0x1`, 0 failures |
 | 11:09 | detach 10:54:26 | `0x1`, 0 failures |
 | 12:04 | reconfiguration 12:00:19 | `0x1`, 0 failures (start of the long run) |
-| 12:11 | the same | `0x1`, 0 failures |
+| 12:11, 12:54 | the same (55 min at 12:54) | `0x1`, 0 failures |
+| 13:20 | detach about 13:15, after the afternoon tests | `0x1`, 0 failures (start of a second long run) |
 
 `mentropycfg` read `0x30c7c1eb3c37000f` each time, the reset value of this
 image. The tests run while the source is outside test mode, about 18,300
 kept samples per second, so these intervals cover, by that rate, an
-estimated 1.1 × 10⁸ samples without a failure at the reset cutoffs (15 and 124 on the 4-bit
+estimated 1.6 × 10⁸ samples without a failure at the reset cutoffs (15 and 124 on the 4-bit
 sample, 55 and 719 per lane). Replay of the day's captures through the
 tree's model of the health logic (`test/entropy_replay.py`, 25/25 checks)
 agrees: no failure on the 10⁶-sample k = 16 capture (largest counts 6 of
 15, 52 of 124, 24 of 55, 572 of 719) nor on any of the 1,000 restart rows.
 
 **Long run.** The board was reprogrammed at 12:00:19 with SW12 all off and
-left running Linux; at 12:11:45, before any reset, `mentropystat` read `0x1`
-with 0 failures. That interval is 11 minutes, not the hours section 8 asks
-for: **the hours-long reading is still open.** The board was left running so
-that it can be taken before the next reset. Over the day the readings
-cover about 100 minutes of the source outside test mode (an estimated
-1.1 × 10⁸ kept samples, from the sampling rate), and every one of them
+left running Linux; at 12:54:57, before any reset, `mentropystat` read `0x1`
+with 0 failures: 55 minutes. The afternoon tests then reset the source. A
+second run started with the detach at about 13:15 and was left going, for
+a reading of several hours before the next reset. Over the day the readings
+cover about 2.4 hours of the source outside test mode (an estimated
+1.6 × 10⁸ kept samples, from the sampling rate), and every one of them
 ended with zero failures; the intervals listed above as not read are not
 part of that.
+
+## Operational restarts and induced failures
+
+Added after the long run, on the same image with SW12 all off, from
+`server.cfg` (12:55 to 13:15). Both scripts are new
+([harness](../test/dbg/board/README.md#operational-restart-data-and-induced-failures)).
+
+**Operational restart data** (`seed_restart.py`, payload `seedcap.S`):
+1,000 restarts by a debugger reset with the hart held, the payload started
+5.2 to 8.3 ms after each reset was released (median 6.0 ms), and the first
+1,000 samples of each restart read through `seed` in the reset
+configuration. Every restart polled `BIST` before the first word (so no
+word came before the payload), the longest gap between polls was 161
+clocks against 16,384 per word (so nothing was dropped), the first word
+came about 56.7 ms after the reset, and none needed a repeat or raised an
+alarm. 189 s, die 24.6–25.0 °C, rows `cf31abe4…e92b`. `ea_restart -n -v`
+with the D20 estimate 3.555965: X_max 98 (cutoff 132), H_r and H_c 3.688,
+validation passed. Details:
+[assessment, section 4.4](../doc/sp800-90b-assessment.md#44-restart-tests-314).
+
+**Induced failures** (`entropy_fault.py`), each from a debugger reset with
+the hart halted, all five cases PASS:
+
+- a sample repetition cutoff of 2 failed the start-up test: `DEAD` within
+  21 ms, no alarm, no strike, and `seed` read `DEAD`;
+- the four tests, each made stricter alone, failed while running after
+  10.6, 1.9, 4.3 and 1.1 s; `mentropystat` named each test alone, and the
+  lane and lag of the lane tests;
+- with the sample repetition cutoff at 5, the first running failure raised
+  the alarm and a strike, a `mentropycfg` write cleared neither, one `seed`
+  access returned `BIST` and cleared the alarm, and the third failure (at
+  6.0 s) was fatal; `seed` then read `DEAD`;
+- a strike cleared 920.5 s after its failure with the reset cutoffs back
+  in place (2^24 samples take 916.3 s);
+- every weaker value was replaced by the build's limit; with k = 1 written,
+  `seed` delivered one word per 16,318 clocks, which is k = 16; the lock
+  froze the CSR until reset.
+
+These are failures of stricter tests on a healthy source, not of a failing
+source. The table is in
+[the assessment, section 5.5](../doc/sp800-90b-assessment.md#55-evidence).
 
 ## Noise capture and entropy estimates
 
@@ -119,7 +167,7 @@ part of that.
 
 These are statistical estimates, not an established H_I, and the restart
 data is the delayed warm-restart experiment of the
-[assessment](../doc/sp800-90b-assessment.md#44-restart-tests-314-a-delayed-warm-restart-experiment),
+[assessment](../doc/sp800-90b-assessment.md#44-restart-tests-314),
 not the operational restart requirement.
 
 **The ring frequencies are a property of the bitstream.** The burst capture
@@ -181,8 +229,8 @@ wrapper (`campaign-tools/run_stage_cd.sh`) and passed.
 ## Not done
 
 - Authentication cases `open`, `no-hold`, `disabled`, `reboot`,
-  `reboot-locked` and `fresh-nonce` on this image.
+  `reboot-locked` and `fresh-nonce` on this image: deferred.
 - The hardware window limit on the board (the ROM's deadline comes first).
-- Operational restart data, a wider temperature range, and a fallback
-  image on the lab host: `85f07e58…` was not available here if this image
-  had failed to boot.
+- The reading of the second long run, started at about 13:15.
+- A wider temperature range, and a fallback image on the lab host:
+  `85f07e58…` was not available here if this image had failed to boot.

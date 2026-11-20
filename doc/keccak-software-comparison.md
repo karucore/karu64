@@ -27,27 +27,22 @@ State initialization, known-answer checks and result printing are outside timing
 | Clang 22.1.8, RV64GC | 25389.63 | 25413.50 | 24653.19 | 24969.94 |
 | Clang 22.1.8, RV64GC+Zbb | 16571.63 | 16162.63 | 16058.75 | 16347.50 |
 | Clang 22.1.8, RV64GCV+Zbb+Zvbb | 17496.88 | 16385.31 | 16458.88 | 16804.13 |
-| Resident `vkeccak.vi` instruction-assisted path | 221.75 | 197.75 | 156.88 | 144.56 |
+| Resident `vkeccak.vi` instruction-assisted path | 228.88 | 209.56 | 163.75 | 151.56 |
 
-Against the Clang vector-enabled C row, the instruction-assisted path is
-78.9x/82.9x faster for absorb and 104.9x/116.2x for squeeze (168/136 B).
-Against Clang RV64GC it is 114.5x/128.5x and 157.1x/172.7x respectively.
-
-**2026-10-06 update.** Under the Zvknhk element-group rules the instruction
-runs at `vl=32`, so the resident loops switch `vl` twice per block. The
-instruction-assisted row becomes **228.88 / 209.56 / 163.75 / 151.56**
-cycles per block (see
-[the throughput note](keccak-throughput.md#element-group-vl-switching--2026-10-06)).
-Against the unchanged software rows above that is 76.4x/78.2x and
-100.5x/110.9x versus Clang vector-enabled C, and 110.9x/121.3x and
-150.6x/164.8x versus Clang RV64GC. The software rows were not rerun.
+The instruction-assisted row includes the two `vl` switches per block that
+the Zvknhk element-group rules require
+([the throughput note](keccak-throughput.md#rate-block-results)); it was
+measured on 2026-10-06, the software rows on 2026-09-13. Against the Clang
+vector-enabled C row, the instruction-assisted path is 76.4x/78.2x faster
+for absorb and 100.5x/110.9x for squeeze (168/136 B). Against Clang RV64GC
+it is 110.9x/121.3x and 150.6x/164.8x respectively.
 Zbb supplies most of the compiler-generated C improvement; enabling vector
 code does not give a consistent additional gain on this source and core.
 
-All six software rows and the instruction-assisted path were rerun after the
-mask-summary pipeline, integer lane-control capture, lane-FPU request stage,
-balanced VLSU active-range trees and scalar arithmetic elaboration gating.
-The measurements include final posted-store-response retirement.
+The software rows were measured after the mask-summary pipeline, integer
+lane-control capture, lane-FPU request stage, balanced VLSU active-range
+trees and scalar arithmetic elaboration gating. The measurements include
+final posted-store-response retirement.
 
 ## What "vector-enabled" means here
 
