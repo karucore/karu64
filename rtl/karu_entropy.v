@@ -5,53 +5,54 @@
 //  (rng_en, rng_valid, rng_bits) and delivers 16-bit words in the seed format
 //  (OPST + entropy, taken by the access that reads them).
 //
-//      raw symbols --> keep every k-th --> health tests --> pack 4 symbols
-//                           |                                    |
-//                           +--> GetNoise (mnoise), test mode    +--> FIFO --> seed
+//      raw symbols --> keep every k-th --> one lane --> health tests --> pack 16 bits
+//                           |                                                 |
+//                           +--> GetNoise (mnoise), test mode                 +--> FIFO --> seed
 //
-//  Bits are never combined. A seed word is 16 raw bits: four consecutive kept
-//  symbols of four lanes, each lane one sampled ring oscillator. The only
-//  "ratio" is the decimation k. In the model of arXiv:2102.02196 a lane with
-//  parameters (F, D, sigma^2) -- D is the duty cycle -- kept at every k-th
-//  sample is the same process with (k*F mod 1, D, k*sigma^2). The bits that
-//  seed delivers, the bits the health tests see and the bits GetNoise shows
-//  are the same bits.
+//  The noise source is one sampled ring oscillator: the lane of the 4-bit
+//  raw bus that the strap lane_i selects. Its bit in every kept symbol is
+//  the noise-source sample of SP 800-90B, here just "sample". Bits are never
+//  combined. A seed word is 16 raw bits: sixteen consecutive samples, the
+//  first in bit 15 and the last in bit 0. The only "ratio" is the decimation
+//  k. In the model of arXiv:2102.02196 a ring with parameters (F, D,
+//  sigma^2) -- D is the duty cycle -- kept at every k-th sample is the same
+//  process with (k*F mod 1, D, k*sigma^2). The bits that seed delivers and
+//  the bits the health tests see are the same bits, and they are bit lane_i
+//  of the symbols that GetNoise shows.
 //
-//  That is a statement about one lane. It says nothing about the entropy of
-//  a word: lanes may depend on each other, and four lanes that each pass
-//  their health tests may carry one lane's entropy. The joint behaviour of
-//  the lanes has to be measured on the routed design through GetNoise, whose
-//  symbols are the four lanes sampled on the same clock edge.
+//  The other three lanes are there to characterise the source. They
+//  reach GetNoise, in test mode, and nothing else: no health test, no seed
+//  word and no other state depends on them, and they carry no entropy
+//  credit. The entropy of a word is then a question about one process: how
+//  well each of sixteen consecutive bits can be guessed from the ring's own
+//  past and from whatever else is predictable. This block makes no claim
+//  about that; doc/sp800-90b-assessment.md has the measurements.
+//  (OpenTitan's entropy_src has the same single-channel mode,
+//  CONF.RNG_BIT_ENABLE with RNG_BIT_SEL.)
 //
 //  Health tests (NIST SP 800-90B, section 4; doc/sp800-90b-assessment.md).
-//  The noise-source sample of SP 800-90B is the kept 4-bit symbol (section
-//  3.1.6: copies of one noise source, concatenated). On every kept symbol:
+//  The sample is one bit, so the approved tests are the binary ones. On
+//  every sample:
 //
-//    on the symbol   repetition count (4.4.1): the same symbol srct times in
-//                    a row; adaptive proportion (4.4.2): sapt occurrences of
-//                    a window's first symbol in that window of 512
-//    on each lane    repetition count at lags 1 to 4: a lane bit equal to
-//                    the bit g samples earlier, rct - 1 times in a row (lag
-//                    1 is a stuck lane, lags 2 to 4 are patterns of period 2
-//                    to 4, such as 0101...); adaptive proportion: apt
-//                    occurrences of a window's first bit in that window of
-//                    1024
+//    repetition count (4.4.1), at lags 1 to 4: the bit equal to the bit g
+//                    samples earlier, rct - 1 times in a row. Lag 1 is the
+//                    approved test, the same bit rct times in a row (a stuck
+//                    ring); lags 2 to 4 are patterns of period 2 to 4, such
+//                    as 0101...
+//    adaptive proportion (4.4.2): apt occurrences of a window's first bit
+//                    in that window of 1024
 //
-//  The two symbol tests are the approved tests. The lane tests are there
-//  for failures that the symbol tests cannot see: a symbol with one dead or
-//  periodic lane still has three lanes' worth of variation. If a bit has
-//  min-entropy h given everything before it, it equals any bit determined by
-//  the past with probability at most 2^-h, so the cutoff formula of 4.4.1
-//  holds for every lag. Cutoffs for a false-alarm probability a per test
-//  and min-entropy H per symbol, h per lane bit:
-//      repetition  1 + ceil(-log2(a) / H)
-//      proportion  the smallest C with P(1 + B(W-1, 2^-H) >= C) <= a
-//  The first symbol of a window always counts, hence 1 + B(W-1, p). The
-//  formula of 4.4.2, 1 + CRITBINOM(W, 2^-H, 1 - a), gives one less on the
-//  symbol (123 for H = 3), which exceeds a by a factor of 1.4. The reset
-//  values are for a = 2^-40, H = 3 bits per symbol and h = 0.75 bit per lane
-//  bit: 15 and 124, 55 and 719. test/dbg/board/entropy_health.py computes
-//  them.
+//  If a bit has min-entropy h given everything before it, it equals any bit
+//  determined by the past with probability at most 2^-h, so the cutoff
+//  formula of 4.4.1 holds for every lag. Cutoffs for a false-alarm
+//  probability a per test and min-entropy h per sample:
+//      repetition  1 + ceil(-log2(a) / h)
+//      proportion  the smallest C with P(1 + B(W-1, 2^-h) >= C) <= a
+//  The first bit of a window always counts, hence 1 + B(W-1, p). The formula
+//  of 4.4.2, 1 + CRITBINOM(W, 2^-h, 1 - a), takes W trials and gives the
+//  same cutoff here. The reset values are those of the approved tests on the
+//  one-bit sample for h = 0.75 and a = 2^-40: 55 and 719.
+//  test/dbg/board/entropy_health.py computes them.
 //
 //  Failures. A failure in a start-up test is fatal: DEAD until reset. A
 //  failure while running wipes the buffered words and returns to the
@@ -59,10 +60,10 @@
 //  seen it, however long that takes and whether or not the retest has
 //  finished: the alarm of the Zkr text, "latched until polled at least
 //  once". Running failures are counted (strikes).
-//  2^calm kept symbols in a row without a failure clear the count; the
+//  2^calm samples in a row without a failure clear the count; the
 //  failure that makes the count reach the configured number is fatal. So a
 //  fault that keeps coming back ends in DEAD, and one that does not come
-//  back for 2^calm symbols is treated as intermittent.
+//  back for 2^calm samples is treated as intermittent.
 //
 //  CSR sideband (csr_sel_i), one committed access per instruction:
 //
@@ -77,7 +78,8 @@
 //                  [29] with [31]: also clear the loss flag (start a new run)
 //          read    noise_test = 0: constant 1 (present, no samples)
 //                  noise_test = 1: [31] 1, [30] symbol valid, [29] loss flag,
-//                  [3:0] symbol
+//                  [3:0] symbol: all four lanes, bit lane_i the one that
+//                  seed delivers outside test mode
 //      A symbol that arrives in the cycle of the CSRRW is kept for the next
 //      one. The loss flag is set when a symbol replaces one that was not
 //      taken, and stays set. It is also set when the source is switched off
@@ -99,18 +101,22 @@
 //  2   mentropycfg, read/write unless locked:
 //          [15:0]  interval    k-1: every k-th symbol of the source is kept.
 //                              Read back as written. Outside test mode the
-//                              source uses at least INTERVAL_MIN
-//          [25:16] rct         lane repetition cutoff (<= RCT_MAX)
-//          [36:26] apt         lane proportion cutoff, window 1024
-//                              (<= APT_MAX)
-//          [43:37] srct        symbol repetition cutoff (<= SRCT_MAX)
-//          [53:44] sapt        symbol proportion cutoff, window 512
-//                              (<= SAPT_MAX; 513 or more could never fire)
+//                              source uses at least the floor,
+//                              ((INTERVAL_MIN + 1) << kshift_i) - 1: the
+//                              strap kshift_i multiplies the build's
+//                              smallest k by 1, 2, 4 or 8. After reset the
+//                              field holds INTERVAL_RESET or the floor,
+//                              whichever is larger
+//          [25:16] rct         repetition cutoff (<= RCT_MAX)
+//          [36:26] apt         proportion cutoff, window 1024 (<= APT_MAX;
+//                              1025 or more could never fire)
+//          [53:37]             reserved: read zero, ignored on write
 //          [56:54] strikes     the running failure that is fatal: the n-th
-//                              without 2^calm clean symbols in between
+//                              without 2^calm clean samples in between
 //                              (<= STRIKE_MAX; 0 and 1: the first)
-//          [61:57] calm        log2 of the clean symbols that clear the
+//          [61:57] calm        log2 of the clean samples that clear the
 //                              strike count (>= CALM_MIN)
+//          [62]                reserved: reads zero, ignored on write
 //          [63]    lock        set-only until reset; freezes this CSR and
 //                              noise_test
 //      An accepted write empties the FIFO and restarts the start-up test;
@@ -119,7 +125,7 @@
 //      by the limit. The limits are one-sided: with the default parameters
 //      the reset values are the weakest configuration, and software can only
 //      make the tests stricter and the spacing longer. A cutoff of zero
-//      fails on the first symbol, which is fatal: a way to switch seed off
+//      fails on the first sample, which is fatal: a way to switch seed off
 //      until reset. So change a field by read-modify-write, never by
 //      writing a constant that leaves the other fields zero:
 //          csrr  t0, mentropycfg       # keep what is there
@@ -134,11 +140,15 @@
 //                              seen yet
 //          [6:4]   strikes     running failures not yet cleared, the fatal
 //                              one included
-//          [11:8]  cause       of the last failure: [8] symbol repetition,
-//                              [9] symbol proportion, [10] lane repetition,
-//                              [11] lane proportion
-//          [15:12] lanes       the lanes whose tests failed then
+//          [11:8]  cause       of the last failure: [10] repetition,
+//                              [11] proportion; [9:8] read zero
+//          [15:12] lanes       the lane that failed then, one bit per lane:
+//                              the selected one
 //          [19:16] lags        the lags that failed then ([16] is lag 1)
+//          [21:20] lane        the strap lane_i: the lane that is the noise
+//                              source
+//          [23:22] kshift      the strap kshift_i: the spacing floor is the
+//                              build's smallest k times 1, 2, 4 or 8
 //          [47:32] failures    since reset, saturating
 //
 //  Delivery. Consumers poll briefly (Linux 7.4 stops after 100 polls for four
@@ -149,9 +159,15 @@
 //  same cycle: that read gets no entropy. Nothing is delivered while the
 //  alarm is latched. seed is the only way out for a word: the debug
 //  authentication ROM reads seed like any other M-mode software.
+//  A burst is 64 samples, and the first one follows the 1024 samples of the
+//  start-up test: a consumer that polls from reset, or through a retest,
+//  waits (1024 + 64) * k raw symbols for a word, which at 256 clocks per raw
+//  symbol is 4.5 million clocks for k = 16 and 35.7 million for k = 128.
 //
-//  en_i is a platform strap. While it is low the noise source is off and
-//  seed stays in BIST, which every consumer handles by falling back.
+//  en_i, lane_i and kshift_i are platform straps. While en_i is low the
+//  noise source is off and seed stays in BIST, which every consumer handles
+//  by falling back. lane_i and kshift_i are constants of the platform: they
+//  do not change after reset.
 //
 //  References: The RISC-V Instruction Set Manual, current text
 //  (github.com/riscv/riscv-isa-manual, main; read 2026-11-17 and 2026-11-19):
@@ -169,19 +185,15 @@ module karu_entropy #(
     //  Reset values, and the weakest values that software can set. A limit
     //  follows its reset value unless the build says otherwise, so that the
     //  reset configuration is the weakest one.
-    parameter [15:0] INTERVAL_RESET = 16'd15,           //  k-1 after reset
-    parameter [15:0] INTERVAL_MIN   = INTERVAL_RESET,   //  smallest k-1 outside test mode
-    parameter [6:0]  SRCT_RESET     = 7'd15,            //  1 + ceil(40 / 3)
-    parameter [6:0]  SRCT_MAX       = SRCT_RESET,
-    parameter [9:0]  SAPT_RESET     = 10'd124,          //  P(1 + B(511, 2^-3) >= 124) <= 2^-40
-    parameter [9:0]  SAPT_MAX       = SAPT_RESET,
+    parameter [15:0] INTERVAL_RESET = 16'd15,           //  k-1 after reset, unless the floor is above it
+    parameter [15:0] INTERVAL_MIN   = INTERVAL_RESET,   //  smallest k-1 outside test mode, at kshift_i = 0
     parameter [9:0]  RCT_RESET      = 10'd55,           //  1 + ceil(40 / 0.75)
     parameter [9:0]  RCT_MAX        = RCT_RESET,
     parameter [10:0] APT_RESET      = 11'd719,          //  P(1 + B(1023, 2^-0.75) >= 719) <= 2^-40
     parameter [10:0] APT_MAX        = APT_RESET,
     parameter [2:0]  STRIKE_RESET   = 3'd3,             //  the third running failure is fatal
     parameter [2:0]  STRIKE_MAX     = STRIKE_RESET,
-    parameter [4:0]  CALM_RESET     = 5'd24,            //  2^24 kept symbols: 15 minutes at 18,310/s
+    parameter [4:0]  CALM_RESET     = 5'd24,            //  2^24 samples: 15 minutes at 18,310/s
     parameter [4:0]  CALM_MIN       = CALM_RESET,
     parameter integer FIFO_LOG2     = 3,        //  8 words
     parameter [2:0]  BURST          = 3'd4      //  words released together: one 64-bit read
@@ -189,6 +201,9 @@ module karu_entropy #(
     input  wire        clk,
     input  wire        rst,
     input  wire        en_i,            //  platform strap; low holds the source off
+    //  platform straps that do not change after reset
+    input  wire [1:0]  lane_i,          //  the bit of rng_b_i that is the noise source
+    input  wire [1:0]  kshift_i,        //  the spacing floor is the build's smallest k, shifted left by this
 
     //  raw noise source (OpenTitan: entropy_src_rng_enable/valid/bits, rng_fips)
     output wire        rng_en_o,
@@ -217,7 +232,7 @@ module karu_entropy #(
     localparam [1:0] SEL_SEED = 2'd0, SEL_NOISE = 2'd1, SEL_CFG = 2'd2, SEL_STAT = 2'd3;
     localparam [1:0] OPST_BIST = 2'd0, OPST_WAIT = 2'd1, OPST_ES16 = 2'd2, OPST_DEAD = 2'd3;
     localparam [1:0] S_BIST = 2'd0, S_RUN = 2'd1, S_DEAD = 2'd2;
-    localparam [10:0] STARTUP = 11'd1024;       //  consecutive symbols without a failure
+    localparam [10:0] STARTUP = 11'd1024;       //  consecutive samples without a failure
     localparam integer FIFO_WORDS = 1 << FIFO_LOG2;
 
     wire csr_wr   = csr_fire_i && csr_we_i;
@@ -229,8 +244,6 @@ module karu_entropy #(
     reg [15:0] int_q;
     reg [9:0]  rct_q;
     reg [10:0] apt_q;
-    reg [6:0]  srct_q;
-    reg [9:0]  sapt_q;
     reg [2:0]  strike_q;
     reg [4:0]  calm_q;
     reg        lock_q, test_q;
@@ -242,20 +255,11 @@ module karu_entropy #(
     //  build limits; with the widest limits a comparison is constant
     /* verilator lint_off UNSIGNED */
     /* verilator lint_off CMPCONST */
-    function [15:0] lim_int(input [15:0] v);
-        lim_int = (v < INTERVAL_MIN) ? INTERVAL_MIN : v;
-    endfunction
     function [9:0] lim_rct(input [9:0] v);
         lim_rct = (v > RCT_MAX) ? RCT_MAX : v;
     endfunction
     function [10:0] lim_apt(input [10:0] v);
         lim_apt = (v > APT_MAX) ? APT_MAX : v;
-    endfunction
-    function [6:0] lim_srct(input [6:0] v);
-        lim_srct = (v > SRCT_MAX) ? SRCT_MAX : v;
-    endfunction
-    function [9:0] lim_sapt(input [9:0] v);
-        lim_sapt = (v > SAPT_MAX) ? SAPT_MAX : v;
     endfunction
     function [2:0] lim_strike(input [2:0] v);
         lim_strike = (v > STRIKE_MAX) ? STRIKE_MAX : v;
@@ -263,6 +267,14 @@ module karu_entropy #(
     function [4:0] lim_calm(input [4:0] v);
         lim_calm = (v < CALM_MIN) ? CALM_MIN : v;
     endfunction
+
+    //  The spacing floor, as a value of the interval field (k-1): the build's
+    //  smallest k times 1, 2, 4 or 8, by the strap. A floor that the field
+    //  cannot hold is the largest interval.
+    wire [19:0] floor_k   = ({4'b0, INTERVAL_MIN} + 20'd1) << kshift_i;
+    wire [19:0] floor_km1 = floor_k - 20'd1;
+    wire [15:0] int_floor = (floor_km1[19:16] != 4'd0) ? 16'hffff : floor_km1[15:0];
+    wire [15:0] int_reset = (INTERVAL_RESET < int_floor) ? int_floor : INTERVAL_RESET;
     /* verilator lint_on CMPCONST */
     /* verilator lint_on UNSIGNED */
 
@@ -270,13 +282,12 @@ module karu_entropy #(
     wire restart = cfg_write || (noise_write && (test_next != test_q));
     wire hold    = !en_i;
 
+    //  [53:37] of the written value are ignored: the fields are reserved
     always @(posedge clk)
         if (rst) begin
-            int_q    <= INTERVAL_RESET;
+            int_q    <= int_reset;
             rct_q    <= lim_rct(RCT_RESET);
             apt_q    <= lim_apt(APT_RESET);
-            srct_q   <= lim_srct(SRCT_RESET);
-            sapt_q   <= lim_sapt(SAPT_RESET);
             strike_q <= lim_strike(STRIKE_RESET);
             calm_q   <= lim_calm(CALM_RESET);
             lock_q   <= 1'b0;
@@ -286,8 +297,6 @@ module karu_entropy #(
                 int_q    <= csr_wdata_i[15:0];
                 rct_q    <= lim_rct(csr_wdata_i[25:16]);
                 apt_q    <= lim_apt(csr_wdata_i[36:26]);
-                srct_q   <= lim_srct(csr_wdata_i[43:37]);
-                sapt_q   <= lim_sapt(csr_wdata_i[53:44]);
                 strike_q <= lim_strike(csr_wdata_i[56:54]);
                 calm_q   <= lim_calm(csr_wdata_i[61:57]);
                 lock_q   <= csr_wdata_i[63];
@@ -296,61 +305,50 @@ module karu_entropy #(
                 test_q <= test_next;
         end
 
-    wire [63:0] cfg_rdata = {lock_q, 1'b0, calm_q, strike_q, sapt_q, srct_q, apt_q, rct_q, int_q};
+    wire [63:0] cfg_rdata = {lock_q, 1'b0, calm_q, strike_q, 17'b0, apt_q, rct_q, int_q};
 
     //  ---- decimation: the kept symbols are what everything below sees ----
     //  The floor on the interval holds wherever seed can deliver. In test mode
     //  seed delivers nothing and the interval is the one written, so that the
     //  source can be characterised at any spacing.
     reg [15:0] int_cnt;
-    wire [15:0] int_use = test_q ? int_q : lim_int(int_q);
+    wire [15:0] int_use = test_q ? int_q : (int_q < int_floor) ? int_floor : int_q;
     wire sym_in = rng_val_i && en_i;
     wire sym_v  = sym_in && (int_cnt == int_use);
     always @(posedge clk)
         if (rst || restart || hold) int_cnt <= 16'd0;
         else if (sym_in)            int_cnt <= sym_v ? 16'd0 : int_cnt + 16'd1;
 
-    //  ---- health tests: on the symbol, and on each lane ----
-    reg [1:0]  state_q;
-    reg [9:0]  win_idx;                         //  position in the lane window of 1024; [8:0] in the symbol window of 512
-    reg [2:0]  seen_q;                          //  symbols since the last restart, up to four
-    reg [3:0]  hist [0:3];                      //  the last four symbols, hist[0] the latest
-    reg [3:0]  win_ref;                         //  first symbol of the lane window
-    reg [3:0]  sapt_ref;                        //  first symbol of the symbol window
-    reg [6:0]  srct_cnt;
-    reg [9:0]  sapt_cnt;
-    reg [9:0]  rct_cnt [0:15];                  //  lane l at lag g+1: [4*l + g]
-    reg [10:0] apt_cnt [0:3];
-    reg [9:0]  rct_n   [0:15];
-    reg [10:0] apt_n   [0:3];
-    reg [15:0] rct_fail;                        //  this symbol fails, per lane and lag
-    reg [3:0]  apt_fail;                        //  ... per lane
-    integer l, g;
+    //  ---- the sample: the selected lane of a kept symbol ----
+    //  Below this line only GetNoise sees the other three lanes.
+    wire b = rng_b_i[lane_i];
 
-    wire       win_first  = (win_idx == 10'd0);
-    wire       swin_first = (win_idx[8:0] == 9'd0);
-    wire [6:0] srct_n = (seen_q != 3'd0 && rng_b_i == hist[0]) ? srct_cnt + 7'd1 : 7'd1;
-    wire [9:0] sapt_n = swin_first            ? 10'd1 :
-                        (rng_b_i == sapt_ref) ? sapt_cnt + 10'd1 : sapt_cnt;
-    wire       srct_fail = (srct_n >= srct_q);
-    wire       sapt_fail = (sapt_n >= sapt_q);
+    //  ---- health tests on the sample ----
+    reg [1:0]  state_q;
+    reg [9:0]  win_idx;                         //  position in the window of 1024
+    reg [2:0]  seen_q;                          //  samples since the last restart, up to four
+    reg [3:0]  hist;                            //  the last four samples, hist[0] the latest
+    reg        win_ref;                         //  first sample of the window
+    reg [9:0]  rct_cnt [0:3];                   //  at lag g+1: [g]
+    reg [10:0] apt_cnt;
+    reg [9:0]  rct_n   [0:3];
+    reg [3:0]  rct_fail;                        //  this sample fails, per lag
+    integer g, c;
+
+    wire        win_first = (win_idx == 10'd0);
+    wire [10:0] apt_n     = win_first      ? 11'd1 :
+                            (b == win_ref) ? apt_cnt + 11'd1 : apt_cnt;
+    wire        apt_fail  = (apt_n >= apt_q);
 
     always @* begin
-        for (l = 0; l < 4; l = l + 1) begin
-            for (g = 0; g < 4; g = g + 1) begin
-                rct_n[4*l+g] = (seen_q > g[2:0] && rng_b_i[l] == hist[g][l]) ? rct_cnt[4*l+g] + 10'd1 : 10'd1;
-                rct_fail[4*l+g] = (rct_n[4*l+g] >= rct_q);
-            end
-            apt_n[l] = win_first                  ? 11'd1 :
-                       (rng_b_i[l] == win_ref[l]) ? apt_cnt[l] + 11'd1 : apt_cnt[l];
-            apt_fail[l] = (apt_n[l] >= apt_q);
+        for (g = 0; g < 4; g = g + 1) begin
+            rct_n[g]    = (seen_q > g[2:0] && b == hist[g]) ? rct_cnt[g] + 10'd1 : 10'd1;
+            rct_fail[g] = (rct_n[g] >= rct_q);
         end
     end
 
-    //  what failed: the tests, the lanes and the lags
-    wire [3:0] lane_rct  = {|rct_fail[15:12], |rct_fail[11:8], |rct_fail[7:4], |rct_fail[3:0]};
-    wire [3:0] lag_rct   = rct_fail[15:12] | rct_fail[11:8] | rct_fail[7:4] | rct_fail[3:0];
-    wire [3:0] cause     = {|apt_fail, |rct_fail, sapt_fail, srct_fail};
+    //  what failed: [3] proportion, [2] repetition; [1:0] are not used
+    wire [3:0] cause = {apt_fail, |rct_fail, 2'b00};
 
     wire test_run = sym_v && !test_q && (state_q != S_DEAD);
     wire fail     = test_run && (|cause);
@@ -358,30 +356,25 @@ module karu_entropy #(
 
     always @(posedge clk)
         if (rst || clear) begin
-            win_idx <= 10'd0; seen_q <= 3'd0; srct_cnt <= 7'd0; sapt_cnt <= 10'd0;
-            for (l = 0; l < 16; l = l + 1) rct_cnt[l] <= 10'd0;
-            for (l = 0; l < 4; l = l + 1) apt_cnt[l] <= 11'd0;
+            win_idx <= 10'd0; seen_q <= 3'd0; apt_cnt <= 11'd0;
+            for (c = 0; c < 4; c = c + 1) rct_cnt[c] <= 10'd0;
             if (rst) begin
-                win_ref <= 4'b0; sapt_ref <= 4'b0;
-                for (l = 0; l < 4; l = l + 1) hist[l] <= 4'b0;
+                win_ref <= 1'b0; hist <= 4'b0;
             end
         end else if (test_run) begin
             if (seen_q != 3'd4) seen_q <= seen_q + 3'd1;
-            hist[0] <= rng_b_i; hist[1] <= hist[0]; hist[2] <= hist[1]; hist[3] <= hist[2];
-            if (win_first)  win_ref  <= rng_b_i;
-            if (swin_first) sapt_ref <= rng_b_i;
-            win_idx  <= win_idx + 10'd1;        //  wraps at 1024
-            srct_cnt <= srct_n;
-            sapt_cnt <= sapt_n;
-            for (l = 0; l < 16; l = l + 1) rct_cnt[l] <= rct_n[l];
-            for (l = 0; l < 4; l = l + 1) apt_cnt[l] <= apt_n[l];
+            hist <= {hist[2:0], b};
+            if (win_first) win_ref <= b;
+            win_idx <= win_idx + 10'd1;         //  wraps at 1024
+            apt_cnt <= apt_n;
+            for (c = 0; c < 4; c = c + 1) rct_cnt[c] <= rct_n[c];
         end
 
     //  ---- strikes: running failures that have not been cleared ----
     //  The strike count and the alarm are not touched by a restart: only a
-    //  reset, clean symbols or a seed access change them.
+    //  reset, clean samples or a seed access change them.
     reg [2:0]  strike_cnt;
-    reg [31:0] calm_cnt;                        //  clean symbols since the last failure, while there are strikes
+    reg [31:0] calm_cnt;                        //  clean samples since the last failure, while there are strikes
     wire run_fail = fail && (state_q == S_RUN);
     wire fatal    = fail && ((state_q == S_BIST) || ({1'b0, strike_cnt} + 4'd1 >= {1'b0, strike_q}));
     wire [31:0] calm_n = calm_cnt + 32'd1;
@@ -409,13 +402,14 @@ module karu_entropy #(
         else if (seed_ack) alarm_q <= 1'b0;
 
     //  ---- what the last failure was, and how many there have been ----
+    //  The lane is the selected one: no other lane is tested.
     reg [3:0]  cause_q, lanes_q, lags_q;
     reg [15:0] fails_q;
     always @(posedge clk)
         if (rst) begin
             cause_q <= 4'b0; lanes_q <= 4'b0; lags_q <= 4'b0; fails_q <= 16'd0;
         end else if (fail) begin
-            cause_q <= cause; lanes_q <= lane_rct | apt_fail; lags_q <= lag_rct;
+            cause_q <= cause; lanes_q <= 4'b0001 << lane_i; lags_q <= rct_fail;
             if (fails_q != 16'hffff) fails_q <= fails_q + 16'd1;
         end
 
@@ -437,16 +431,16 @@ module karu_entropy #(
             bist_cnt <= bist_cnt + 11'd1;
         end
 
-    //  ---- pack four raw symbols into a word; no bit is combined with another ----
-    reg [11:0] part_q;                          //  the first three symbols of a word
-    reg [1:0]  nib_cnt;
+    //  ---- pack sixteen samples into a word; no bit is combined with another ----
+    reg [14:0] part_q;                          //  the first fifteen samples of a word
+    reg [3:0]  bit_cnt;
     reg [15:0] fifo [0:FIFO_WORDS-1];
     reg [FIFO_LOG2:0]   fill_q;
     reg [FIFO_LOG2-1:0] rd_q, wr_q;
     reg [2:0]  burst_q;                         //  words still owed to the open burst
     wire full    = (fill_q == FIFO_WORDS[FIFO_LOG2:0]);
     wire take    = test_run && (state_q == S_RUN) && !full && !fail;
-    wire push    = take && (nib_cnt == 2'd3);
+    wire push    = take && (bit_cnt == 4'd15);
     //  No delivery in a cycle in which a health failure wipes the words: the
     //  failure wins over the read. A restart is deliberately not in this
     //  term. It comes from a CSR write, which the same hart cannot make in
@@ -464,20 +458,20 @@ module karu_entropy #(
 
     always @(posedge clk)
         if (rst) begin
-            part_q <= 12'b0; nib_cnt <= 2'd0; fill_q <= {(FIFO_LOG2+1){1'b0}};
+            part_q <= 15'b0; bit_cnt <= 4'd0; fill_q <= {(FIFO_LOG2+1){1'b0}};
             rd_q <= {FIFO_LOG2{1'b0}}; wr_q <= {FIFO_LOG2{1'b0}}; burst_q <= 3'd0;
             for (w = 0; w < FIFO_WORDS; w = w + 1) fifo[w] <= 16'b0;
         end else if (clear || state_q != S_RUN) begin
-            part_q <= 12'b0; nib_cnt <= 2'd0; fill_q <= {(FIFO_LOG2+1){1'b0}};
+            part_q <= 15'b0; bit_cnt <= 4'd0; fill_q <= {(FIFO_LOG2+1){1'b0}};
             rd_q <= {FIFO_LOG2{1'b0}}; wr_q <= {FIFO_LOG2{1'b0}}; burst_q <= 3'd0;
             for (w = 0; w < FIFO_WORDS; w = w + 1) fifo[w] <= 16'b0;
         end else begin
             if (take) begin
-                nib_cnt <= nib_cnt + 2'd1;
-                part_q  <= push ? 12'b0 : {part_q[7:0], rng_b_i};
+                bit_cnt <= bit_cnt + 4'd1;      //  wraps at sixteen
+                part_q  <= push ? 15'b0 : {part_q[13:0], b};
             end
-            if (push) begin
-                fifo[wr_q] <= {part_q, rng_b_i};
+            if (push) begin                     //  the first sample in bit 15, the last in bit 0
+                fifo[wr_q] <= {part_q, b};
                 wr_q <= wr_q + 1'b1;
             end
             if (pop) begin                      //  wipe on read
@@ -500,6 +494,8 @@ module karu_entropy #(
     wire [15:0] seed_data = (seed_opst == OPST_ES16) ? fifo[rd_q] : 16'b0;
 
     //  ---- GetNoise: one raw symbol at a time, with a loss indicator ----
+    //  All four lanes, as the source gave them: the selected one and the
+    //  other three.
     reg [3:0] raw_q;
     reg       raw_v, raw_lost;
     wire raw_pop = noise_write && test_q && test_next;      //  CSRRW that stays in test mode
@@ -526,7 +522,7 @@ module karu_entropy #(
 
     wire [63:0] noise_rdata = test_q ? {32'b0, 1'b1, raw_v, raw_lost, 25'b0, raw_q} : 64'd1;
     wire [63:0] seed_rdata  = {32'b0, seed_opst, 14'b0, seed_data};
-    wire [63:0] stat_rdata  = {16'b0, fails_q, 12'b0, lags_q, lanes_q, cause_q, 1'b0, strike_cnt, 1'b0, alarm_q, state_q};
+    wire [63:0] stat_rdata  = {16'b0, fails_q, 8'b0, kshift_i, lane_i, lags_q, lanes_q, cause_q, 1'b0, strike_cnt, 1'b0, alarm_q, state_q};
 
     assign csr_rdata_o = (csr_sel_i == SEL_SEED)  ? seed_rdata  :
                          (csr_sel_i == SEL_NOISE) ? noise_rdata :
@@ -542,11 +538,17 @@ module karu_entropy #(
 `ifndef KARU_NO_ASSERT
     // synthesis translate_off
     integer a;
-    reg was_dead, was_alarm, was_ack;
+    reg was_dead, was_alarm, was_ack, was_live;
+    reg [3:0] was_strap;                        //  the straps one cycle ago
+    reg [4:0] taken_q;                          //  samples taken into the word being packed, counted apart from bit_cnt
     always @(posedge clk) begin
         was_dead  <= !rst && (state_q == S_DEAD);
         was_alarm <= !rst && alarm_q;
         was_ack   <= seed_ack;
+        was_live  <= !rst;
+        was_strap <= {kshift_i, lane_i};
+        if (rst || clear || state_q != S_RUN) taken_q <= 5'd0;
+        else if (take)                        taken_q <= push ? 5'd0 : taken_q + 5'd1;
     end
     always @(posedge clk) if (!rst) begin
         if (test_q && seed_opst == OPST_ES16) begin
@@ -555,7 +557,7 @@ module karu_entropy #(
         if (seed_opst != OPST_ES16 && seed_data != 16'b0) begin
             $display("ASSERT: karu_entropy: entropy bits outside ES16"); $fatal;
         end
-        if (state_q != S_RUN && (fill_q != 0 || burst_q != 3'd0 || part_q != 12'b0)) begin
+        if (state_q != S_RUN && (fill_q != 0 || burst_q != 3'd0 || part_q != 15'b0 || bit_cnt != 4'd0)) begin
             $display("ASSERT: karu_entropy: output state outside RUN"); $fatal;
         end
         if ({1'b0, burst_q} > fill_q) begin
@@ -580,22 +582,49 @@ module karu_entropy #(
             $display("ASSERT: karu_entropy: an alarm was cleared without a seed access"); $fatal;
         end
         //  a count at its cutoff is a failure, and a failure clears the counts
-        if ((srct_cnt != 7'd0 && srct_cnt >= srct_q) || (sapt_cnt != 10'd0 && sapt_cnt >= sapt_q)) begin
-            $display("ASSERT: karu_entropy: a symbol count at its cutoff survived"); $fatal;
-        end
-        for (a = 0; a < 16; a = a + 1)
-            if (rct_cnt[a] != 10'd0 && rct_cnt[a] >= rct_q) begin
-                $display("ASSERT: karu_entropy: a lane repetition count at its cutoff survived"); $fatal;
-            end
         for (a = 0; a < 4; a = a + 1)
-            if (apt_cnt[a] != 11'd0 && apt_cnt[a] >= apt_q) begin
-                $display("ASSERT: karu_entropy: a lane proportion count at its cutoff survived"); $fatal;
+            if (rct_cnt[a] != 10'd0 && rct_cnt[a] >= rct_q) begin
+                $display("ASSERT: karu_entropy: a repetition count at its cutoff survived"); $fatal;
             end
+        if (apt_cnt != 11'd0 && apt_cnt >= apt_q) begin
+            $display("ASSERT: karu_entropy: a proportion count at its cutoff survived"); $fatal;
+        end
         if (state_q != S_DEAD && strike_cnt != 3'd0 && {1'b0, strike_cnt} + 4'd1 > {1'b0, STRIKE_MAX}) begin
             $display("ASSERT: karu_entropy: more strikes than the build allows, and not dead"); $fatal;
         end
         if (strike_cnt > STRIKE_MAX && STRIKE_MAX != 3'd0) begin
             $display("ASSERT: karu_entropy: the strike count passed the build limit"); $fatal;
+        end
+        //  a word is sixteen samples: pushed on the sixteenth taken, never before or after
+        if (push != (take && taken_q == 5'd15) || taken_q > 5'd15) begin
+            $display("ASSERT: karu_entropy: a word is not sixteen samples"); $fatal;
+        end
+        if (taken_q[3:0] != bit_cnt) begin
+            $display("ASSERT: karu_entropy: the bit count does not follow the samples taken"); $fatal;
+        end
+        //  no buffered bit outside the words that are held
+        for (a = 0; a < FIFO_WORDS; a = a + 1)
+            if (((a - {{(32-FIFO_LOG2){1'b0}}, rd_q}) & (FIFO_WORDS - 1)) >= {{(31-FIFO_LOG2){1'b0}}, fill_q} && fifo[a] != 16'b0) begin
+                $display("ASSERT: karu_entropy: an empty buffer slot holds bits"); $fatal;
+            end
+        //  one lane only: the failure report names the selected lane, and
+        //  the fields of the tests on the 4-bit symbol are gone
+        if (lanes_q != 4'b0 && lanes_q != (4'b0001 << lane_i)) begin
+            $display("ASSERT: karu_entropy: a failure is reported on a lane that is not the selected one"); $fatal;
+        end
+        if (cause_q[1:0] != 2'b0 || cfg_rdata[53:37] != 17'b0 || cfg_rdata[62]) begin
+            $display("ASSERT: karu_entropy: a reserved field is not zero"); $fatal;
+        end
+        //  the spacing: never under the floor where seed can deliver, and the
+        //  counter never past the interval in use
+        if (!test_q && int_use < int_floor) begin
+            $display("ASSERT: karu_entropy: the spacing is below the floor outside test mode"); $fatal;
+        end
+        if (int_cnt > int_use) begin
+            $display("ASSERT: karu_entropy: the decimation counter passed the interval"); $fatal;
+        end
+        if (was_live && was_strap != {kshift_i, lane_i}) begin
+            $display("ASSERT: karu_entropy: lane_i or kshift_i changed after reset"); $fatal;
         end
     end
     // synthesis translate_on

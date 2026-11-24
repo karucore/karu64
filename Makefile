@@ -2432,7 +2432,24 @@ gen-pcspma:	| $(BUILD)
 		vivado -mode batch -log gen_pcspma.log -journal gen_pcspma.jou \
 			-source "$(VIVADO_FPGA_SRC)/eth/gen_pcspma.tcl"
 
+#	The boot memory image is hashed before the build and tied to the
+#	bitstream after it (flow/rom_record.py): the programming bundle and a
+#	strap variant's bundle take their manifest and DTB from that file, and
+#	check by hash that it is still the one in the bitstream. The record of
+#	the previous image stays until a new bitstream has its own: it names its
+#	bitstream by hash, so beside a newer bitstream it fails verification
+#	instead of vouching for it, and a synthesis-only run, which writes no
+#	bitstream, leaves image and record as they were.
+VCU118_ROM_RECORD ?= $(BUILD)/vcu118_ddr.rom.json
+#	The two steps, on every recipe that runs the image build: the hash of the
+#	boot memory image right after it is packed and before Vivado reads it,
+#	and the record once Vivado has written a new bitstream (rom_record.py
+#	refuses a bitstream that is not newer than the hash, or a ROM that
+#	changed since).
+VCU118_ROM_HASH_BEFORE = python3 flow/rom_record.py before --rom "$(VCU118_FUBOOT_HEX)" --out "$(BUILD)/vcu118_ddr.rom.before"
+VCU118_ROM_RECORD_AFTER = $(if $(SYNTH_ONLY),@echo "synthesis only: no new bitstream and no new ROM record (the previous ones are kept)",python3 flow/rom_record.py write --bit "$(BUILD)/vcu118_ddr.bit" --rom "$(VCU118_FUBOOT_HEX)" --before "$(BUILD)/vcu118_ddr.rom.before" --out "$(VCU118_ROM_RECORD)")
 vcu118_ddr.bit:	mig-vcu118 $(VCU118_FUBOOT_HEX) | $(BUILD)
+	$(VCU118_ROM_HASH_BEFORE)
 	$(call VIVADO_PRIVATE_UMASK,$(KARU_DEFINES)) ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="$(KARU_DEFINES)" VIVADO_THREADS="$(VIVADO_THREADS)" \
 		KARU_SYNTH_ONLY="$(SYNTH_ONLY)" KARU_SYNTH_DIRECTIVE="$(SYNTH_DIRECTIVE)" \
@@ -2443,6 +2460,92 @@ vcu118_ddr.bit:	mig-vcu118 $(VCU118_FUBOOT_HEX) | $(BUILD)
 		KARU_REPORT_TAG="$(KARU_REPORT_TAG)" \
 		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+	$(VCU118_ROM_RECORD_AFTER)
+
+#	A second image from the routed design of the last build, different only
+#	in the soft straps of the entropy source (flow/fpga/karu_softstrap.v):
+#	the lane seed delivers, the spacing floor, the rings that run outside
+#	test mode. Nothing is placed or routed again, so the variant has the
+#	rings of the image it comes from, wire for wire. Two bitstreams are
+#	written (the checkpoint's own, for comparison, and the variant); the time
+#	is that of opening the checkpoint and writing them, not yet measured on a
+#	full image.
+#	    make vcu118-strap-variant STRAP_KSHIFT=2		# k at least 64
+#	    make vcu118-strap-variant STRAP_RINGS=0x3f		# the references on
+#	STRAP_LANE 0..3, STRAP_KSHIFT 0..3 (k at least 16 << n), STRAP_RINGS a
+#	mask (bit r: ring r; 0..3 the lanes, 4 and 5 the references). One not
+#	given stays as built. The image is $(BUILD)/vcu118_ddr$(STRAP_TAG).bit,
+#	mode 0600 like the one it comes from (it holds the same key). The
+#	conversion also writes the checkpoint's own bitstream again, and
+#	flow/strap_diff.py checks that this is the image (so the checkpoint is
+#	the image's design) and that the variant differs from it in the changed
+#	straps' look-up tables (whole or half), the check bits of their frames,
+#	the CRC words and the file header only; it writes
+#	$(BUILD)/vcu118_ddr$(STRAP_TAG).strap.json, which names image,
+#	checkpoint, variant and log by their hashes. The variant needs its own
+#	authentication record and bundle before it goes to a board
+#	(vcu118-strap-bundle).
+STRAP_TAG ?= $(if $(STRAP_LANE),-lane$(STRAP_LANE))$(if $(STRAP_KSHIFT),-k$(STRAP_KSHIFT))$(if $(STRAP_RINGS),-rings$(STRAP_RINGS))
+STRAP_BIT = $(abspath $(BUILD))/vcu118_ddr$(STRAP_TAG).bit
+STRAP_LOG = $(abspath $(BUILD))/vcu118_ddr_strap$(STRAP_TAG).log
+#	the same files as the bundle names them, relative to the repository
+STRAP_BIT_REL = $(BUILD)/vcu118_ddr$(STRAP_TAG).bit
+STRAP_RECORD = $(BUILD)/vcu118_ddr$(STRAP_TAG).strap.json
+.PHONY: vcu118-strap-variant
+vcu118-strap-variant:
+	@test -n "$(STRAP_TAG)" || { echo "ERROR: give STRAP_LANE, STRAP_KSHIFT or STRAP_RINGS"; exit 1; }
+	@test -f "$(abspath $(BUILD))/vcu118_ddr_route.dcp" -a -f "$(abspath $(BUILD))/vcu118_ddr.bit" \
+		|| { echo "ERROR: no routed design and image in $(BUILD): build the image first"; exit 1; }
+	@rm -f "$(STRAP_RECORD)"
+	umask 077; $(VIVADO_RUN) KARU_STRAP_DCP="$(abspath $(BUILD))/vcu118_ddr_route.dcp" KARU_STRAP_OUT="$(STRAP_BIT)" \
+		KARU_STRAP_LANE="$(STRAP_LANE)" KARU_STRAP_KSHIFT="$(STRAP_KSHIFT)" KARU_STRAP_RINGS="$(STRAP_RINGS)" \
+		vivado -mode batch -nojournal -log "$(STRAP_LOG)" -source "$(VIVADO_FPGA_SRC)/strap_variant.tcl"
+	@grep '^KARU_STRAP' "$(STRAP_LOG)"
+	umask 077; python3 flow/strap_diff.py record --image "$(BUILD)/vcu118_ddr.bit" --base "$(STRAP_BIT).base.bit" \
+		--variant "$(STRAP_BIT_REL)" --checkpoint "$(BUILD)/vcu118_ddr_route.dcp" --log "$(STRAP_LOG)" \
+		--out "$(STRAP_RECORD)" --remove-base $(if $(wildcard $(VCU118_ROM_RECORD)),--rom-record "$(VCU118_ROM_RECORD)")
+	sha256sum "$(STRAP_BIT_REL)"
+
+#	The programming bundle of a strap variant, vcu118_programming$(STRAP_TAG).tgz:
+#	the variant's bitstream with its own authentication record and ROM
+#	manifest. The island ROM, its flags and the key are those of the image the
+#	variant comes from (a strap changes none of them); the record ties them to
+#	the variant's hash, and the bundle rule checks it before it adds the key.
+#	The manifest and the DTB come from the boot ROM image only after its hash
+#	has been checked against the image's ROM record: a ROM packed again since
+#	the image was built is refused, whatever its time stamp.
+#	The variant's record goes in too, and is checked first: the bundle is
+#	only made for a variant that the recorded conversion made from the image
+#	that is in $(BUILD) now. Member names are relative, $(BUILD)/..., like
+#	the image's bundle. Same STRAP_* variables as vcu118-strap-variant, which
+#	must have run. On the board host: KARU_BITFILE=vcu118_ddr$(STRAP_TAG).bit
+#	make prog_vcu118_ddr.
+.PHONY: vcu118-strap-bundle
+vcu118-strap-bundle:
+	@test -n "$(STRAP_TAG)" -a -s "$(STRAP_BIT_REL)" -a -s "$(STRAP_RECORD)" \
+		|| { echo "ERROR: no variant $(STRAP_BIT_REL) with its record: run vcu118-strap-variant with the same STRAP_* first"; exit 1; }
+	@test -e "$(VCU118_AUTH_RECORD)" || { echo "ERROR: no $(VCU118_AUTH_RECORD): the image the variant comes from has no authentication record"; exit 1; }
+	python3 flow/strap_diff.py verify --record "$(STRAP_RECORD)" --image "$(BUILD)/vcu118_ddr.bit" --variant "$(STRAP_BIT_REL)"
+	python3 flow/auth_record.py verify --record "$(VCU118_AUTH_RECORD)" --bit "$(BUILD)/vcu118_ddr.bit" \
+		--rom "$(VCU118_AUTH_ROM_HEX)" --key "$(VCU118_AUTH_KEY)" > /dev/null
+	python3 flow/auth_record.py write --bit "$(STRAP_BIT_REL)" --flags $(VCU118_AUTH_ROM_STAMP) \
+		--rom $(VCU118_AUTH_ROM_HEX) $(if $(VCU118_AUTH_ROM_ALG),--key $(VCU118_AUTH_KEY)) --out "$(BUILD)/vcu118_auth_record$(STRAP_TAG).json"
+	$(MAKE) vcu118-program-bundle VCU118_BIT="$(STRAP_BIT_REL)" VCU118_AUTH_RECORD="$(BUILD)/vcu118_auth_record$(STRAP_TAG).json" \
+		VCU118_ROM_MANIFEST="$(BUILD)/vcu118_rom_manifest$(STRAP_TAG).txt" VCU118_PROGRAM_TGZ="$(BUILD)/vcu118_programming$(STRAP_TAG).tgz" \
+		VCU118_BUNDLE_EXTRA="$(STRAP_RECORD)" VCU118_ROM_PARENT_BIT="$(BUILD)/vcu118_ddr.bit" VCU118_ROM_RECORD_REQUIRED=1
+	@! tar -tzf "$(BUILD)/vcu118_programming$(STRAP_TAG).tgz" | grep -v '^$(BUILD)/' \
+		|| { echo "ERROR: a member of the bundle is not under $(BUILD)/"; exit 1; }
+
+#	The checks of the strap-variant flow, without Vivado and without an image:
+#	flow/strap_diff.py and flow/rom_record.py on generated files with the
+#	structure of a VCU118 bitstream, and the record steps of every image
+#	recipe, in this file's text and in dry runs (test/test_strap_flow.py).
+#	Seconds.
+.PHONY: strap-flow-test
+strap-flow-test: | $(BUILD)
+	python3 test/test_strap_flow.py --out $(BUILD)/strap-flow > $(BUILD)/strap-flow-test.log 2>&1 \
+		|| { tail -3 $(BUILD)/strap-flow-test.log; exit 1; }
+	@grep 'strap flow self-test: PASS' $(BUILD)/strap-flow-test.log
 
 vcu118-ddr:
 	$(MAKE) vcu118_ddr.bit KARU_DEFINES="KARU_NO_V" \
@@ -2490,6 +2593,7 @@ vcu118-ddr-sgmii-taxi: gen-pcspma
 #	directly (bypassing the vcu118_ddr.bit rule so the monitor hex rule cannot clobber
 #	the ROM image). DRAM is 2 GiB. On a 32 GB host add VIVADO_VMEM_KB=26000000 VIVADO_THREADS=4.
 vcu118-ddr-sgmii-rom: gen-pcspma mig-vcu118 vcu118-fuboot-rom-hex | $(BUILD)
+	$(VCU118_ROM_HASH_BEFORE)
 	ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="KARU_NO_F KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4" \
 		VIVADO_THREADS="$(VIVADO_THREADS)" \
@@ -2501,6 +2605,7 @@ vcu118-ddr-sgmii-rom: gen-pcspma mig-vcu118 vcu118-fuboot-rom-hex | $(BUILD)
 		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_imac_sgmii_75_rom)" \
 		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+	$(VCU118_ROM_RECORD_AFTER)
 
 #	SCALAR RV64GC standalone (U-Boot-in-ROM) SGMII bitstream at 75 MHz: identical
 #	full-Linux infrastructure as vcu118-ddr-sgmii-rom (SGMII Ethernet + 2 MiB
@@ -2539,6 +2644,7 @@ vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
 		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
 		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
 		FUBOOT_ROM_DTB="$(FUBOOT_RV64GC_DTB)"
+	$(VCU118_ROM_HASH_BEFORE)
 	ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="KARU_NO_V KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_MUL_CYCLES=4 KARU_DIV_CYCLES=64" \
 		VIVADO_THREADS="$(VIVADO_THREADS)" \
@@ -2550,6 +2656,7 @@ vcu118-ddr-sgmii-rom-gc: gen-pcspma mig-vcu118 | $(BUILD)
 		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_gc_sgmii_75_rom)" \
 		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+	$(VCU118_ROM_RECORD_AFTER)
 
 #	FULL-VECTOR standalone (U-Boot-in-ROM) SGMII bitstream: same SGMII + 2 MiB
 #	boot-ROM + 2 GiB DRAM as vcu118-ddr-sgmii-rom, but the FULL RV64GCV + Zvk +
@@ -2578,6 +2685,7 @@ vcu118-ddr-sgmii-rom-vec: gen-pcspma mig-vcu118 | $(BUILD)
 		FUBOOT_UBOOT="$(UBOOT_NETBOOT_BIN)" \
 		FUBOOT_OPENSBI="$(KARUDEB_OPENSBI)" \
 		FUBOOT_ROM_DTB="$(FUBOOT_VEC_DTB)"
+	$(VCU118_ROM_HASH_BEFORE)
 	$(call VIVADO_PRIVATE_UMASK,$(VCU118_VEC_EXTRA_DEFINES)) ulimit -v $(VIVADO_VMEM_KB); \
 	$(VIVADO_RUN) KARU_DEFINES="KARU_ETH_PHY KARU_ETH_SGMII KARU_ETH_PHY_TAXI_INIT KARU_DDR_CPU_DIV=4 KARU_ZVK KARU_KECCAK KARU_V_MUL_CYCLES=16 KARU_V_DIV_CYCLES=64 KARU_V_LANE_PIPE KARU_V_CWB_STAGE KARU_SMCNTRPMF KARU_SSCOFPMF $(VCU118_VEC_EXTRA_DEFINES)" \
 		VIVADO_THREADS="$(VIVADO_THREADS)" \
@@ -2589,6 +2697,7 @@ vcu118-ddr-sgmii-rom-vec: gen-pcspma mig-vcu118 | $(BUILD)
 		KARU_REPORT_TAG="$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_vec_sgmii_75_rom)" \
 		vivado -mode batch -log vcu118_ddr_synth.log -journal vcu118_ddr_synth.jou \
 			-source "$(VIVADO_FPGA_SRC)/xcvu9p-ddr-synth.tcl"
+	$(VCU118_ROM_RECORD_AFTER)
 
 # The profile uses the existing board/ROM/75 MHz pipeline, with separately
 # staged ISA discovery. It is never selected by the legacy vector target.
@@ -2737,18 +2846,36 @@ vcu118-ddr-eth-probe-100:
 #	newer than the bitstream was repacked after the build and no longer
 #	describes it; that is an error rather than a wrong manifest.
 VCU118_PROGRAM_TGZ ?= $(BUILD)/vcu118_programming.tgz
+#	the bitstream the bundle is for: the image, or a strap variant of it
+#	(vcu118-strap-bundle)
+VCU118_BIT ?= $(BUILD)/vcu118_ddr.bit
+#	further members (a strap variant's record)
+VCU118_BUNDLE_EXTRA ?=
+#	the bitstream that the boot ROM record names: the image itself, also for a
+#	strap variant's bundle, whose ROM is the image's
+VCU118_ROM_PARENT_BIT ?= $(BUILD)/vcu118_ddr.bit
 VCU118_ROM_MANIFEST ?= $(BUILD)/vcu118_rom_manifest.txt
 VCU118_ROM_DTB ?= $(BUILD)/vcu118_rom_board.dtb
 vcu118-program-bundle: | $(BUILD)
-	@test -s "$(BUILD)/vcu118_ddr.bit" || { echo "ERROR: $(BUILD)/vcu118_ddr.bit not found -- build the bitstream first"; exit 1; }
-	@set -e; files="$(BUILD)/vcu118_ddr.bit"; \
+	@test -s "$(VCU118_BIT)" || { echo "ERROR: $(VCU118_BIT) not found -- build the bitstream first"; exit 1; }
+	@set -e; files="$(VCU118_BIT) $(VCU118_BUNDLE_EXTRA)"; \
 		if test -s "$(BUILD)/vcu118_ddr.ltx"; then files="$$files $(BUILD)/vcu118_ddr.ltx"; fi; \
+		if test -s "$(VCU118_ROM_RECORD)"; then \
+			test -s "$(VCU118_FUBOOT_HEX)" || { echo "ERROR: $(VCU118_FUBOOT_HEX) is missing or empty: the bundle would have no ROM manifest and no DTB"; exit 1; }; \
+			python3 flow/rom_record.py verify --record "$(VCU118_ROM_RECORD)" --bit "$(VCU118_ROM_PARENT_BIT)" --rom "$(VCU118_FUBOOT_HEX)" || exit 1; \
+			files="$$files $(VCU118_ROM_RECORD)"; \
+		elif test -n "$(VCU118_ROM_RECORD_REQUIRED)"; then \
+			echo "ERROR: no $(VCU118_ROM_RECORD): nothing ties $(VCU118_FUBOOT_HEX) to the image by hash"; exit 1; \
+		fi; \
 		if test -s "$(VCU118_FUBOOT_HEX)" && test "$$(wc -l < "$(VCU118_FUBOOT_HEX)")" -eq 262144; then \
-			if test "$(VCU118_FUBOOT_HEX)" -nt "$(BUILD)/vcu118_ddr.bit"; then \
+			if test "$(VCU118_FUBOOT_HEX)" -nt "$(VCU118_BIT)"; then \
 				echo "ERROR: $(VCU118_FUBOOT_HEX) is newer than the bitstream -- the ROM was repacked after the build, so it cannot describe this bitstream; rebuild"; exit 1; \
 			fi; \
+			if ! test -s "$(VCU118_ROM_RECORD)"; then \
+				echo "NOTE: no $(VCU118_ROM_RECORD) (an image built before the record existed): the ROM image is tied to the bitstream by its time stamp only"; \
+			fi; \
 			python3 flow/rom_manifest.py --rom-hex "$(VCU118_FUBOOT_HEX)" --blobs flow/boot/fuboot_blobs.h \
-				--bit "$(BUILD)/vcu118_ddr.bit" --manifest "$(VCU118_ROM_MANIFEST)" --dtb "$(VCU118_ROM_DTB)" \
+				--bit "$(VCU118_BIT)" --manifest "$(VCU118_ROM_MANIFEST)" --dtb "$(VCU118_ROM_DTB)" \
 				--toolchain "$(VCU118_FUBOOT_TOOLCHAIN)" \
 				--repo karu64=. --repo karudeb="$(KARUDEB)"; \
 			files="$$files $(VCU118_ROM_MANIFEST) $(VCU118_ROM_DTB)"; \
@@ -2756,7 +2883,7 @@ vcu118-program-bundle: | $(BUILD)
 			echo "NOTE: $(VCU118_FUBOOT_HEX) is not a packed boot ROM -- no ROM manifest or DTB in the bundle"; \
 		fi; \
 		if test -e "$(VCU118_AUTH_RECORD)"; then \
-			auth=$$(python3 flow/auth_record.py verify --record "$(VCU118_AUTH_RECORD)" --bit "$(BUILD)/vcu118_ddr.bit" \
+			auth=$$(python3 flow/auth_record.py verify --record "$(VCU118_AUTH_RECORD)" --bit "$(VCU118_BIT)" \
 				--rom "$(VCU118_AUTH_ROM_HEX)" --key "$(VCU118_AUTH_KEY)") || exit 1; \
 			files="$$files $(VCU118_AUTH_RECORD)"; \
 			if test "$$auth" = key; then \
@@ -2771,8 +2898,11 @@ vcu118-program-bundle: | $(BUILD)
 		chmod 600 "$(VCU118_PROGRAM_TGZ).tmp"; mv -f "$(VCU118_PROGRAM_TGZ).tmp" "$(VCU118_PROGRAM_TGZ)"; \
 		echo "Wrote $(VCU118_PROGRAM_TGZ) (mode 600): $$files"
 
+#	KARU_BITFILE names another bitstream in the build directory, a strap
+#	variant for instance; the rule looks for the file it will program.
+PROG_BITFILE = $(if $(KARU_BITFILE),$(KARU_BITFILE),vcu118_ddr.bit)
 prog_vcu118_ddr:
-	@test -f "$(VIVADO_BUILD_DIR)/vcu118_ddr.bit" || { echo "ERROR: $(VIVADO_BUILD_DIR)/vcu118_ddr.bit not found -- run make vcu118-ddr first"; exit 1; }
+	@test -f "$(VIVADO_BUILD_DIR)/$(PROG_BITFILE)" || { echo "ERROR: $(VIVADO_BUILD_DIR)/$(PROG_BITFILE) not found -- build the image, or unpack its bundle, first"; exit 1; }
 	$(VIVADO_RUN) vivado -nolog -mode batch -source "$(VIVADO_FPGA_SRC)/prog_vcu118_ddr.tcl"
 
 load_vcu118_ddr:	| $(BUILD)
@@ -3009,7 +3139,8 @@ stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/
 #			(test/entropy_replay.py), and the model against the criteria
 #			of SP 800-90B section 4.5 and the source's failure modes.
 #			ENTROPY_DATA=<files of 4-bit symbols> replays board captures
-#			too, and ENTROPY_RESTART=<files> restart data, row by row
+#			too, and ENTROPY_RESTART=<files> restart data, row by row;
+#			ENTROPY_LANE=<0..3> is the lane of them that is the source (0)
 #	  zkr-test	the seed access table, mseccfg, word delivery and the custom
 #			CSRs on the core, with and without H, and with the strap low;
 #			then mutants of the access rules in rtl/karu_csr.v
@@ -3022,7 +3153,8 @@ stateen-test-spike:	$(VERI_STATEEN_BIN) $(BUILD)/karu_stateen_xchk.hex $(BUILD)/
 #			(test/noise_burst_mutants.py)
 #	  ddr-noise-burst-test	the capture's registers through the DDR SoC:
 #			the decode in the system-control block, with its mutants
-ZKR_RTL		=	rtl/karu_entropy.v flow/fpga/karu_rosc_rng.v flow/fpga/karu_noise_burst.v flow/fpga/karu_entropy_src.v
+ZKR_RTL		=	rtl/karu_entropy.v flow/fpga/karu_rosc_rng.v flow/fpga/karu_noise_burst.v flow/fpga/karu_rosc_meter.v \
+			flow/fpga/karu_softstrap.v flow/fpga/karu_entropy_src.v
 ZKR_SPIKE_ISA	=	rv64gch_zkr
 .PHONY: entropy-test zkr-test zkr-test-spike
 entropy-test: | $(BUILD)
@@ -3034,7 +3166,7 @@ entropy-test: | $(BUILD)
 	grep 'first ES16' $(BUILD)/entropy/run.log
 	python3 test/entropy_mutants.py --out $(BUILD)/entropy/mut > $(BUILD)/entropy/mutants.log 2>&1 || { cat $(BUILD)/entropy/mutants.log; exit 1; }
 	tail -1 $(BUILD)/entropy/mutants.log
-	python3 test/entropy_replay.py --out $(BUILD)/entropy/replay $(if $(ENTROPY_DATA),--data $(ENTROPY_DATA)) \
+	python3 test/entropy_replay.py --out $(BUILD)/entropy/replay $(if $(ENTROPY_LANE),--lane $(ENTROPY_LANE)) $(if $(ENTROPY_DATA),--data $(ENTROPY_DATA)) \
 		$(if $(ENTROPY_RESTART),--restart $(ENTROPY_RESTART)) > $(BUILD)/entropy/replay.log 2>&1 || { grep -v '^ok ' $(BUILD)/entropy/replay.log; exit 1; }
 	tail -1 $(BUILD)/entropy/replay.log
 	python3 test/dbg/board/entropy_health.py criteria > $(BUILD)/entropy/criteria.json || { cat $(BUILD)/entropy/criteria.json; exit 1; }
@@ -3099,7 +3231,8 @@ NB_SIM		=	$(NB_DIR)/obj/Vfpga_ddr_tb
 NB_VFLAGS	=	-GZKR_SAMPLE_DIV=8 -GZKR_INTERVAL=1 -GZKR_BURST_LOG2=8
 NB_BUILD	=	$(MAKE) --no-print-directory DDR_DEFINES='KARU_ICACHE KARU_ZKR' DDR_VFLAGS_EXTRA='$(NB_VFLAGS)'
 NB_TEST_SRCS =	test/fw/htif_start.S test/fw/irq_trap.S test/fw/ns16550.c test/fw/noise_burst_test.c
-NB_RUN		=	+hex=$(BUILD)/noise_burst_test.hex +tohost=1000 +max_cycles=4000000
+#	The firmware is larger than 4 KB: its tohost page is one page up.
+NB_RUN		=	+hex=$(BUILD)/noise_burst_test.hex +tohost=2000 +max_cycles=4000000
 .PHONY: ddr-noise-burst-sim
 ddr-noise-burst-sim:
 	mkdir -p $(NB_DIR)
@@ -3110,7 +3243,7 @@ ddr-noise-burst-sim:
 #	with or without the flags.
 $(BUILD)/noise_burst_test.elf:	$(NB_TEST_SRCS) flow/spike.ld | $(BUILD)
 	$(XCHAIN)gcc $(HTIF_CFLAGS) -Os -march=rv64gc_zicsr -fno-asynchronous-unwind-tables -fno-unwind-tables \
-		-T flow/spike.ld -o $@ $(NB_TEST_SRCS)
+		-Wl,--defsym=TOHOST_ADDR=0x80002000 -T flow/spike.ld -o $@ $(NB_TEST_SRCS)
 $(BUILD)/noise_burst_test.hex:	$(BUILD)/noise_burst_test.elf
 	$(XCHAIN)objcopy -O binary $< $(BUILD)/noise_burst_test.bin
 	hexdump -v -e '1/8 "%016x\n"' $(BUILD)/noise_burst_test.bin > $@
@@ -3373,5 +3506,6 @@ include dbg/trigger.mk
 include dbg/synthesis.mk
 include dbg/checks.mk
 include dbg/isa.mk
+include flow/fpga/rosc.mk
 include dbg/fpga.mk
 include dbg/board.mk

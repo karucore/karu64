@@ -636,11 +636,12 @@ checks for its invariants.
 
   *Status: the simulation ROM and the FPGA ROM are done, and the FPGA ROM
   is board-tested; the production verifier awaits D3.* On the board, the
-  VCU118 image `ddb168e1…` passed `locked`, `authenticate` (unlock 0.19 s
-  after the REQUEST), `wrong-response`, `replay`, `expiry` (closed between
-  14.29 and 14.35 s, by the ROM's deadline) and `entropy-off`, with
-  algorithm `0x04`, each after a JTAG reconfiguration as its power-on
-  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)).
+  VCU118 image `20f8b265…` passed `locked`, `authenticate` (unlock 0.19 s
+  after the REQUEST), `reboot`, `wrong-response`, `replay`, `expiry`
+  (closed between 14.27 and 14.32 s, by the ROM's deadline) and
+  `entropy-off`, with algorithm `0x04` and the nonce from the one-ring
+  `seed`, each after a JTAG reconfiguration as its power-on
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md)).
 
   **Interim D3 decision for the FPGA image.** The FPGA ROM verifies
   algorithm `0x04`, a SHA3-256 shared-secret MAC over the challenge and the
@@ -663,9 +664,19 @@ checks for its invariants.
 
   **The FPGA variant** is the same source built with other constants
   (`VCU118_AUTH_ROM_FLAGS` in `dbg/fpga.mk`):
-  - the nonce comes from the Zkr `seed` CSR, as in every build of the ROM;
-  - `TRNG_TRIES=200000` polls per nonce word, because the entropy source
-    needs about 4.3 million clocks after reset for its start-up test;
+  - the nonce comes from the Zkr `seed` CSR, as in every build of the ROM:
+    16 `ES16` words;
+  - `TRNG_TRIES=2000000` polls per nonce word, the default of `window.c`.
+    One poll takes 53 clocks on the core of the window bench and 77 on a
+    core built as the image's, so the limit is 106 to 154 million clocks.
+    The longest wait that a working source asks for one word is a
+    start-up test and one burst at the largest spacing floor, k = 128:
+    35.7 million clocks (4.5 million at k = 16). The limit is 3 to 4.3
+    times that wait, and the deadline of 2^30 clocks comes 7 to 10 times
+    later than the limit. `window.c` refuses at compile time, for a
+    production window, a limit under twice that wait or over a quarter of
+    the window. The ROM of the earlier image `ddb168e1…` has 200,000, for that
+    image's spacing of k = 16;
   - the contract's window of 2^30 cycles;
   - control goes to the boot ROM at `0x1000`, and the ROM sets no trap
     vector of its own.
@@ -673,8 +684,8 @@ checks for its invariants.
   a core built with `KARU_ZKR`, with the ROM reading `seed` and the entropy
   source's behavioural noise model behind it.
   It is part of `dbg-auth-test`. The ROM constants that differ only on the
-  FPGA (the longer wait, the 2^30 window, the hand-over address) are
-  exercised by `image-boot-test`, without a debugger.
+  FPGA (the 2^30 window, the hand-over address) are exercised by
+  `image-boot-test`, without a debugger.
   - The ROM is `test/dbg/auth_rom/`, written in C.
   - It implements:
     - the `REQUEST` check;
@@ -700,8 +711,9 @@ checks for its invariants.
     - `dbg-auth-rom-host-test` runs the same `window.c` on a host mailbox
       model with one cycle per CSR access: responses at, before and after the
       exact deadline, queued and split responses, repeated ABORTs, a stalled
-      `seed` and 400 random schedules. Four mutants must fail, one of them the
-      original defect.
+      `seed` and 400 random schedules. Seven mutants must fail: four of
+      the deadline, one of them the original defect, and three of the
+      polling limit (below).
     - `dbg-auth-window-test` adds, on the real core, a sweep of responses
       that straddle the deadline, a response whose last word arrives after
       it, and continuous ABORTs across it. A monitor reads the ROM's deadline
@@ -721,6 +733,26 @@ checks for its invariants.
       only: unit cases with four mutants (`dbg-auth-unit-test`) and lemma
       C5w below. Whether a product sets it, and to what, is the
       integrator's choice (contract §5.3).
+  - **The polling limit.** The ROM polls `seed` at most `TRNG_TRIES` + 1
+    times per nonce word without getting one, then gives up without a
+    challenge; a source that reports `DEAD` ends the wait at the first
+    poll. The limit is per word, not over the sixteen together.
+    - `dbg-auth-rom-host-test` has a source that never delivers (given up
+      on at poll `TRNG_TRIES` + 1) and one that delivers after exactly
+      `TRNG_TRIES` polls without a word, for the first word and for every
+      word (waited for). Its three mutants are no limit, a limit one poll
+      early, and a limit over all sixteen words together. With the ROM's
+      own `TRNG_TRIES` the limit lies beyond the model's window and the
+      deadline has to end the wait. The same target checks that `window.c`
+      with a window of 2^30 compiles with its own limit and refuses
+      200,000 and 20,000,000.
+    - `dbg-auth-window-test` runs, on the real core with a ROM built for
+      300 polls, a source that never delivers and a first word at the
+      limit and one poll past it, with the mutants no limit and one poll
+      early. It also measures the poll: 53 clocks on the bench's core and
+      77 on a core built with the image's defines, each held to the range
+      that `window.c` states. A control that assumes one clock more than
+      the measured poll must fail.
 - [ ] **A3 — formal.**
   - Implement C1–C10, the composition report, the sanity runs and the negative
     controls.
@@ -1122,15 +1154,15 @@ checks for its invariants.
     `KARU_DBG_AUTH`.
   - This is functional validation only (§1.1).
 
-  *Status: done.* The VCU118 debug image, bitstream `ddb168e1…`, contains
+  *Status: done.* The VCU118 debug image, bitstream `20f8b265…`, contains
   it and meets timing at 75 MHz
-  ([measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-20)). On the
-  board, `locked`, `authenticate`, `wrong-response`, `replay`, `expiry` and
-  `entropy-off` pass with this image
-  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)); `open`, `fresh-nonce`,
-  `no-hold`, `disabled` and the two software-reboot cases (a reboot keeps
-  the grant, and keeps a locked boot locked) last ran with the `TEST` ROM
-  of image `d7ff00dc…`
+  ([measurements](../dbg/MEASUREMENTS.md#fpga-image--2026-11-21)). On the
+  board, `locked`, `authenticate`, `reboot` (a reboot keeps the grant),
+  `wrong-response`, `replay`, `expiry` and `entropy-off` pass with this
+  image ([record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md)); `open`,
+  `fresh-nonce`, `no-hold`, `disabled` and `reboot-locked` (a reboot
+  keeps a locked boot locked) last ran with the `TEST` ROM of image
+  `d7ff00dc…`
   ([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). The switches read back
   as set, and the CPU reset button is the straps' power-on reset. This is
   functional validation only (§1.1): the key is in the bitstream.
@@ -1151,8 +1183,12 @@ checks for its invariants.
      in the authentication path misbehaves.
   3. **Entropy.** The ring-oscillator entropy source of the Zkr work
      (`flow/fpga/karu_rosc_rng.v`, `rtl/karu_entropy.v`), read through
-     `seed`. No min-entropy is claimed for it
-     ([SP 800-90B assessment](sp800-90b-assessment.md)).
+     `seed`. The nonce is 16 `seed` words, 256 raw bits of one ring,
+     unconditioned. The proposed developer's estimate for them is 192
+     bits of min-entropy on the tested board
+     ([SP 800-90B assessment](sp800-90b-assessment.md)); the protocol
+     needs the nonce to be fresh, and the four challenges of the board
+     session all differ.
   4. **Exclusion check.** `xcvu9p-ddr-synth.tcl` refuses `KARU_DBG_AUTH`
      without `KARU_DBG`, with `KARU_DDR_HOST_DBG`, or without the island ROM
      image.
@@ -1197,7 +1233,7 @@ checks for its invariants.
 | --- | --- | --- |
 | D1 | Whether the island SRAM must be scrubbed at `boot_done` | Not needed for confidentiality (verification uses public data). Scrub it if the ROM ever handles secrets. |
 | D2 | Offer a locked-DM "reset into window" command | No. Use the physical strap (§2.4). If offered, make it an integration parameter and document the reset capability it grants. |
-| D3 | Signature algorithm and verifier location | ROM verifier first. Choose ML-DSA-44, Ed25519 or a hybrid by device lifetime and ROM/SRAM budget. A hardware verifier is the second phase. This does not block A0/A1: the frame carries an algorithm identifier and bounded lengths (§3.4). It must be settled before A2's production verifier is implemented and sized. |
+| D3 | Signature algorithm and verifier location | ROM verifier first. Choose ML-DSA-87 or SLH-DSA (and its parameter set) by device lifetime and ROM/SRAM budget; a signature larger than the island SRAM is verified as it arrives (contract §5.3). A hardware verifier is the second phase. This does not block A0/A1: the frame carries an algorithm identifier and bounded lengths (§3.4). It must be settled before A2's production verifier is implemented and sized. |
 | D4 | Permission granularity | One bit first. Reserve a mask in the frame (run control/Program Buffer versus SBA) and in `mdbgauth`. |
 | D5 | Hold timeout | None in hardware. The strap is physical presence, and releasing it boots normally. |
 | D6 | DFT and scan | The scan controller must force `debug_enable=0` and reset `karudbg_auth` on scan entry and exit. This is a platform obligation outside the proof (§9). |

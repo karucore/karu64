@@ -24,6 +24,7 @@ args = parser.parse_args()
 OUT = Path(args.out).resolve()
 TB = ROOT / "test/tb_noise_burst.sv"
 BURST, SRC, ROSC, ENT = "flow/fpga/karu_noise_burst.v", "flow/fpga/karu_entropy_src.v", "flow/fpga/karu_rosc_rng.v", "rtl/karu_entropy.v"
+METER, STRAP = "flow/fpga/karu_rosc_meter.v", "flow/fpga/karu_softstrap.v"       # compiled, mutated in rosc_meter_mutants.py
 RTL = {name: (ROOT / name).read_text() for name in (BURST, SRC, ROSC, ENT)}
 
 M = [
@@ -59,14 +60,32 @@ M = [
  ("status_no_progress",  BURST, "wire [15:0]	words_done = {{(16-AW){1'b0}}, cnt_q[AW+3:4]};", "wire [15:0]	words_done = 16'd0;"),
  ("status_source_bit",   BURST, "1'b0, brk_q, test_i, rng_en_i, lock_i, allow, done_q, busy_q};", "1'b0, brk_q, test_i, 1'b1, lock_i, allow, done_q, busy_q};"),
  # ---- karu_entropy_src.v: wiring ----
- ("burst_always_in_test_mode", SRC, ".test_i(noise_test), .lock_i(cfg_lock),", ".test_i(1'b1), .lock_i(cfg_lock),"),
- ("burst_never_locked",  SRC, ".test_i(noise_test), .lock_i(cfg_lock),", ".test_i(noise_test), .lock_i(1'b0),"),
+ ("burst_always_in_test_mode", SRC, "burst (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(cfg_lock),", "burst (\n\t\t.clk(clk), .rst(rst), .test_i(1'b1), .lock_i(cfg_lock),"),
+ ("burst_never_locked",  SRC, "burst (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(cfg_lock),", "burst (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(1'b0),"),
  ("period_not_wired",    SRC, ".rng_fips_i(rng_fips), .rng_div_i(rng_div),", ".rng_fips_i(rng_fips), .rng_div_i(DIV_RESET),"),
- ("burst_sees_no_enable", SRC, ".rng_en_i(rng_en), .rng_val_i(rng_val), .rng_b_i(rng_b), .div_o(rng_div),", ".rng_en_i(1'b1), .rng_val_i(rng_val), .rng_b_i(rng_b), .div_o(rng_div),"),
+ ("burst_sees_no_enable", SRC, ".rng_en_i(rng_en), .rng_val_i(rng_val), .rng_b_i(burst_sym), .div_o(rng_div),", ".rng_en_i(1'b1), .rng_val_i(rng_val), .rng_b_i(burst_sym), .div_o(rng_div),"),
+ # ---- karu_entropy_src.v: the meter and the straps ----
+ ("meter_always_in_test_mode", SRC, "meter (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(cfg_lock),", "meter (\n\t\t.clk(clk), .rst(rst), .test_i(1'b1), .lock_i(cfg_lock),"),
+ ("meter_never_locked",  SRC, "meter (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(cfg_lock),", "meter (\n\t\t.clk(clk), .rst(rst), .test_i(noise_test), .lock_i(1'b0),"),
+ ("meter_respace_not_wired", SRC, ".respace_i(respace_burst || respace_meter),", ".respace_i(respace_burst),"),
+ ("burst_records_lane_bits_only", SRC, ".rng_b_i(burst_sym), .div_o(rng_div),", ".rng_b_i(rng_b), .div_o(rng_div),"),
+ ("meter_records_the_burst_symbol", SRC, ".rng_val_i(rng_val), .rng_b_i(rng_b), .ref_b_i(ref_b),", ".rng_val_i(rng_val), .rng_b_i(burst_sym), .ref_b_i(ref_b),"),
+ ("reference_bits_not_wired", SRC, ".rng_b_i(rng_b), .ref_b_i(ref_b), .cnt_i(cnt),", ".rng_b_i(rng_b), .ref_b_i(rng_b[3:2]), .cnt_i(cnt),"),
+ ("meter_read_address_off", SRC, "raddr_meter = reg_raddr_i[1:0] - 2'd1;", "raddr_meter = reg_raddr_i[1:0];"),
+ ("meter_write_address_off", SRC, "waddr_meter = reg_waddr_i[1:0] - 2'd1;", "waddr_meter = reg_waddr_i[1:0];"),
+ ("meter_reads_at_burst_addresses", SRC, "wire\t\trsel_meter = reg_raddr_i[2] && (reg_raddr_i[1:0] != 2'd0);", "wire\t\trsel_meter = (reg_raddr_i[1:0] != 2'd0);"),
+ ("ring_strap_not_wired", SRC, ".op_mask_i(strap_ring),", ".op_mask_i({RINGS{1'b1}}),"),
+ ("ring_enables_not_wired", SRC, ".ring_en_i(ring_en), .cnt_direct_i(cnt_direct),", ".ring_en_i({RINGS{1'b1}}), .cnt_direct_i(cnt_direct),"),
+ ("counting_mode_not_wired", SRC, ".ring_en_i(ring_en), .cnt_direct_i(cnt_direct),", ".ring_en_i(ring_en), .cnt_direct_i(1'b0),"),
+ ("counting_mode_always_direct", SRC, ".ring_en_i(ring_en), .cnt_direct_i(cnt_direct),", ".ring_en_i(ring_en), .cnt_direct_i(1'b1),"),
+ ("lane_strap_not_wired", SRC, ".lane_i(strap_lane), .kshift_i(strap_k),", ".lane_i(2'd0), .kshift_i(strap_k),"),
+ ("floor_strap_not_wired", SRC, ".lane_i(strap_lane), .kshift_i(strap_k),", ".lane_i(strap_lane), .kshift_i(2'd0),"),
+ ("lane_strap_from_the_floor_parameter", SRC, ".VALUE(LANE[i])) s (.o(strap_lane[i]));", ".VALUE(KSHIFT[i])) s (.o(strap_lane[i]));"),
+ ("ring_strap_bits_reversed", SRC, ".VALUE(RING_MASK[i])) s (.o(strap_ring[i]));", ".VALUE(RING_MASK[RINGS-1-i])) s (.o(strap_ring[i]));"),
  # ---- karu_rosc_rng.v: the divider ----
  ("divider_equality",    ROSC, "assign sample = (div_q >= rng_div_i);", "assign sample = (div_q == rng_div_i);"),
  ("divider_one_long",    ROSC, "assign sample = (div_q >= rng_div_i);", "assign sample = (div_q > rng_div_i);"),
- ("symbol_not_synchronised", ROSC, "				rng_b_o <= meta_q;", "				rng_b_o <= samp_q;"),
+ ("symbol_not_synchronised", ROSC, "				rng_b_o <= meta_q[STREAMS-1:0];", "				rng_b_o <= samp_q[STREAMS-1:0];"),
  # ---- karu_entropy.v: the status outputs ----
  ("test_output_stuck",   ENT, "assign test_o     = test_q;", "assign test_o     = 1'b1;"),
  ("lock_output_stuck",   ENT, "assign lock_o     = lock_q;", "assign lock_o     = 1'b0;"),
@@ -80,7 +99,7 @@ def run(m):
     d = OUT / name
     d.mkdir(parents=True, exist_ok=True)
     (d / Path(target).name).write_text(text.replace(old, new))
-    sources = [str(d / Path(target).name) if f == target else str(ROOT / f) for f in (SRC, ROSC, ENT, BURST)]
+    sources = [str(d / Path(target).name) if f == target else str(ROOT / f) for f in (SRC, ROSC, ENT, BURST, METER, STRAP)]
     b = subprocess.run(["verilator", "--binary", "--timing", "-Wno-fatal", "-DKARU_NO_ASSERT", "--top-module", "tb_noise_burst",
                         "-Mdir", str(d / "obj"), "-o", "tb", str(TB), *sources], capture_output=True, text=True)
     if b.returncode:

@@ -22,12 +22,16 @@ VCU118_DBG_EXT_DEFINES ?= KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR
 # The key ends up in the ROM image and the bitstream: anyone holding either,
 # or the key file, can authenticate. It is not printed.
 #
-# The nonce comes from seed. With KARU_ZKR the ROM reads it and waits long
-# enough for the entropy source's start-up test (about 4.3 million clocks).
-# Without it there is no seed CSR, and reading it would trap with no trap
-# vector set: the ROM is then built without a nonce source, so a request is
-# refused and the boot goes on.
-VCU118_AUTH_ROM_RNG = $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),-DTRNG_TRIES=200000,-DAUTH_NO_SEED)
+# The nonce comes from seed. With KARU_ZKR the ROM reads it, and waits for a
+# word through 2,000,000 polls, 106 million clocks or more: the default of
+# test/dbg/auth_rom/window.c, stated here so that the image's record shows
+# it. That is about three times the longest wait for a word, a start-up test
+# and one burst at the largest spacing floor (k = 128: 35.7 million clocks;
+# 4.5 million at k = 16); window.c refuses a value that is not at least
+# twice it. Without KARU_ZKR there is no seed CSR, and reading it would trap
+# with no trap vector set: the ROM is then built without a nonce source, so
+# a request is refused and the boot goes on.
+VCU118_AUTH_ROM_RNG = $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),-DTRNG_TRIES=2000000,-DAUTH_NO_SEED)
 VCU118_AUTH_KEY ?= $(BUILD)/vcu118_auth_key.txt
 VCU118_AUTH_KEY_H = $(BUILD)/vcu118_auth_key.h
 VCU118_AUTH_RECORD = $(BUILD)/vcu118_auth_record.json
@@ -68,15 +72,23 @@ $(VCU118_AUTH_ROM_HEX): $(DBG_AUTH_ROM_SRCS) $(DBG_AUTH_SHA3_SRCS) dbg/fpga.mk $
 # built in. rva23-boot-inputs-check enforces it.
 VCU118_DBG_DTB_VARIANT ?= $(if $(filter KARU_ZKR,$(VCU118_DBG_EXT_DEFINES)),rva23s64-zkr-ddr,rva23s64-ddr)
 vcu118-ddr-sgmii-rom-rva23s64-dbg: $(VCU118_AUTH_ROM_HEX)
+	@# The island ROM is hashed before the build, as the boot ROM is.
+	python3 flow/rom_record.py before --rom $(VCU118_AUTH_ROM_HEX) --out $(BUILD)/vcu118_auth_rom.before
 	$(MAKE) vcu118-ddr-sgmii-rom-rva23s64 \
 	  VCU118_VEC_EXTRA_DEFINES='$(VCU118_VEC_EXTRA_DEFINES) KARU_DBG $(VCU118_DBG_EXT_DEFINES)' \
 	  FUBOOT_RVA23_DTB='$(KARUDEB)/build/karu64/karu64-$(VCU118_DBG_DTB_VARIANT).dtb' \
 	  VCU118_NETBOOT_FILE_RVA23='$(KARUDEB)/build/karu64/tftp/$(VCU118_DBG_DTB_VARIANT)/uboot-netboot-one-line.txt' \
 	  KARU_REPORT_TAG='$(if $(KARU_REPORT_TAG),$(KARU_REPORT_TAG),ddr_rva23s64_dbg_sgmii_75_rom)'
 	@# What the bitstream authenticates with, tied to its hash: packing the
-	@# programming bundle checks this record before it adds a key.
-	python3 flow/auth_record.py write --bit $(BUILD)/vcu118_ddr.bit --flags $(VCU118_AUTH_ROM_STAMP) \
-	  --rom $(VCU118_AUTH_ROM_HEX) $(if $(VCU118_AUTH_ROM_ALG),--key $(VCU118_AUTH_KEY)) --out $(VCU118_AUTH_RECORD)
+	@# programming bundle checks this record before it adds a key. Written
+	@# only after this build wrote a new bitstream: one newer than the island
+	@# ROM's hash, with that ROM unchanged, and named by the boot-ROM record
+	@# that the build has just written. A synthesis-only run writes no
+	@# bitstream and keeps the previous record, which names the previous one.
+	$(if $(SYNTH_ONLY),@echo "synthesis only: no new authentication record (the previous one is kept)",python3 flow/rom_record.py fresh --bit $(BUILD)/vcu118_ddr.bit --rom $(VCU118_AUTH_ROM_HEX) --before $(BUILD)/vcu118_auth_rom.before)
+	$(if $(SYNTH_ONLY),,python3 flow/rom_record.py verify --record $(VCU118_ROM_RECORD) --bit $(BUILD)/vcu118_ddr.bit --rom $(VCU118_FUBOOT_HEX))
+	$(if $(SYNTH_ONLY),,python3 flow/auth_record.py write --bit $(BUILD)/vcu118_ddr.bit --flags $(VCU118_AUTH_ROM_STAMP) \
+	  --rom $(VCU118_AUTH_ROM_HEX) $(if $(VCU118_AUTH_ROM_ALG),--key $(VCU118_AUTH_KEY)) --out $(VCU118_AUTH_RECORD))
 
 # ---- The debug image's composition in simulation ----
 # The SoC as the board has it, without the JTAG transport and the DDR

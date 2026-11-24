@@ -28,6 +28,10 @@ Exit packs `(code << 1) | 1`. `test/fw/htif_start.S` is the minimal `_start`
 (set sp, zero BSS, enable `mstatus.FS/VS` so one ELF runs on spike and karu64,
 call `main`, `htif_exit`). `flow/spike.ld` puts `.text.init` at `0x80000000`
 and pins `.tohost` at `0x80001000` so the testbench knows where to watch.
+A program whose code and data outgrow the first 4 KiB moves the page with
+`-Wl,--defsym=TOHOST_ADDR=0x80002000` on the link line and gives the bench
+the same offset (`+tohost=2000`); the link fails if the program overlaps
+the page.
 
     make spike         # build _build/hello.elf and run it under spike
 
@@ -215,27 +219,47 @@ make keccak-sponge-pbmt-test
 make irq-test ddr-irq-test
 make sv39-auth-pma-test
 make entropy-test zkr-test zkr-loop-test zkr-test-spike
-make noise-burst-test ddr-noise-burst-test
+make noise-burst-test rosc-meter-test ddr-noise-burst-test
+make strap-flow-test
 ```
 
 `sv39-auth-pma-test` is `sv39-test` built as a core with the Debug Module
 and authentication has it: the island SRAM and the Debug Module's page lie
 inside the boot ROM's span and must not be ROM. The Zkr targets cover the
 opt-in `KARU_ZKR`: `entropy-test` the entropy block with driven symbols and
-86 one-mechanism mutants, then its health tests against a Python reference
-model on the same symbols (and, with `ENTROPY_DATA=…` and
-`ENTROPY_RESTART=…`, on board captures),
+108 one-mechanism mutants, then its health tests and `seed` words against
+a Python reference model on the same symbols (and, with `ENTROPY_DATA=…`
+and `ENTROPY_RESTART=…`, on board captures of 4-bit symbols, of which
+`ENTROPY_LANE=…`, 0 by default, is the lane that is the source),
 `zkr-test` the `seed` access table in M, S, U, VS
 and VU with `mseccfg` and the custom CSRs on the core (17 mutants),
 `zkr-loop-test` the absence of a combinational loop between the CSR file and
 the block (Yosys), and `zkr-test-spike` the same access table on Spike.
 `noise-burst-test` is the FPGA entropy source with its burst capture
-(`flow/fpga/karu_noise_burst.v`): the sampling period, bursts against a
-record of every symbol of the simulated source, and what the entropy
-block's test mode confines, with 37 one-mechanism mutants.
-`ddr-noise-burst-test` reaches the capture's registers through the DDR
-SoC's bus decode, from M-mode and, refused, from U-mode and with narrower
-accesses, with eight decode mutants.
+(`flow/fpga/karu_noise_burst.v`), its meter and its straps: the sampling
+period, bursts against a record of every symbol of the simulated source,
+and what the entropy block's test mode confines, with 54 one-mechanism
+mutants. `rosc-meter-test` (`flow/fpga/rosc.mk`, about six minutes) is
+the ring oscillators' dividers by two, their counters and the meter
+(`flow/fpga/karu_rosc_rng.v`, `karu_rosc_meter.v`): the meter on the
+behavioural source at several ring rates, a million clocks in each
+counting mode, the Verilog model against its Python copy in both
+counting modes, one divider with the routes to its look-up tables over
+3,000 delay combinations in each of three sweeps (where it divides by
+two and where it fails), the counters as synthesised on bench-made rings
+with modelled routing delays, and 113 one-mechanism mutants.
+`ddr-noise-burst-test` reaches the registers of the capture and of the
+meter through the DDR SoC's bus decode, from M-mode and, refused, from
+U-mode and with narrower accesses, with eight decode mutants.
+`strap-flow-test` runs the checks of a strap variant of a VCU118 image
+(`flow/strap_diff.py`, `flow/rom_record.py`) on generated files with the
+structure of a bitstream, without Vivado, and dry runs of the record steps
+of every image recipe (70 checks;
+[FPGA guide](fpga.md#the-ddr4-soc-linux-target)).
+The board-side capture and analysis of the meter have their own
+self-tests, `dbg-rosc-count-test`, `dbg-rosc-own-test` and
+`dbg-entropy-claim-test`
+([harness README](../test/dbg/board/README.md#meter-capture)).
 
 `csr-test` covers implemented CSR masks, WARL behavior, privilege, pending
 interrupts, MPRV and Sstc's six CSR forms, permissions, 64-bit comparison and

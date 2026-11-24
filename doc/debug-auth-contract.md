@@ -5,7 +5,7 @@ Status: **contract, implemented.** This document is milestone A0 of the
 RTL (A1) and the window ROM (A2) implement and that A3/A4 verify; the
 plan's milestone notes say what is tested and how. The VCU118 debug image
 is built with it, with the SHA3-256 algorithm `0x04`
-([board record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). The ROM draws its
+([board record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md)). The ROM draws its
 nonce from the Zkr `seed` CSR, so authentication needs a core with Zkr and
 an entropy source behind `seed` (section 3.2). The optional hardware limit
 on the window (section 5.3, `WINDOW_LOG2`) has simulation coverage only: on
@@ -231,7 +231,9 @@ Pop and push behaviour, by instruction form, is defined in §3.
 - **The nonce** comes from the Zkr `seed` CSR (`0x015`), which the ROM reads
   in M-mode like any other software: `{OPST[1:0] at 31:30, 14'b0,
   entropy[15:0]}`, `OPST` 0 `BIST`, 1 `WAIT`, 2 `ES16` or 3 `DEAD`, and only
-  `ES16` carries entropy. The block has no entropy CSR or port of its own.
+  `ES16` carries entropy. The nonce is 16 such words. The ROM bounds its
+  wait for each word (`TRNG_TRIES`, section 5.3) and makes no challenge
+  without a full nonce. The block has no entropy CSR or port of its own.
   The source and its health tests are platform obligations (plan §1.1);
   simulation uses a stand-in behind `seed` (`test/dbg/karudbg_test_seed.v`)
   or the FPGA entropy source with its noise model. A core without Zkr has
@@ -372,9 +374,8 @@ hardware never parses them. Every frame starts with one header word:
 | ID | Algorithm | Signature bytes |
 | --- | --- | --- |
 | `0x00` | Invalid | — |
-| `0x01` | Ed25519 | 64 |
-| `0x02` | ML-DSA-44 | 2420 |
-| `0x03` | Hybrid: ML-DSA-44 followed by Ed25519; both must verify | 2484 |
+| `0x01` | ML-DSA-87 (FIPS 204) | 4627 |
+| `0x02` | SLH-DSA (FIPS 205), in the one parameter set the production ROM is built for | 7856 to 49856, by parameter set |
 | `0x04` | `SHA3`: SHA3-256 shared-secret MAC; FPGA validation only (below) | 32 |
 | `0x80` | `TEST`: simulation-only; must not be accepted by a production ROM image | 32 |
 | others | Reserved; rejected | — |
@@ -431,10 +432,19 @@ timeout. Whether to send it is the ROM's choice, made after the decision, and
 
 | Constant | Value |
 | --- | --- |
-| `MAX_SIG_BYTES` | 2560 (≥ 2484) |
-| `MAX_RESPONSE_WORDS` | 2 + 640 = 642 |
+| `MAX_SIG_BYTES` | 49856: the largest FIPS 205 parameter set (SLH-DSA-SHA2-256f and SLH-DSA-SHAKE-256f). The 16-bit length field of word 1 allows 65535 |
+| `MAX_RESPONSE_WORDS` | 2 + 12464 = 12466 |
 | `WINDOW_CYCLES` (ROM build constant) | 2³⁰ cycles from `REQUEST` observation to decision (about 10.7 s at 100 MHz; 14.3 s at the VCU118 image's 75 MHz) |
+| `TRNG_TRIES` (ROM build constant) | 2,000,000: the polls of `seed` allowed per nonce word while the source reports `BIST` or `WAIT`; the next poll without a word ends the attempt with no challenge, and `DEAD` ends it at once. At 53 to 77 clocks per poll (measured in simulation) that is 106 to 154 million clocks, 3 to 4.3 times the longest wait of a working source for one word (35.7 million clocks: a start-up test and one burst at a spacing of k = 128), and the window's deadline comes 7 to 10 times later. With a window of 2³⁰ `window.c` refuses a value under twice that wait or over a quarter of the window. The ROM of the earlier VCU118 image `ddb168e1…` has 200,000 |
 | `WINDOW_LOG2` (hardware parameter of `karudbg_auth`; `AUTH_WINDOW_LOG2` on `karudbg_core` and `karudbg_top`) | 0: no limit in hardware. n > 0: the window is open for exactly 2ⁿ clocks after the edge that accepts the `REQUEST`; in the clock after that no unlock can commit and `boot_done` is set, whatever the ROM does. The counter is POR-domain state: a hart reset does not restart it. The VCU118 top sets 31 (28.6 s), behind the ROM's own 2³⁰ |
+
+Nothing in the hardware limits the length of a frame: the mailbox moves words
+and never parses them. What a ROM can hold is its own matter. The island SRAM
+has 16 KiB. ML-DSA-87's 4627-byte signature fits, with a verifier that expands
+the public matrix as it goes rather than holding it whole. An SLH-DSA
+signature of the 192- or 256-bit parameter sets does not fit whole; the ROM
+then verifies it as its words arrive, which SLH-DSA allows, since each part of
+the signature is used once, in order.
 
 The ROM rejects without unlocking, and then sets `boot_done`, when any of these
 holds:
@@ -475,7 +485,7 @@ The plan's recommended defaults are adopted.
 | --- | --- |
 | D1 | No scrub of island SRAM is required at `boot_done`. The reference ROM handles only public data: the verification key, challenge and signature. A ROM that ever holds secrets must scrub before `boot_done`. |
 | D2 | No locked-DM "reset into window" command. Re-entry is by POR with the physical strap. |
-| D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (Ed25519, ML-DSA-44 or hybrid) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). Interim, 2026-11-18: the FPGA image uses the shared-secret `SHA3` (`0x04`, §5.1) for validation; this does not settle D3. |
+| D3 | **Open, scoped.** Only the algorithm-identifier field and the length maxima (§5) are fixed. The algorithm (ML-DSA-87, or SLH-DSA and its parameter set) and the verifier location must be chosen before A2 implements and sizes the production verifier. A1 and the simulation ROM use `TEST` (`0x80`). Interim, 2026-11-18: the FPGA image uses the shared-secret `SHA3` (`0x04`, §5.1) for validation; this does not settle D3. |
 | D4 | One permission bit, `perm[0]`, granting full debug: run control, abstract commands, Program Buffer and SBA. Mask bits 1–7 are reserved, and `REQUEST` and the ROM reject them. |
 | D5 | No hardware hold timeout; releasing the strap boots normally. The ROM's window is bounded in software by `WINDOW_CYCLES`, with the check-to-commit tolerance described in §5.3. A hard cutoff of the window, not of the hold, is available as the opt-in parameter `WINDOW_LOG2` (§5.3). |
 | D6 | The scan controller must force `debug_enable=0` and reset `karudbg_auth` on scan entry and exit. This is a platform obligation, recorded for A7. |

@@ -1,13 +1,16 @@
 //  tb_noise_burst.sv -- unit test of the FPGA entropy source with its burst
 //  capture (make noise-burst-test): flow/fpga/karu_entropy_src.v, which is
-//  karu_rosc_rng (behavioural model), rtl/karu_entropy.v and
-//  flow/fpga/karu_noise_burst.v.
+//  karu_rosc_rng (behavioural model), rtl/karu_entropy.v,
+//  flow/fpga/karu_noise_burst.v, flow/fpga/karu_rosc_meter.v and the soft
+//  straps (flow/fpga/karu_softstrap.v).
 //
 //  The bench records every symbol the noise source emits, with its clock
 //  cycle, so the expectations are exact: a burst is a stretch of that
 //  record, and the sampling period is the distance between its entries. A
 //  second instance, `quiet`, gets the same CSR accesses and no register
-//  access at all; outside test mode the two must agree in every cycle.
+//  access at all; outside test mode the two must agree in every cycle. A
+//  third, `alt`, built with LANE = 2, KSHIFT = 1 and RING_MASK = 110101,
+//  gets the same CSR accesses; what it reports of its straps is checked.
 //  test/noise_burst_mutants.py runs this bench against one-mechanism
 //  mutants, built without the modules' own assertions.
 //
@@ -20,6 +23,7 @@ module tb_noise_burst;
     localparam int LOG2W = 3;                   //  8 words: 128 symbols per burst
     localparam int WORDS = 1 << LOG2W, N = 16 * WORDS;
     localparam [2:0] R_CTRL = 3'd0, R_PERIOD = 3'd1, R_INDEX = 3'd2, R_DATA = 3'd3;
+    localparam [2:0] M_CTRL = 3'd5, M_DATA0 = 3'd6, M_DATA1 = 3'd7;     //  the meter (karu_rosc_meter.v)
     localparam [63:0] NT = 64'h8000_0000, LOCK = 64'h8000_0000_0000_0000;
     localparam [1:0] BIST = 2'd0, ES16 = 2'd2;
 
@@ -36,7 +40,7 @@ module tb_noise_burst;
     logic        reg_re = 0, reg_we = 0;
     logic [2:0]  reg_raddr = 0, reg_waddr = 0;
     logic [63:0] reg_wdata = 0;
-    wire  [63:0] reg_rdata, csr_rdata, q_csr_rdata;
+    wire  [63:0] reg_rdata, csr_rdata, q_csr_rdata, a_reg_rdata, a_csr_rdata;
     //  what seed reports, of the bench's two entropy sources
     wire  [1:0]  opst = dut.entropy.seed_opst, q_opst = quiet.entropy.seed_opst;
     wire  [15:0] data = dut.entropy.seed_data, q_data = quiet.entropy.seed_data;
@@ -51,6 +55,14 @@ module tb_noise_burst;
         .csr_fire_i(csr_fire), .csr_sel_i(csr_sel), .csr_we_i(csr_we), .csr_wdata_i(csr_wdata), .csr_rdata_o(q_csr_rdata),
         .reg_re_i(1'b0), .reg_raddr_i(3'd0), .reg_rdata_o(),
         .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
+    //  a source built with other straps, on the same accesses as dut: only
+    //  what it reports of its straps is looked at
+    karu_entropy_src #(.SIM(1), .SAMPLE_DIV(DIV), .INTERVAL_RESET(16'd0), .BURST_LOG2_WORDS(LOG2W),
+                       .LANE(2'd2), .KSHIFT(2'd1), .RING_MASK(6'b110101)) alt (
+        .clk(clk), .rst(rst), .en_i(en),
+        .csr_fire_i(csr_fire), .csr_sel_i(csr_sel), .csr_we_i(csr_we), .csr_wdata_i(csr_wdata), .csr_rdata_o(a_csr_rdata),
+        .reg_re_i(reg_re), .reg_raddr_i(reg_raddr), .reg_rdata_o(a_reg_rdata),
+        .reg_we_i(1'b0), .reg_waddr_i(3'd0), .reg_wdata_i(64'b0));
 
     //  ---- checking ----
     int checks = 0;
@@ -64,6 +76,8 @@ module tb_noise_burst;
 
     //  ---- the record of the source: every symbol and its cycle ----
     logic [3:0] src_b [$];
+    logic [3:0] cnt_b [$];                      //  ring 0's count of the same clock edge, low four bits
+    logic [3:0] ref_b [$];                      //  the reference rings' bits of that edge above those of lanes 0 and 1
     longint     src_c [$];
     logic [3:0] osc_h [0:3];                    //  the ring outputs of the last cycles
     bit         track = 0;                      //  compare dut and quiet in every cycle
@@ -71,6 +85,8 @@ module tb_noise_burst;
     always @(negedge clk) begin
         if (!rst && dut.rng_val) begin
             src_b.push_back(dut.rng_b);
+            cnt_b.push_back(dut.cnt[3:0]);
+            ref_b.push_back({dut.noise.ref_b_o, dut.rng_b[1:0]});
             src_c.push_back(cyc);
             //  a symbol is the ring outputs of three clock edges earlier:
             //  sampling flop, synchroniser flop, output register
@@ -82,10 +98,10 @@ module tb_noise_burst;
     end
 
     //  ---- accesses ----
-    logic [63:0] got;
+    logic [63:0] got, got_a;                    //  got_a: the same access as the other source answers it
     task automatic csr(input [1:0] sel, input bit we, input [63:0] v);
         @(negedge clk); csr_fire = 1; csr_sel = sel; csr_we = we; csr_wdata = v;
-        #1; got = csr_rdata;
+        #1; got = csr_rdata; got_a = a_csr_rdata;
         @(negedge clk); csr_fire = 0; csr_we = 0;
     endtask
     task automatic regw(input [2:0] a, input [63:0] v);
@@ -98,7 +114,20 @@ module tb_noise_burst;
         @(negedge clk); reg_re = 0;
     endtask
     task automatic look(input [2:0] a);         //  the value, without taking a read
-        @(negedge clk); reg_raddr = a; #1; got = reg_rdata;
+        @(negedge clk); reg_raddr = a; #1; got = reg_rdata; got_a = a_reg_rdata;
+    endtask
+    //  the meter's next record: both words, and the symbol of its strobe
+    logic [63:0] rec0, rec1;
+    logic [3:0]  rec_sym;
+    task automatic meter_record(input string what);
+        int guard = 0;
+        look(M_DATA0);
+        while (!got[63]) begin
+            check(guard++ < 64 * DIV, {what, ": a record comes"});
+            look(M_DATA0);
+        end
+        rec0 = got; rec_sym = src_b[src_b.size() - 1];
+        regr(M_DATA1); rec1 = got;
     endtask
 
     localparam [63:0] ID = {32'h4b4e_4231, 16'd0, 8'(LOG2W + 4), 8'd0};
@@ -450,6 +479,101 @@ module tb_noise_burst;
         expect_idle("a reset ends test mode and forgets the recording", 0);
         enter_test();
         look(R_DATA); check(got == 64'd0, "after a reset the old recording is unreachable in test mode too");
+
+        //  ================= the meter and the straps, through the wrapper =================
+        @(negedge clk); rst = 1; repeat (3) @(negedge clk); rst = 0;
+        for (int a = 4; a < 8; a++) begin
+            look(3'(a)); check(got == 64'd0, $sformatf("outside test mode register %0d reads zero", a));
+        end
+        csr(2'd3, 0, 64'd0);
+        check(got[23:20] == 4'b0000, "mentropystat: lane 0 and the floor unshifted, the wrapper's defaults");
+        check(got_a[23:20] == {2'd1, 2'd2}, "mentropystat of a source built with LANE = 2 and KSHIFT = 1 shows both");
+        repeat (4) @(negedge clk);
+        check(dut.ring_en == 6'b001111 && alt.ring_en == 6'b110101, "outside test mode the rings of RING_MASK run");
+        enter_test();
+        look(M_CTRL);
+        check(got[37:32] == 6'b001111 && got[21:16] == 6'b001111 && got[15:0] == 16'd0,
+              "test mode: the meter's control register shows the strap, the strap as its mask, and a record at every symbol");
+        check(got_a[37:32] == 6'b110101, "the meter of a source built with RING_MASK = 110101 shows that strap");
+        look(3'd4); check(got == 64'd0, "register 4 reads zero in test mode too");
+        //  records at every fourth symbol; the references are off
+        regw(M_CTRL, 64'h0000_0000_000f_0003);
+        regw(M_CTRL, 64'h0000_0000_800f_0003);
+        look(M_CTRL); check(got[15:0] == 16'd3 && got[41] == 1'b0, "the control register reads back; a start with the mask unchanged leaves no loss");
+        meter_record("references off");
+        check(!rec0[62], "the first record after a start: no loss");
+        check(rec1[63:60] == rec_sym, "a record's lane bits are the symbol of its strobe");
+        for (int i = 0; i < 40; i++) meter_record("references off");
+        check(rec0[19:0] != 20'd0 && rec0[39:20] != 20'd0, "the totals of running rings move");
+        check(rec1[59:20] == 40'd0, "the references are off: their totals stand at zero");
+        //  the references on: a mask write ends a GetNoise run, and they count
+        csr(2'd1, 1, NT | 64'h2000_0000);
+        csr(2'd1, 0, 64'd0); check(got[31] && !got[29], "GetNoise: a new run, no loss");
+        regw(M_CTRL, 64'h0000_0000_003f_0003);
+        csr(2'd1, 0, 64'd0); check(got[29], "a write of the ring mask ends the GetNoise run: loss is set");
+        repeat (4) @(negedge clk);
+        check(dut.ring_en == 6'b111111, "in test mode the rings of the written mask run");
+        regw(M_CTRL, 64'h0000_0000_803f_0003);
+        for (int i = 0; i < 40; i++) meter_record("references on");
+        check(rec1[39:20] != 20'd0 && rec1[59:40] != 20'd0, "the references are on: their totals move");
+        //  the burst capture on ring 0's count instead of the lane bits
+        regw(M_CTRL, 64'h0000_0000_007f_0003);
+        regw(R_PERIOD, 64'd0);
+        wait_symbols(3);
+        start_capture();
+        wait_done(1);
+        regw(R_INDEX, 64'd0);
+        for (int w = 0; w < WORDS; w++) begin
+            logic [63:0] v;
+            v = 64'd0;
+            for (int s = 0; s < 16; s++) v[4 * s +: 4] = cnt_b[first + 16 * w + s];
+            regr(R_DATA);
+            check(got == v, $sformatf("burst source 1: word %0d is %016x, ring 0's counts were %016x", w, got, v));
+        end
+        check(cnt_b[first] != cnt_b[first + N - 1], "the count moved during that burst");
+        //  ... and on the reference rings' bits beside lanes 0 and 1
+        regw(M_CTRL, 64'h0000_0000_043f_0003);
+        look(M_CTRL); check(got[26] && !got[22], "the reference source reads back");
+        wait_symbols(3);
+        start_capture();
+        wait_done(1);
+        regw(R_INDEX, 64'd0);
+        begin
+            int differ;
+            differ = 0;
+            for (int w = 0; w < WORDS; w++) begin
+                logic [63:0] v;
+                v = 64'd0;
+                for (int s = 0; s < 16; s++) begin
+                    v[4 * s +: 4] = ref_b[first + 16 * w + s];
+                    if (ref_b[first + 16 * w + s][3:2] != src_b[first + 16 * w + s][3:2]) differ++;
+                end
+                regr(R_DATA);
+                check(got == v, $sformatf("burst reference source: word %0d is %016x, the bits were %016x", w, got, v));
+            end
+            check(differ > N / 8, "the reference bits of that burst are not the bits of lanes 2 and 3");
+        end
+        regw(R_PERIOD, 64'(DIV - 1));             //  back to symbols far enough apart to tell which one a record holds
+        wait_symbols(3);
+        regw(M_CTRL, 64'h0000_0000_807f_0003);
+        meter_record("burst source 1");
+        check(rec1[63:60] == rec_sym, "with the burst on a count, a record's lane bits are still the lane bits");
+        //  the counting mode: through the divider unless the meter asks for the ring itself
+        check(dut.noise.dir_q == 1'b0, "the counters count through their dividers");
+        csr(2'd1, 1, NT | 64'h2000_0000);
+        regw(M_CTRL, 64'h0000_0000_103f_0003);
+        look(M_CTRL); check(got[28], "the counting mode reads back");
+        csr(2'd1, 0, 64'd0); check(got[29], "a change of the counting mode ends the GetNoise run: loss is set");
+        repeat (16) @(negedge clk);
+        check(dut.noise.dir_q == 1'b1, "the meter's direct counting reaches the noise source");
+        //  the lock ends it
+        csr(2'd2, 0, 64'd0);
+        csr(2'd2, 1, got | LOCK);
+        look(M_CTRL); check(got == 64'd0, "locked in test mode: the meter's control register reads zero");
+        repeat (16) @(negedge clk);
+        check(dut.noise.dir_q == 1'b0, "locked: the counters are back on their dividers");
+        repeat (4) @(negedge clk);
+        check(dut.ring_en == 6'b001111, "locked: the rings of the strap run");
 
         $display("noise burst test: PASS (%0d checks, %0d source symbols)", checks, src_b.size());
         $finish;

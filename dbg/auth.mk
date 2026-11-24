@@ -260,6 +260,15 @@ DBG_AUTH_WIN_DIR ?= $(BUILD)/dbg/auth-window
 DBG_AUTH_ROM_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 -Os -ffreestanding -nostdlib -static -mcmodel=medany -fno-pic
 DBG_AUTH_ROM_BYPASS = s/if (expired()) return 0;/if (expired() \&\& !(csr_read(CSR_RX) >> 32)) return 0;/
 DBG_AUTH_ROM_SRCS = test/dbg/auth_rom/start.S test/dbg/auth_rom/window.c test/dbg/auth_rom/rom.ld
+# The ROM polls seed for its nonce, at most TRNG_TRIES + 1 times per word
+# without getting one, and window.c states how many clocks one poll takes,
+# least and most (TRNG_POLL_CLOCKS, TRNG_POLL_CLOCKS_MAX): the limit is sized
+# from them. The window bench measures the poll and holds it to that range,
+# so its runs are given the three constants as window.c has them.
+# $(call dbg_auth_rom_const,NAME) is shell text that prints one of them.
+dbg_auth_rom_const = grep -m1 -o 'define $(1) [0-9]*' test/dbg/auth_rom/window.c | cut -d' ' -f3
+DBG_AUTH_POLL_ARGS = +trng_tries=$$($(call dbg_auth_rom_const,TRNG_TRIES)) +poll_clocks=$$($(call dbg_auth_rom_const,TRNG_POLL_CLOCKS)) \
+  +poll_clocks_max=$$($(call dbg_auth_rom_const,TRNG_POLL_CLOCKS_MAX))
 # Algorithm 0x04, the SHA3-256 shared-secret MAC (contract 5.1), which the
 # FPGA image verifies: window.c built with -DAUTH_ALG_SHA3, sha3.c and a key
 # header written by key_header.py. Simulation builds use the PUBLIC test key
@@ -293,6 +302,48 @@ $(DBG_AUTH_WIN_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg
 	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR $(DBG_AUTH_CORE_FLAGS) $(LINT_W) \
 	  -GROM_HEX='"$(abspath $(DBG_AUTH_WIN_DIR)/rom.hex)"' \
 	  --Mdir $(DBG_AUTH_WIN_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v $(DBG_CORE_RTL)
+
+# The polling limit on the real core. With the ROM's own TRNG_TRIES the
+# limit is far beyond the simulation window, so a source that never delivers
+# is ended by the deadline. A ROM built with a small TRNG_TRIES shows the
+# limit itself: the wait ends at poll TRNG_TRIES + 1, a word that comes after
+# TRNG_TRIES polls without one is still taken, and one poll more is given up
+# on. Two mutants of it must fail: no limit at all, and one poll early.
+DBG_AUTH_TRIES_SMALL = 300
+DBG_AUTH_TRIES_DIR = $(DBG_AUTH_WIN_DIR)/tries
+# $(call dbg_auth_tries_rom,directory,window.c)
+define dbg_auth_tries_rom
+	$(XCHAIN)gcc $(DBG_AUTH_ROM_CFLAGS) -DTRNG_TRIES=$(DBG_AUTH_TRIES_SMALL) -T test/dbg/auth_rom/rom.ld -o $(1)/rom.elf test/dbg/auth_rom/start.S $(2)
+	$(XCHAIN)objcopy -O binary -j .text $(1)/rom.elf $(1)/rom.bin
+	hexdump -v -e '1/8 "%016x\n"' $(1)/rom.bin > $(1)/rom.hex
+endef
+$(DBG_AUTH_TRIES_DIR)/rom.hex: $(DBG_AUTH_ROM_SRCS) dbg/auth.mk
+	mkdir -p $(DBG_AUTH_TRIES_DIR)/nolimit $(DBG_AUTH_TRIES_DIR)/early
+	sed 's/opst == 3 || ++tries > TRNG_TRIES/opst == 3/' test/dbg/auth_rom/window.c > $(DBG_AUTH_TRIES_DIR)/nolimit/window.c
+	sed 's/++tries > TRNG_TRIES/++tries >= TRNG_TRIES/' test/dbg/auth_rom/window.c > $(DBG_AUTH_TRIES_DIR)/early/window.c
+	test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_TRIES_DIR)/nolimit/window.c | grep -c '^>')" = 1
+	test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_TRIES_DIR)/early/window.c | grep -c '^>')" = 1
+	$(call dbg_auth_tries_rom,$(DBG_AUTH_TRIES_DIR)/nolimit,$(DBG_AUTH_TRIES_DIR)/nolimit/window.c)
+	$(call dbg_auth_tries_rom,$(DBG_AUTH_TRIES_DIR)/early,$(DBG_AUTH_TRIES_DIR)/early/window.c)
+	$(call dbg_auth_tries_rom,$(DBG_AUTH_TRIES_DIR),test/dbg/auth_rom/window.c)
+
+# The same bench around a core built as the VCU118 debug image's: the defines
+# of IMAGE_DEFINES in test/dbg/check_auth_bypass.py that reach the core. One
+# poll of seed takes longer there (77 clocks against 53), and the ROM's limit
+# is sized for both. Only the cases of a source that does not deliver run on
+# it.
+# The bench is built beside the other one, not below it: Verilator's makefile
+# searches the parent directory, and would take the other build's
+# precompiled header for its own.
+DBG_AUTH_IMAGE_DIR = $(DBG_AUTH_WIN_DIR)-image
+DBG_AUTH_IMAGE_CORE_FLAGS = -DKARU_DBG_FULL -DKARU_RVA23S64 -DKARU_ICACHE -DKARU_ZVK -DKARU_KECCAK -DKARU_V_MUL_CYCLES=16 \
+  -DKARU_V_DIV_CYCLES=64 -DKARU_V_LANE_PIPE -DKARU_V_CWB_STAGE -DKARU_SMCNTRPMF -DKARU_SSCOFPMF
+$(DBG_AUTH_IMAGE_DIR)/Vtb_auth_window: test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v test/dbg/trigger_checker.vh $(DBG_CORE_RTL) $(wildcard dbg/*.vh rtl/*.vh rtl/*.sv) dbg/auth.mk $(DBG_AUTH_WIN_DIR)/rom.hex
+	mkdir -p $(DBG_AUTH_IMAGE_DIR)
+	timeout 900 verilator --binary --timing -j $(DBG_JOBS) $(DBG_CORE_SIM_FLAGS) -Irtl -Idbg -DKARU_DBG -DKARU_DBG_AUTH -DKARU_ZKR $(DBG_AUTH_IMAGE_CORE_FLAGS) $(LINT_W) \
+	  -GROM_HEX='"$(abspath $(DBG_AUTH_WIN_DIR)/rom.hex)"' \
+	  --Mdir $(DBG_AUTH_IMAGE_DIR) --top-module tb_auth_window test/dbg/tb_auth_window.sv test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v $(DBG_CORE_RTL) \
+	  > $(DBG_AUTH_IMAGE_DIR)/build.log 2>&1 || { tail -20 $(DBG_AUTH_IMAGE_DIR)/build.log; exit 1; }
 
 # +deadline_addr is the ROM's deadline variable, for the bench's monitor.
 # The mutant ROM has the reviewed defect: an available RX word bypasses the
@@ -360,10 +411,35 @@ dbg-auth-window-noseed-test: $(DBG_AUTH_NOSEED_DIR)/Vtb_auth_window $(DBG_AUTH_S
 	@echo "detected no-seed ROM with a constant nonce: $$(grep -m1 'auth core check' $(DBG_AUTH_NOSEED_DIR)/mut-nonce.log)"
 
 .PHONY: dbg-auth-window-test dbg-auth-rom-host-test
-dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test
-	timeout 900 $< +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test $(DBG_AUTH_TRIES_DIR)/rom.hex $(DBG_AUTH_IMAGE_DIR)/Vtb_auth_window
+	timeout 900 $< +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') $(DBG_AUTH_POLL_ARGS) \
 	  > $(DBG_AUTH_WIN_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_WIN_DIR)/run.log; exit 1; }
+	grep 'seed polling: one poll' $(DBG_AUTH_WIN_DIR)/run.log
 	grep 'karudbg auth window ROM: PASS' $(DBG_AUTH_WIN_DIR)/run.log
+	@# the polling limit: a ROM in which it acts inside the window, and its two mutants
+	timeout 900 $< +rom=$(abspath $(DBG_AUTH_TRIES_DIR)/rom.hex) +stall_only +trng_tries=$(DBG_AUTH_TRIES_SMALL) \
+	  +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_TRIES_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_TRIES_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_TRIES_DIR)/run.log; exit 1; }
+	grep 'karudbg auth window ROM, seed polling limit: PASS' $(DBG_AUTH_TRIES_DIR)/run.log
+	@for m in nolimit early; do d=$(DBG_AUTH_TRIES_DIR)/$$m; \
+	  if timeout 900 $< +rom=$(abspath $(DBG_AUTH_TRIES_DIR))/$$m/rom.hex +stall_only +trng_tries=$(DBG_AUTH_TRIES_SMALL) \
+	    +deadline_addr=$$($(XCHAIN)nm $$d/rom.elf | awk '$$3=="deadline"{print $$1}') > $$d/run.log 2>&1; then \
+	    echo "polling-limit ROM mutant $$m NOT detected"; exit 1; fi; \
+	  grep -q 'the per-word limit ended the wait' $$d/run.log || { echo "polling-limit ROM mutant $$m: unexpected failure"; tail -3 $$d/run.log; exit 1; }; \
+	  echo "detected polling-limit ROM mutant $$m: $$(grep -m1 'auth core check' $$d/run.log)"; done
+	@# the poll time against window.c, on this core and on a core built as the image's;
+	@# a range that starts one clock above the poll measured here must fail
+	timeout 900 $(DBG_AUTH_IMAGE_DIR)/Vtb_auth_window +stall_only $(DBG_AUTH_POLL_ARGS) \
+	  +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_IMAGE_DIR)/run.log 2>&1 || { tail -20 $(DBG_AUTH_IMAGE_DIR)/run.log; exit 1; }
+	grep 'seed polling: one poll' $(DBG_AUTH_IMAGE_DIR)/run.log
+	grep 'karudbg auth window ROM, seed polling limit: PASS' $(DBG_AUTH_IMAGE_DIR)/run.log
+	@if timeout 900 $< +stall_only +trng_tries=$$($(call dbg_auth_rom_const,TRNG_TRIES)) \
+	  +poll_clocks=$$(( $$($(call dbg_auth_rom_const,TRNG_POLL_CLOCKS)) + 1 )) +poll_clocks_max=$$($(call dbg_auth_rom_const,TRNG_POLL_CLOCKS_MAX)) \
+	  +deadline_addr=$$($(XCHAIN)nm $(DBG_AUTH_WIN_DIR)/rom.elf | awk '$$3=="deadline"{print $$1}') \
+	  > $(DBG_AUTH_WIN_DIR)/poll-control.log 2>&1; then echo 'a poll shorter than window.c assumes NOT detected'; exit 1; fi
+	grep -q 'window.c assumes' $(DBG_AUTH_WIN_DIR)/poll-control.log
+	@echo "detected a poll shorter than the assumed range: $$(grep -m1 'auth core check' $(DBG_AUTH_WIN_DIR)/poll-control.log)"
 	mkdir -p $(DBG_AUTH_WIN_DIR)/mut-rom
 	sed -e '/decision is inside the window/d' \
 	    -e '/^static int rx_word/,/^}/ '"$(DBG_AUTH_ROM_BYPASS)" test/dbg/auth_rom/window.c > $(DBG_AUTH_WIN_DIR)/mut-rom/window.c
@@ -383,6 +459,17 @@ dbg-auth-window-test: $(DBG_AUTH_WIN_DIR)/Vtb_auth_window dbg-auth-rom-host-test
 # schedules. Each mutant removes one deadline check and must fail; `bypass`
 # is the reviewed defect (an available RX word skips the deadline).
 #
+# The polling limit of the nonce source, with a TRNG_TRIES that acts inside
+# the model's window: a source that never delivers is given up on at poll
+# TRNG_TRIES + 1, and a word that comes after TRNG_TRIES polls without one
+# is waited for, each of the sixteen. Three mutants must fail: no limit
+# (`tries`), one poll early (`tries1`), and a limit over all sixteen words
+# together (`triesall`). With the ROM's own TRNG_TRIES the limit is beyond
+# the model's window and the deadline must end the wait. Last, window.c for
+# a production window of 2^30 cycles must compile with its own TRNG_TRIES,
+# and must refuse 200,000 (under twice the longest wait for a word) and
+# 20,000,000 (over a quarter of the window).
+#
 # Then algorithm 0x04 (HOST_SHA3): SHA3-256 against known answers and the
 # MAC against its Python definition; the TEST ROM must reject a correct 0x04
 # response, and the SHA3 ROM a correct TEST one, while the SHA3 ROM runs
@@ -392,14 +479,29 @@ DBG_AUTH_ROM_HOST_DIR ?= $(BUILD)/dbg/auth-rom-host
 DBG_AUTH_HOST_SHA3 = $(CC) -O2 -Wall -Wextra -Werror -DHOST_SHA3 -DAUTH_KEY_HEADER=\"$(abspath $(DBG_AUTH_TEST_KEY_H))\" -Itest/dbg/auth_rom
 dbg-auth-rom-host-test: test/dbg/auth_rom/host_test.c test/dbg/auth_rom/window.c $(DBG_AUTH_SHA3_SRCS) $(DBG_AUTH_TEST_KEY_H)
 	mkdir -p $(DBG_AUTH_ROM_HOST_DIR)/final $(DBG_AUTH_ROM_HOST_DIR)/rx $(DBG_AUTH_ROM_HOST_DIR)/push $(DBG_AUTH_ROM_HOST_DIR)/bypass
+	mkdir -p $(DBG_AUTH_ROM_HOST_DIR)/tries $(DBG_AUTH_ROM_HOST_DIR)/tries1 $(DBG_AUTH_ROM_HOST_DIR)/triesall $(DBG_AUTH_ROM_HOST_DIR)/long
 	$(CC) -O2 -Wall -Wextra -Werror -o $(DBG_AUTH_ROM_HOST_DIR)/host_test test/dbg/auth_rom/host_test.c
-	$(DBG_AUTH_ROM_HOST_DIR)/host_test
+	$(DBG_AUTH_ROM_HOST_DIR)/host_test > $(DBG_AUTH_ROM_HOST_DIR)/run.log || { tail -3 $(DBG_AUTH_ROM_HOST_DIR)/run.log; exit 1; }
+	@cat $(DBG_AUTH_ROM_HOST_DIR)/run.log
+	grep -q 'the per-word limit ended the wait' $(DBG_AUTH_ROM_HOST_DIR)/run.log
+	$(CC) -O2 -Wall -Wextra -Werror -DTRNG_TRIES=$$($(call dbg_auth_rom_const,TRNG_TRIES)) -o $(DBG_AUTH_ROM_HOST_DIR)/long/host_test test/dbg/auth_rom/host_test.c
+	$(DBG_AUTH_ROM_HOST_DIR)/long/host_test > $(DBG_AUTH_ROM_HOST_DIR)/long/run.log || { tail -3 $(DBG_AUTH_ROM_HOST_DIR)/long/run.log; exit 1; }
+	grep 'the deadline ended the wait' $(DBG_AUTH_ROM_HOST_DIR)/long/run.log
+	$(CC) -fsyntax-only -Wall -Wextra -Werror -DAUTH_ROM_HOST -DWINDOW_CYCLES=1073741824ull test/dbg/auth_rom/window.c
+	@for c in 200000:'under twice the longest wait' 20000000:'more than a quarter of the window'; do \
+	  if $(CC) -fsyntax-only -DAUTH_ROM_HOST -DWINDOW_CYCLES=1073741824ull -DTRNG_TRIES=$${c%%:*} test/dbg/auth_rom/window.c \
+	    > $(DBG_AUTH_ROM_HOST_DIR)/tries-$${c%%:*}.log 2>&1; then echo "TRNG_TRIES=$${c%%:*} with a production window NOT refused"; exit 1; fi; \
+	  grep -q "$${c#*:}" $(DBG_AUTH_ROM_HOST_DIR)/tries-$${c%%:*}.log || { cat $(DBG_AUTH_ROM_HOST_DIR)/tries-$${c%%:*}.log; exit 1; }; \
+	  echo "refused TRNG_TRIES=$${c%%:*} with a production window: $${c#*:}"; done
+	sed 's/opst == 3 || ++tries > TRNG_TRIES/opst == 3/' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/tries/window.c
+	sed 's/++tries > TRNG_TRIES/++tries >= TRNG_TRIES/' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/tries1/window.c
+	sed 's/unsigned tries = 0;/static unsigned tries; if (i == 0) tries = 0;/' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/triesall/window.c
 	sed '/decision is inside the window/d' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/final/window.c
 	sed '/^static int rx_word/,/^}/ s/if (expired()) return 0;//' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/rx/window.c
 	sed '/^static int push_challenge(void) {/,/^}/ s/if (expired()) return 0;//' test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/push/window.c
 	sed -e '/decision is inside the window/d' -e '/^static int rx_word/,/^}/ '"$(DBG_AUTH_ROM_BYPASS)" \
 	  test/dbg/auth_rom/window.c > $(DBG_AUTH_ROM_HOST_DIR)/bypass/window.c
-	@for m in final rx push bypass; do \
+	@for m in final rx push bypass tries tries1 triesall; do \
 	  test "$$(diff test/dbg/auth_rom/window.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/window.c | grep -c '^>')" -le 1 || exit 1; \
 	  ! cmp -s test/dbg/auth_rom/window.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/window.c || { echo "mutant $$m did not apply"; exit 1; }; \
 	  cp test/dbg/auth_rom/host_test.c $(DBG_AUTH_ROM_HOST_DIR)/$$m/host_test.c; \

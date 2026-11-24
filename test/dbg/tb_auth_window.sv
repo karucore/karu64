@@ -5,6 +5,18 @@
 // repeated ABORTs. Driven only through DMI and the platform inputs; the
 // deadline monitor reads the ROM's own deadline variable and the core's
 // mcycle. +rom=<hex> replaces the ROM image (used for the mutant ROM).
+//
+// The ROM polls seed for its nonce, at most TRNG_TRIES + 1 times per word
+// without getting one (window.c). The bench measures what one poll costs in
+// clock cycles and, with its own stand-in behind seed, runs a source that
+// does not deliver:
+//   +trng_tries=<n>   the TRNG_TRIES that the ROM was built with
+//   +poll_clocks=<n> +poll_clocks_max=<n>  TRNG_POLL_CLOCKS and
+//                     TRNG_POLL_CLOCKS_MAX of window.c: the range that the
+//                     ROM's limit is sized for. The measured poll must be in it
+//   +stall_only       only the cases of a source that does not deliver; for a
+//                     ROM built with a small TRNG_TRIES, whose limit acts
+//                     well inside the simulation window
 // SPDX-License-Identifier: BSD-2-Clause
 `timescale 1ns/1ps
 `include "karu_ext.vh"
@@ -69,9 +81,13 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     reg [1:0] seed_opst = 2'd2;
     reg [15:0] seed_data = 16'h5a5a;
     wire seed_taken;
+    // A source that reports seed_opst, and from the poll after
+    // `deliver_after` polls without a word (if not negative) ES16.
+    integer deliver_after = -1;
+    wire [1:0] seed_opst_now = (deliver_after >= 0 && idle_polls >= deliver_after) ? 2'd2 : seed_opst;
     karudbg_test_seed seed (
         .zkr_fire_i(zkr_fire_o), .zkr_sel_i(zkr_sel_o), .zkr_we_i(zkr_we_o), .zkr_rdata_o(zkr_rdata_i),
-        .opst_i(seed_opst), .data_i(seed_data), .taken_o(seed_taken));
+        .opst_i(seed_opst_now), .data_i(seed_data), .taken_o(seed_taken));
     // A 16-bit LFSR advanced by every word the ROM takes, so each window
     // gets a fresh nonce and a replayed response must fail.
     always @(posedge clk) if (seed_taken)
@@ -80,6 +96,28 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
     // The nonce words the ROM took from seed.
     always @(posedge clk)
         if (zkr_fire_o && zkr_we_o && zkr_sel_o == 2'd0 && zkr_rdata_i[31:30] == 2'd2) seed_words = seed_words + 1;
+    // The polls of seed that found no word, since the last power-on reset,
+    // and the clock cycles from one such poll to the next: what one pass of
+    // the loop in make_nonce() costs.
+    integer idle_polls = 0, poll_gaps = 0, poll_min = 0, poll_max = 0, poll_total = 0;
+    reg [63:0] poll_cycle = 0, idle_first = 0, idle_last = 0;
+    reg poll_idle = 0;                             // the access before this one found no word either
+    wire seed_access = zkr_fire_o && zkr_we_o && zkr_sel_o == 2'd0;
+    always @(posedge clk)
+        if (rst) begin
+            idle_polls <= 0; poll_gaps <= 0; poll_idle <= 0;
+        end else if (seed_access && zkr_rdata_i[31:30] == 2'd2) begin
+            poll_idle <= 0;
+        end else if (seed_access) begin
+            idle_polls <= idle_polls + 1; poll_idle <= 1; poll_cycle <= dut.core.csr.csr_mcycle;
+            if (idle_polls == 0) idle_first <= dut.core.csr.csr_mcycle;
+            idle_last <= dut.core.csr.csr_mcycle;
+            if (poll_idle) begin
+                poll_gaps <= poll_gaps + 1; poll_total <= poll_total + 1;
+                if (poll_total == 0 || dut.core.csr.csr_mcycle - poll_cycle < poll_min) poll_min <= dut.core.csr.csr_mcycle - poll_cycle;
+                if (dut.core.csr.csr_mcycle - poll_cycle > poll_max) poll_max <= dut.core.csr.csr_mcycle - poll_cycle;
+            end
+        end
 `endif
     karudbg_core #(.RESET_PC(64'h0001_0000), .ISLAND_ROM_HEX(ROM_HEX)) dut (.*);
     wire [31:0] mmio_reads, mmio_writes;
@@ -348,12 +386,124 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
         end
     endtask
 
+`ifndef AUTH_WINDOW_NO_SEED
+`ifndef AUTH_WINDOW_ENTROPY_SRC
+    // ---- a source that does not deliver (the bench's stand-in behind seed) ----
+    // What the ROM was built with, and what window.c assumes for one poll.
+    integer trng_tries = 0, poll_clocks = 0, poll_clocks_max = 0;
+    // Wait for the first instruction issued at the next stage: the ROM has left.
+    task wait_handover(input integer bound, output integer clocks);
+        begin
+            clocks = 0;
+            while (!(dut.k_imem_arvalid && dut.k_imem_araddr == RAM[`AXI_ADDR_W-1:0]) && clocks < bound) begin
+                @(negedge clk); clocks = clocks + 1;
+            end
+            check(clocks < bound, "the ROM hands over: first instruction issued at the next stage");
+        end
+    endtask
+    // The source reports `opst` (0 BIST, 1 WAIT) and never a word. The ROM
+    // must make no challenge and leave: after TRNG_TRIES + 1 polls if those
+    // fit into its window, else when the window ends. Either way it must not
+    // poll past its own deadline.
+    task stalled_source(input [1:0] opst);
+        integer t, pushes0, grants0, limit_end;
+        reg [63:0] window_end;
+        begin
+            seed_opst = opst; deliver_after = -1;
+            por(1, 1);
+            pushes0 = rom_pushes; grants0 = all_grants;
+            wr(7'h10, 1); wr(7'h30, 32'h10a50001);     // REQUEST
+            wait_handover(600000, t);
+            window_end = rom_deadline;                 // written before the first poll, and not cleared by this ROM
+            check(idle_polls > 1 && poll_gaps == idle_polls - 1, "the ROM polled seed, and nothing else between two polls");
+            check(rom_pushes == pushes0 && all_grants == grants0 && !dut.auth.auth_unlock_q, "no challenge word and no grant without a nonce");
+            check(window_end > idle_first && window_end - idle_first <= 64'd400000, "ROM deadline variable located");
+            check(idle_last < window_end + SLACK, "no poll of seed after the deadline");
+            limit_end = (trng_tries + 1) * poll_max;   // clocks that the polls of the per-word limit take, at most
+            $display("seed %s forever: %0d polls of %0d to %0d clocks, the last %0d clocks before the deadline; TRNG_TRIES %0d",
+                     opst == 0 ? "BIST" : "WAIT", idle_polls, poll_min, poll_max, window_end - idle_last, trng_tries);
+            if (trng_tries != 0 && limit_end + 2000 < 400000) begin
+                check(idle_polls == trng_tries + 1, $sformatf("the per-word limit ended the wait: %0d polls, TRNG_TRIES + 1 is %0d", idle_polls, trng_tries + 1));
+                check(window_end - idle_last > 64'd2000, "and it ended well before the window did");
+            end else begin
+                check(trng_tries == 0 || idle_polls <= trng_tries, "the per-word limit is beyond this window: fewer polls than it allows");
+                check(window_end - idle_last <= 2 * poll_max, "the deadline ended the wait: the ROM polled until its window was over");
+            end
+            repeat (200) @(negedge clk);
+            check(dut.auth.boot_done_q, "the window is closed in hardware");
+            expect_locked("locked after a window without a nonce", 2000);
+            seed_opst = 2'd2;
+        end
+    endtask
+    // The first nonce word comes after `idle` polls without one. Up to
+    // TRNG_TRIES such polls are within the limit: the ROM makes its
+    // challenge and a correct response unlocks. One more is given up on.
+    task slow_source(input integer idle, input bit in_time);
+        integer t, pushes0;
+        begin
+            seed_opst = 2'd1; deliver_after = idle;
+            por(1, 1);
+            pushes0 = rom_pushes;
+            wr(7'h10, 1); wr(7'h30, 32'h10a50001);
+            if (in_time) begin
+                recv_challenge;
+                check(idle_polls == idle, $sformatf("%0d polls without a word, then sixteen words: within the limit", idle));
+                send_response(32'h02018000, 32'h00010020, 8'h01, 0);
+                poll_authenticated(1, 20000);
+                check(value[7], "a source that delivers on the last poll the limit allows: the response unlocks");
+            end else begin
+                wait_handover(600000, t);
+                check(idle_polls == idle && rom_pushes == pushes0, $sformatf("%0d polls without a word: given up, no challenge", idle));
+                expect_locked("locked after the ROM gave up on the source", 2000);
+            end
+            seed_opst = 2'd2; deliver_after = -1;
+        end
+    endtask
+    task stall_cases;
+        begin
+            void'($value$plusargs("trng_tries=%d", trng_tries));
+            void'($value$plusargs("poll_clocks=%d", poll_clocks));
+            void'($value$plusargs("poll_clocks_max=%d", poll_clocks_max));
+            stalled_source(2'd1);
+            stalled_source(2'd0);
+            // a dead source ends the wait at once
+            seed_opst = 2'd3; por(1, 1);
+            wr(7'h10, 1); wr(7'h30, 32'h10a50001);
+            begin : dead
+                integer t, pushes0;
+                pushes0 = rom_pushes;
+                wait_handover(40000, t);
+                check(idle_polls == 1 && rom_pushes == pushes0, "a source that reports DEAD: one poll, no challenge");
+            end
+            seed_opst = 2'd2;
+            if (poll_clocks != 0)
+                check(poll_min >= poll_clocks && poll_max <= poll_clocks_max,
+                      $sformatf("one poll takes %0d to %0d clocks here; window.c assumes %0d to %0d", poll_min, poll_max, poll_clocks, poll_clocks_max));
+            if (trng_tries != 0 && (trng_tries + 2) * poll_max + 2000 < 400000) begin
+                slow_source(trng_tries, 1);
+                slow_source(trng_tries + 1, 0);
+            end
+            $display("seed polling: one poll of make_nonce() takes %0d to %0d clocks (%0d measured); TRNG_TRIES %0d",
+                     poll_min, poll_max, poll_total, trng_tries);
+        end
+    endtask
+`endif
+`endif
+
     initial begin
 `ifdef AUTH_WINDOW_NO_SEED
         noseed_case(1);
         noseed_case(0);
         $display("karudbg auth window ROM without seed: PASS (%0d checks)", checks);
         $finish;
+`else
+`ifndef AUTH_WINDOW_ENTROPY_SRC
+        if ($test$plusargs("stall_only")) begin
+            stall_cases;
+            $display("karudbg auth window ROM, seed polling limit: PASS (%0d checks)", checks);
+            $finish;
+        end
+`endif
 `endif
         // ---- correct TEST response unlocks ----
         por(1, 1);
@@ -464,6 +614,12 @@ module tb_auth_window #(parameter ROM_HEX = "rom.hex");
 
         check(seed_words >= 16 && seed_words % 16 == 0,
               "every nonce came from seed, sixteen words each");
+`ifndef AUTH_WINDOW_ENTROPY_SRC
+`ifndef AUTH_WINDOW_NO_SEED
+        // ---- a source that does not deliver ----
+        stall_cases;
+`endif
+`endif
 `ifdef AUTH_WINDOW_ENTROPY_SRC
         $display("nonce source: seed, the entropy source, %0d words", seed_words);
 `else

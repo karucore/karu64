@@ -9,6 +9,21 @@
 //       the host does (silence, repeated ABORTs, a stalled TRNG);
 //   I3  a valid response delivered in time, also after ABORTs, unlocks.
 //
+// And for the nonce source, which the ROM polls at most TRNG_TRIES + 1 times
+// per word without getting one:
+//
+//   N1  a source that never delivers is given up on at poll TRNG_TRIES + 1,
+//       without a challenge, if those polls end inside the window; if the
+//       limit is beyond the window, the deadline ends the wait (I2);
+//   N2  a word that comes after TRNG_TRIES polls without one is waited for,
+//       for every one of the sixteen words; one poll more is not.
+//
+// The ROM's own TRNG_TRIES is sized for its real poll of 53 to 77 clocks
+// (window.c). Here an access is one cycle and a poll two, so the model takes
+// a smaller limit, which acts well inside its window. -DTRNG_TRIES=<n>
+// overrides it: with the ROM's own value the limit is beyond the model's
+// window, and N1 must find the deadline in charge.
+//
 // This models the software only. The hardware commit predicate and the
 // real core are covered by tb_auth.sv and tb_auth_window.sv.
 //
@@ -24,6 +39,9 @@
 #include <string.h>
 
 #define AUTH_ROM_HOST
+#ifndef TRNG_TRIES
+#define TRNG_TRIES 10000
+#endif
 #include "window.c"
 #ifdef HOST_SHA3
 #include "sha3.h"
@@ -42,6 +60,9 @@ static struct {
     uint64_t abort_at[MAX_ABORTS];     /* single ABORTs */
     uint64_t storm_from, storm_to, storm_period;   /* periodic ABORTs */
     unsigned rng_opst;
+    unsigned rng_idle, rng_left;       /* polls without a word before a word; those still to come */
+    int rng_every;                     /* before every word, not just the first */
+    unsigned seed_polls, seed_idle;    /* polls of seed, and those that found no word */
     int corrupt;
     unsigned alg;                      /* algorithm of the host's response */
     /* mailbox state */
@@ -134,7 +155,13 @@ static int rx_ready(void) {
 uint64_t mock_rw(unsigned csr, uint64_t w) {
     (void)w;
     tick();
-    if (csr == CSR_SEED) return ((uint64_t)m.rng_opst << 30) | ((m.t * 0x9e37u) & 0xffffu);
+    if (csr == CSR_SEED) {
+        m.seed_polls++;
+        if (m.rng_opst != 2) { m.seed_idle++; return (uint64_t)m.rng_opst << 30; }
+        if (m.rng_left) { m.rng_left--; m.seed_idle++; return 1ull << 30; }      /* WAIT */
+        if (m.rng_every) m.rng_left = m.rng_idle;
+        return (2ull << 30) | ((m.t * 0x9e37u) & 0xffffu);
+    }
     if (csr != CSR_RX) fail("unexpected CSR read-write");
     if (rx_ready()) {
         m.started = 1; m.last_pop_t = m.t;
@@ -169,6 +196,27 @@ static void respond_at(uint64_t first, uint64_t step) {
 }
 static void storm(uint64_t from, uint64_t to, uint64_t period) {
     m.storm_from = from; m.storm_to = to; m.storm_period = period; m.next_storm = T0 + from;
+}
+/* The source reports WAIT `idle` times before the first word, or before every word. */
+static void slow_source(unsigned idle, int every) {
+    m.rng_idle = idle; m.rng_left = idle; m.rng_every = every;
+}
+/* Cycles that the ROM spends on n polls of seed: a deadline check and the access. */
+#define POLL_CYCLES 2u
+#define LIMIT_CYCLES ((uint64_t)POLL_CYCLES * ((uint64_t)TRNG_TRIES + 1))
+/* N1, after a run on a source that never delivers. */
+static unsigned limit_acted, deadline_acted;
+static void check_gave_up(void) {
+    if (m.unlocked || m.tx_since_reset) fail("N1: a challenge or a grant without a nonce");
+    if (LIMIT_CYCLES + SLACK < W) {
+        if (m.seed_polls != (uint64_t)TRNG_TRIES + 1) fail("N1: the per-word limit did not end the wait at poll TRNG_TRIES + 1");
+        if (m.t > T0 + LIMIT_CYCLES + SLACK) fail("N1: the routine went on after the limit");
+        limit_acted++;
+    } else {
+        if (m.seed_polls > (uint64_t)TRNG_TRIES + 1) fail("N1: more polls than the limit allows");
+        if (m.t + SLACK < T0 + W) fail("N1: the wait ended before the deadline, and not by the limit");
+        deadline_acted++;
+    }
 }
 
 /* Run the routine and check I1; want: 1 must unlock, 0 must not, -1 either. */
@@ -256,8 +304,23 @@ int main(void) {
     m.abort_at[0] = 30; m.abort_at[1] = 400; m.abort_at[2] = 1500; respond_at(5000, 2); run(1); cases++;
     reset_model("ABORT after the first response word");
     respond_at(2000, 50); m.abort_at[0] = 2100; run(0); cases++;
-    reset_model("stalled TRNG"); m.rng_opst = 1; run(0); cases++;
+    reset_model("stalled TRNG"); m.rng_opst = 1; run(0); check_gave_up(); cases++;
+    reset_model("TRNG in BIST forever"); m.rng_opst = 0; run(0); check_gave_up(); cases++;
     reset_model("dead TRNG"); m.rng_opst = 3; run(0); cases++;
+    if (m.seed_polls != 1 || m.tx_since_reset) fail("a dead source: one poll, no challenge");
+    /* N2: the limit is per word, and exact. */
+    if (LIMIT_CYCLES + 2000 < W) {
+        reset_model("first word after TRNG_TRIES idle polls"); slow_source(TRNG_TRIES, 0);
+        respond_at(LIMIT_CYCLES + 1000, 3); run(1); cases++;
+        if (m.seed_idle != (uint64_t)TRNG_TRIES || m.seed_polls != (uint64_t)TRNG_TRIES + 16) fail("N2: polls of a source that delivers on the last one allowed");
+        reset_model("first word after TRNG_TRIES + 1 idle polls"); slow_source(TRNG_TRIES + 1, 0);
+        respond_at(LIMIT_CYCLES + 1000, 3); run(0); check_gave_up(); cases++;
+    }
+    if (16 * LIMIT_CYCLES + 2000 < W) {
+        reset_model("every word after TRNG_TRIES idle polls"); slow_source(TRNG_TRIES, 1);
+        respond_at(16 * LIMIT_CYCLES + 1000, 3); run(1); cases++;
+        if (m.seed_idle != 16ull * TRNG_TRIES) fail("N2: sixteen words, each waited for to the limit");
+    }
 
     /* Random schedules around the deadline. */
     for (unsigned n = 0; n < 400; n++) {
@@ -280,6 +343,10 @@ int main(void) {
 #endif
     printf("auth ROM host model: PASS (%u schedules, %u of the boundary/random ones unlocked, "
            "window %llu cycles)\n", cases, unlocked, (unsigned long long)W);
+    printf("auth ROM host model, nonce source: TRNG_TRIES %llu, %s\n", (unsigned long long)TRNG_TRIES,
+           limit_acted ? "the per-word limit ended the wait for a source that never delivers" :
+                         "the limit is beyond this window: the deadline ended the wait");
+    if (limit_acted + deadline_acted < 2 || (limit_acted && deadline_acted)) { printf("FAIL: the stalled-source schedules did not run\n"); return 1; }
     if (unlocked == 0) { printf("FAIL: no boundary schedule unlocked; the sweep is vacuous\n"); return 1; }
     return 0;
 }

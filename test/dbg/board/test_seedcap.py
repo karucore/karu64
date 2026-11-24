@@ -4,8 +4,9 @@
 # optionally writes mentropycfg and then enters the payload, as
 # seed_restart.py does on the board after a reset. Checks:
 #   - from reset, the payload polls through the start-up test and stores
-#     consecutive kept samples of the bench's noise model, starting with the
-#     first sample after the start-up test, nibble [15:12] first;
+#     consecutive samples of the bench's noise model, starting with the first
+#     sample after the start-up test: sixteen to a word, bit 15 first, each
+#     the bit of lane 0, the bench's source lane, in a kept symbol;
 #   - it never leaves the source's buffer unread for as long as one word;
 #   - a payload that starts after the first ES16 reports LATE;
 #   - a source that fails its start-up test is reported DEAD;
@@ -127,22 +128,26 @@ class NoiseModel:
         return bytes(osc[:clocks])
 model = NoiseModel()
 
-def samples(words):
-    return bytes(n for w in words for n in ((w >> 12) & 15, (w >> 8) & 15, (w >> 4) & 15, w & 15))
+LANE = 0                                    # the bench's source lane (LANE of karu_entropy_src)
 
-def place(seq, k, clocks):
-    """(phase, index) of every place where seq is a stretch of every k-th raw symbol."""
-    stream, period = model.upto(clocks + 64), RAW_PERIOD * k
+def samples(words):
+    """The samples of the stored words, one bit per byte, in the order they were taken."""
+    return bytes((w >> (15 - j)) & 1 for w in words for j in range(16))
+
+def place(seq, k, clocks, lane=LANE):
+    """(phase, index) of every place where seq is a stretch of one lane of every k-th raw symbol."""
+    stream, period = bytes((s >> lane) & 1 for s in model.upto(clocks + 64)), RAW_PERIOD * k
     return [(r, p) for r in range(period) if (p := stream[r::period].find(seq)) >= 0]
 
 STOP = LOAD + SYM["seedcap_stop"]
-COUNT = 250
+COUNT = 63                                  # 1,008 samples: the 1,000 of one restart row, and a word boundary
 IDLE = 1 << 22
-# The bench resets with k = 2 (a word every 64 clocks). The driver sets the
-# board's k = 16 (512 clocks per word here), which restarts the start-up
+# The bench resets with k = 2 (a word every 256 clocks). The driver sets the
+# board's k = 16 (2,048 clocks per word here), which restarts the start-up
 # test a few clocks after reset; the limits accept a longer spacing.
-BENCH_RESET_CFG = 0x30c7c1eb3c370001
+BENCH_RESET_CFG = 0x30c0000b3c370001
 K16 = (BENCH_RESET_CFG & ~0xffff) | 15
+C_RCT, C_APT = 4, 8                         # mentropystat cause: repetition, proportion
 
 # 1. From reset, the board's spacing.
 o = simulate("sim-reset", std_bin, SYM, [COUNT, BUF, IDLE], precfg=K16)
@@ -152,39 +157,48 @@ print({f: (hex(v) if f in ("stat_end", "cfg_end") else v) for f, v in o.items() 
 check((o["d_mcause"], o["d_mepc"]) == (3, STOP), "the payload stops at its ebreak")
 check(o["status"] == 0 and o["stored"] == COUNT, f"status OK and {COUNT} words stored")
 check(o["bist"] > 0 and o["cyc_first"] > o["cyc_entry"], "it polled BIST before the first ES16: no word came before it")
-check(o["max_gap"] < 4 * RAW_PERIOD * k, f"longest time between polls ({o['max_gap']} clocks) is under one word ({4 * RAW_PERIOD * k})")
+check(o["max_gap"] < 16 * RAW_PERIOD * k, f"longest time between polls ({o['max_gap']} clocks) is under one word ({16 * RAW_PERIOD * k})")
 check(o["stat_end"] & 0xffff_0000_0000 == 0 and o["stat_end"] & 3 == 1, "mentropystat at the end: running, no failure")
+check((o["stat_end"] >> 20) & 15 == LANE, f"mentropystat shows the bench's straps: lane {LANE}, no shift of the spacing floor")
 seq = samples(o["words"])
 where = place(seq, k, o["clocks"])
-check(len(where) == 1, f"the {len(seq)} samples are one consecutive stretch of the source, nibble [15:12] first ({where})")
+check(len(where) == 1, f"the {len(seq)} samples are one consecutive stretch of lane {LANE} of the source, bit 15 first ({where})")
 check(1024 <= where[0][1] <= 1026, f"and the stretch starts with the first sample after the 1,024 of the start-up test (index {where[0][1]})")
-rev = bytes(n for w in o["words"] for n in (w & 15, (w >> 4) & 15, (w >> 8) & 15, (w >> 12) & 15))
-check(place(rev, k, o["clocks"]) == [], "control: the other nibble order is not a stretch of the source")
+rev = bytes((w >> j) & 1 for w in o["words"] for j in range(16))
+check(place(rev, k, o["clocks"]) == [], "control: the other bit order is not a stretch of the source")
+check(all(place(seq, k, o["clocks"], lane) == [] for lane in range(4) if lane != LANE), "control: not a stretch of any other lane")
+nib = bytes(n for w in o["words"] for n in ((w >> 12) & 15, (w >> 8) & 15, (w >> 4) & 15, w & 15))
+check(all((p := model.upto(o["clocks"] + 64)[r::RAW_PERIOD * k]).find(nib) < 0 for r in range(RAW_PERIOD * k)),
+      "control: the words are not four 4-bit symbols each")
 
 # 2. A payload that starts after the first ES16.
 o = simulate("sim-late", late_bin, late_sym, [COUNT, BUF, IDLE], precfg=K16)
 print({f: (hex(v) if f in ("stat_end", "cfg_end") else v) for f, v in o.items() if f != "words"})
 check(o["status"] == 2 and o["bist"] == 0, "a payload that starts after the first ES16 reports LATE, with no BIST poll")
 check(place(samples(o["words"]), k, o["clocks"]) == [], "control: its words are not one consecutive stretch (the full buffer dropped samples)")
+check(len(place(samples(o["words"][:8]), k, o["clocks"])) == 1, "the eight words that the buffer held are consecutive; the gap comes after them")
 
-# 3. A start-up failure: a symbol repetition cutoff of zero fails on the first symbol.
+# 3. A start-up failure: a repetition cutoff of zero fails on the first sample.
 RESET_CFG = K16
-dead_cfg = RESET_CFG & ~(0x7f << 37)
+dead_cfg = RESET_CFG & ~(0x3ff << 16)
 o = simulate("sim-dead", std_bin, SYM, [COUNT, BUF, IDLE], precfg=dead_cfg)
 check(o["status"] == 3 and o["stored"] == 0, "a source that fails its start-up test is reported DEAD, nothing stored")
-check(o["stat_end"] & 3 == 2 and (o["stat_end"] >> 8) & 15 == 1 and not o["stat_end"] & 4,
-      f"mentropystat: dead, cause symbol repetition, no alarm ({o['stat_end']:#x})")
+check(o["stat_end"] & 3 == 2 and (o["stat_end"] >> 8) & 15 == C_RCT and not o["stat_end"] & 4 and (o["stat_end"] >> 12) & 15 == 1 << LANE,
+      f"mentropystat: dead, cause repetition on the source lane, no alarm ({o['stat_end']:#x})")
 
-# 4. A running failure during the capture: a stricter symbol repetition cutoff.
-for srct in (4, 5, 6):
-    o = simulate(f"sim-alarm-{srct}", std_bin, SYM, [4000, BUF, IDLE], precfg=(RESET_CFG & ~(0x7f << 37)) | (srct << 37), max_cycles=12000000)
-    if o["status"] == 4:
+# 4. A running failure during the capture: a repetition cutoff strict enough
+# to fail the model within the capture, and not in the start-up test.
+for rct in (15, 14, 16, 13, 17, 12, 18):
+    o = simulate(f"sim-alarm-{rct}", std_bin, SYM, [1000, BUF, IDLE], precfg=(RESET_CFG & ~(0x3ff << 16)) | (rct << 16), max_cycles=6000000)
+    if o["status"] == 4 and o["stored"] >= 8:
         break
-print({f: (hex(v) if f in ("stat_end", "cfg_end") else v) for f, v in o.items() if f != "words"}, f"srct={srct}")
-check(o["status"] == 4 and o["stored"] > 0, f"a running failure ends the capture as ALARM (srct {srct}, after {o['stored']} words)")
-check(not o["stat_end"] & 4 and (o["stat_end"] >> 8) & 15 == 1 and (o["stat_end"] >> 4) & 7 == 1 and o["stat_end"] >> 32 == 1,
-      f"mentropystat: one failure, cause symbol repetition, one strike; the alarm already seen by the poll that returned BIST ({o['stat_end']:#x})")
+print({f: (hex(v) if f in ("stat_end", "cfg_end") else v) for f, v in o.items() if f != "words"}, f"rct={rct}")
+check(o["status"] == 4 and o["stored"] >= 8, f"a running failure ends the capture as ALARM (rct {rct}, after {o['stored']} words)")
+check(not o["stat_end"] & 4 and (o["stat_end"] >> 8) & 15 == C_RCT and (o["stat_end"] >> 4) & 7 == 1 and (o["stat_end"] >> 32) & 0xffff == 1
+      and (o["stat_end"] >> 12) & 15 == 1 << LANE and (o["stat_end"] >> 16) & 15 != 0,
+      f"mentropystat: one failure, cause repetition with its lane and lag, one strike; the alarm already seen by the poll that returned BIST ({o['stat_end']:#x})")
 where = place(samples(o["words"]), k, o["clocks"])
 check(len(where) == 1 and 1024 <= where[0][1] <= 1026, "the words stored before the failure are consecutive samples from the first on")
 
 print(f"seedcap self-test: PASS ({checks} checks)")
+sys.exit(0)

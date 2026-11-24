@@ -12,12 +12,15 @@
 //  does not rely on what karu_csr happens to do: the value that the core
 //  reads is fed back into the write strobes and the written value.
 //  csr_sel_i stays an input: it is decoded from the instruction, and the
-//  read value has to depend on it.
+//  read value has to depend on it. The straps lane_i and kshift_i are inputs
+//  too: mentropystat shows them, and they are constants of the platform.
 //  SPDX-License-Identifier: BSD-2-Clause
 module zkr_loop_strict (
     input  wire        clk,
     input  wire        rst,
     input  wire        en,
+    input  wire [1:0]  lane,
+    input  wire [1:0]  kshift,
     input  wire        rng_val,
     input  wire [3:0]  rng_b,
     input  wire [1:0]  sel,
@@ -25,7 +28,7 @@ module zkr_loop_strict (
 );
     wire fb = ^rdata;
     karu_entropy entropy (
-        .clk(clk), .rst(rst), .en_i(en),
+        .clk(clk), .rst(rst), .en_i(en), .lane_i(lane), .kshift_i(kshift),
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(fb), .csr_sel_i(sel), .csr_we_i(fb),
         .csr_wdata_i(rdata), .csr_rdata_o(rdata), .respace_i(fb), .test_o(), .lock_o());
@@ -35,6 +38,8 @@ module zkr_loop_wrap (
     input  wire        clk,
     input  wire        rst,
     input  wire        en,
+    input  wire [1:0]  lane,
+    input  wire [1:0]  kshift,
     input  wire        rng_val,
     input  wire [3:0]  rng_b,
     input  wire        op_req,
@@ -56,7 +61,7 @@ module zkr_loop_wrap (
         .op_req(op_req), .op_addr(op_addr), .op_src(op_src), .op_sub(op_sub), .op_rs1(op_rs1),
         .op_rd_v(op_rd_v), .csr_exc_o(csr_exc), .trap_req(trap_req));
     karu_entropy entropy (
-        .clk(clk), .rst(rst), .en_i(en),
+        .clk(clk), .rst(rst), .en_i(en), .lane_i(lane), .kshift_i(kshift),
         .rng_en_o(), .rng_fips_o(), .rng_val_i(rng_val), .rng_b_i(rng_b),
         .csr_fire_i(zkr_fire), .csr_sel_i(zkr_sel), .csr_we_i(zkr_we),
         .csr_wdata_i(zkr_wdata), .csr_rdata_o(zkr_rdata), .respace_i(1'b0), .test_o(), .lock_o());

@@ -1,12 +1,13 @@
 # karudbg
 
-karudbg is the opt-in implementation targeting RISC-V Debug 1.0 for Karu. It lives in
-`karu64/dbg/` and is maintained as part of the karu64 repository. This document
-tracks the implementation, testing plan and acceptance evidence. The opt-in
-RTL and simulation targets pass the functional gates below. The VCU118 debug
-image is board-tested ([record](BOARD_ACCEPTANCE-2026-11-20.md)); the
-OpenOCD and boot/detach findings are in [the campaign record](BOARD_ACCEPTANCE.md).
-A Debug 1.0 compliance claim remains pending.
+karudbg is the opt-in implementation targeting RISC-V Debug 1.0 for Karu.
+It lives in `karu64/dbg/` and is maintained as part of the karu64
+repository. This document tracks the implementation, testing plan and
+acceptance evidence. The opt-in RTL and simulation targets pass the
+functional gates below. VCU118 debug image `20f8b265…` is board-tested
+([record](BOARD_ACCEPTANCE-2026-11-23.md)); the OpenOCD and boot/detach
+findings are in [the campaign record](BOARD_ACCEPTANCE.md). A Debug 1.0
+compliance claim remains pending.
 
 The base `KARU_DBG` configuration targets one RV64 hart using execution-based
 debug with a Debug ROM and Program Buffer. Optional auto-execution, address
@@ -30,24 +31,30 @@ enforcement remains a separate obligation.
 
 ## Progress checklist
 
-The combined functional gate passed on the sources of 2026-11-19, from
-which bitstream `ddb168e1…` was built
-([current record](#current-combined-validation-record)); it has not been
-rerun since the board-test additions of 2026-11-20. Those sources have the
-fixes of
-findings S7–S13 of the [2026-11-15 security review](../doc/security-review-2026-11-15.md).
+The combined functional gate passes on the current sources (2026-11-21
+16:02 UTC, [current record](#current-combined-validation-record)), which
+has one ring for `seed`, the reference rings, the dividers and counters,
+the meter, the soft straps and the strap-variant flow with its records.
+The one-ring image `20f8b265…` is built from them and board-accepted
+([record](BOARD_ACCEPTANCE-2026-11-23.md)). The earlier
+image `ddb168e1…` was
+built from the sources of 2026-11-19, on which the gate passed. At commit
+`ace91d5`, which added the board-test scripts of 2026-11-20, the gate
+fails, for the reason the record gives. The sources of 2026-11-19 have the
+fixes of findings S7–S13 of the
+[2026-11-15 security review](../doc/security-review-2026-11-15.md).
 Of the authentication milestones ([plan](../doc/debug-auth-plan.md)), A0,
 A1, A5 and A6 are done; A2 (the FPGA ROM verifies a SHA3-256 MAC,
 algorithm `0x04`; the production verifier awaits decision D3), A3 (formal:
 two findings open) and A4 (simulation: general four-state runs and some
-scenarios open) are partial. The VCU118 debug image `ddb168e1…` meets
-timing at 75 MHz ([measurements](MEASUREMENTS.md#fpga-image--2026-11-20))
-and is board-tested ([record](BOARD_ACCEPTANCE-2026-11-20.md)). The Yosys
+scenarios open) are partial. The VCU118 debug image `20f8b265…` meets
+timing at 75 MHz ([measurements](MEASUREMENTS.md#fpga-image--2026-11-21))
+and is board-tested ([record](BOARD_ACCEPTANCE-2026-11-23.md)). The Yosys
 area and 200 MHz timing rows are of the RTL of 2026-11-18
 ([measurements](MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)),
 before the authentication block lost its TRNG port and gained the window
-timer and the entropy block's tests were redesigned; the 200 MHz goal
-remains open.
+timer, the entropy block's tests were redesigned and the block was changed
+to one lane; the 200 MHz goal remains open.
 
 Check an item only when its implementation and
 required tests are complete. Add source and result links beside completed
@@ -121,13 +128,34 @@ items; a documented design choice alone does not close an implementation item.
   the debug image: implemented, simulated and built; the functional and
   formal gates passed on the sources of 2026-11-19
   ([record](#current-combined-validation-record)).
-- [x] Board acceptance of the current debug image `ddb168e1…`, following
+- [x] Board acceptance of the current debug image `20f8b265…`, following
   [the board test plan](BOARD_TEST_PLAN.md): boot through the island ROM,
   Zkr in U-Boot and Linux, software reboot, the debug campaign, the noise
-  captures, the Linux and KVM regression and the authentication cases;
-  accepted with documented exceptions (translation fails with the known
-  OpenOCD walker results). See the
-  [acceptance record](BOARD_ACCEPTANCE-2026-11-20.md).
+  captures, the health tests, the Linux and KVM regression and the
+  authentication cases; accepted with documented exceptions (translation
+  fails with the known OpenOCD walker results, the OpenSSL matrix needs
+  its completion phase, five authentication cases were not run). See the
+  [acceptance record](BOARD_ACCEPTANCE-2026-11-23.md).
+- [x] One ring for `seed` and the measurement of that ring's own jitter
+  ([Zkr follow-up plan, Z7](../doc/zkr-followup-plan.md#z7-one-ring-for-seed-and-the-measurement-of-its-own-jitter)):
+  the one-lane entropy block, two reference rings, a counter behind a
+  divider by two on every ring, the meter, the soft straps with their
+  variant flow, and the capture and analysis scripts; the combined gate
+  passes on them ([record](#current-combined-validation-record)), and
+  image `20f8b265…` is built from them
+  ([measurements](MEASUREMENTS.md#fpga-image--2026-11-21)). On the board
+  the meter passed qualification and measured the rings; its model did
+  not establish a lower bound ([record](BOARD_ACCEPTANCE-2026-11-23.md)).
+  NIST's non-IID estimates for lane 0 are 0.810451 and 0.838673 bits per
+  sampled bit, and the
+  [SP 800-90B assessment](../doc/sp800-90b-assessment.md) proposes the
+  0.75 that the Zkr text requires as the developer's estimate, for one
+  board in lab conditions.
+- [ ] The rate justification: a reason to credit the needed share of the
+  ring's measured jitter as fresh at 0.75 bit per delivered bit
+  ([open items](../doc/sp800-90b-assessment.md#8-open-items)).
+- [ ] A software module that conditions `seed` with a vetted conditioner,
+  and data over a wider operating range (the same list).
 
 ## Run the non-board gates
 
@@ -163,6 +191,53 @@ PYTHONPATH=test/dbg python3 -m unittest \
 
 ### Current combined validation record
 
+**The sources of [image `20f8b265…`](MEASUREMENTS.md#fpga-image--2026-11-21), 2026-11-21 16:02 UTC.**
+`make dbg-test` passed in 904.99 seconds with all **475 captured input
+hashes** unchanged (the inputs now include `flow/strap_diff.py` and
+`flow/rom_record.py`, which `strap-flow-test` runs). These sources change the
+entropy source to one ring for `seed` and adds the reference rings, a
+divider and a counter on every ring, the meter, the straps and the
+strap-variant flow ([FPGA guide](../doc/fpga.md)); the gate also runs
+`rosc-meter-test`, `dbg-rosc-count-test`, `dbg-rosc-own-test`,
+`dbg-entropy-claim-test` (it needs scipy and says so when it is skipped;
+it ran) and `strap-flow-test`. From that run:
+
+| Target | Result |
+| --- | --- |
+| `entropy-test` | 12,894 checks; 108 of 108 mutants, each caught by the check written for it; replay 45 of 45 |
+| `zkr-test`, `zkr-loop-test` | pass |
+| `noise-burst-test` | 110,079 checks; 54 of 54 mutants. The entropy source with the burst capture, the meter and the straps |
+| `rosc-meter-test` (new) | 113 of 113 mutants: seven meter runs of 2,105 to 2,107 checks; a million clocks in each counting mode with nothing flagged; three sweeps of the divider's delays, 3,000 combinations each, every one inside its six conditions dividing by exactly two; five counter runs on bench-made rings with coarse counters early and late; the Verilog model against its Python copy |
+| `ddr-noise-burst-test` | pass; the registers through the SoC's bus decode, the meter's included; 8 decode mutants |
+| `dbg-rosc-count-test` (new) | 844 checks, 123 bench runs: the meter capture in both counting modes, the count bursts in both views and the reference-bit bursts, on a model and on the simulated SoC |
+| `dbg-rosc-own-test` (new) | 176 checks: the analysis of meter records on generated rings with counts of two periods, the two checks of the divider's ratio, the least usable records of a capture that may pass, and the capture test's own files |
+| `dbg-entropy-claim-test` (new) | pass: the pairwise estimator and `--own` on generated rings of known own variance |
+| `strap-flow-test` (new) | 70 checks: `flow/strap_diff.py` and `flow/rom_record.py` on generated files with the structure of a VCU118 bitstream, frames with their check bits; and `make -n` of all six image targets, the debug image included, with and without `SYNTH_ONLY`, with stand-ins for the boot files from beside the repository: the boot ROM hashed after packing and recorded after a new bitstream (strictly newer than the hash), the authentication record only after a check that the bitstream is new |
+| `dbg-getnoise-test`, `dbg-getnoise-burst-test`, `dbg-burst-analysis-test` | pass; `dbg-burst-analysis-test` 72 checks |
+| `dbg-board-harness-test` | 244 checks, 41 scripts |
+| `dbg-auth-test` | pass |
+
+Outside the gate: `dbg-seedcap-test` (27 checks) and `image-boot-test`
+(the island ROM to an S-mode payload that reads `seed` as Linux does, a
+reboot and a second boot: with the debugger open, with authentication,
+and with the entropy source switched off; its no-Zkr control fails as it
+must) passed by 11:45 UTC on the same RTL and firmware, apart from comments; what changed after
+them is the Vivado constraints, the strap and ROM-record tools, the make
+rules of the image and the bundle, the board scripts, their tests and the
+list of files the gate hashes. The entropy source was placed and routed as
+a small real design with pins under the present constraints (13:15 UTC):
+every routed check of the dividers and counters within its limits in all
+four states, the pulse-width report at every counter clock pin without
+negative slack, timing met, and the bitstream written. The strap-variant
+flow was run on that design from end to end with the present tools
+(15:32 to 15:37 UTC): two variants recorded and verified, a wrong variant
+and a mask without lane 0 refused ([FPGA guide](../doc/fpga.md)).
+
+Outside this November 21 functional-gate run: `uboot-boot-test`; the formal
+suite and the composition, whose inputs are unchanged (the core and debug
+RTL, without the entropy block, and `test/dbg/formal/`); a full Vivado
+build; and anything on a board.
+
 **Second review, rebuilt image, 2026-11-19 23:25 UTC (the sources of bitstream `ddb168e1…`).**
 `make dbg-test` passed in 757.03 seconds with all **456 captured input
 hashes** unchanged, during the build of bitstream `ddb168e1…`
@@ -186,7 +261,9 @@ low; 22:28 UTC), `uboot-tftp-test` (22:33 UTC) and `uboot-boot-test`
 
 Not in this run: the board-test additions of 2026-11-20 (`seedcap.S`,
 `seed_restart.py`, `entropy_fault.py`, `test_seedcap.py` and their targets
-in `dbg/board.mk`); the gate has not been rerun since.
+in `dbg/board.mk`). With them, at commit `ace91d5`, `make dbg-test` fails:
+`test_seedcap.py` did not meet the exit-status rule of the harness
+self-test (`dbg-board-harness-test`). The current sources fix that.
 
 ## Specification and implementation origins
 
@@ -766,8 +843,18 @@ and the board harness's own checks: `dbg-board-harness-test`,
 runs the tests of the entropy source's burst capture: `noise-burst-test`,
 `ddr-noise-burst-test`, `dbg-getnoise-burst-test` and
 `dbg-burst-analysis-test` ([the FPGA guide](../doc/fpga.md),
-[Zkr follow-up plan](../doc/zkr-followup-plan.md)). `dbg/checks.mk` and
-`dbg/board.mk` are the authoritative list.
+[Zkr follow-up plan](../doc/zkr-followup-plan.md)). The list also has the
+tests of the measurement of a ring's own jitter: `rosc-meter-test` (the
+dividers, the counters and the meter, `flow/fpga/rosc.mk`),
+`dbg-rosc-count-test` (the meter capture payload and its phase, on a model
+of the registers and on the SoC simulation), `dbg-rosc-own-test` (the
+analysis of the records on generated rings whose own and shared noise are
+known, with controls that must not pass) and `dbg-entropy-claim-test`
+(`entropy_claim.py` on generated rings; it needs scipy and says so when it
+is skipped); and `strap-flow-test`, the checks of a strap variant's
+bitstream and of its provenance on generated files. In the
+[current record](#current-combined-validation-record) the gate ran all
+five. `dbg/checks.mk` and `dbg/board.mk` are the authoritative list.
 
 Directed core tests must include:
 
@@ -1087,11 +1174,11 @@ hart's bus responders with it, as for `ndmreset_o`.
 | `dbg-auth-open-equiv-test` | Yosys sequential-equivalence proof that the DM with `KARU_DBG_AUTH` and the gate tied open equals today's DM (base and SBA+autoexec). A leaking mutant must fail |
 | `dbg-auth-core-test` | Real core with the simulation ROM stub. Covers hold, `REQUEST`, challenge and response, unlock, firmware revocation (EBREAK with `dcsr.ebreakm` traps), revocation from Debug Mode with relock, a rejected response, a forged island SRAM load injected by the fabric, a system reset in the window, the CSR instruction-form table and `OPEN`. 42 checks. A mutant without the core gate is caught by INV42a. A mutant restoring both pre-fix response muxes (island and debug-page router) is caught by the forged-load check; either fixed layer alone stops that attack |
 | `dbg-auth-openocd-test` | Pinned pristine OpenOCD over remote bitbang against an authentication JTAG model. Examine is refused with OpenOCD's own message; the script runs the mailbox exchange, polls `dmstatus` with `riscv dmi_read 0x11`, then `arp_examine` attaches without a second `dmactive` pulse. Also covers a GPR round trip, the grant surviving a manual `dmactive` pulse, and a rejected response staying locked |
-| `dbg-auth-window-test` | The A2 simulation island ROM (`test/dbg/auth_rom/`, simulation-only `TEST` algorithm) on the real core. A correct response unlocks. A wrong signature, algorithm, length or permission mask each stay locked. A challenge is re-pushed after `ABORT`, the window expires on silence, and a replayed response fails on the fresh nonce of a `seed` stand-in (`test/dbg/karudbg_test_seed.v`). Responses that straddle the deadline, a last word after it and continuous ABORTs across it never produce a pop or grant later than the deadline plus 256 cycles (a monitor reads the ROM's deadline variable and `mcycle`). The 256 cycles are the measured software polling tolerance of this ROM and core configuration, not a proven bound or a hard cutoff (contract §5.3). A ROM with the reviewed late-response defect must fail. 107 checks |
-| `dbg-auth-rom-host-test` | The same `window.c` on a host mailbox model with one cycle per CSR access. Exact-deadline, queued, split, repeated-ABORT, stalled-`seed` and 400 random schedules. Four mutants, one the reviewed defect, must fail. Runs as part of `dbg-auth-window-test` |
+| `dbg-auth-window-test` | The A2 simulation island ROM (`test/dbg/auth_rom/`, simulation-only `TEST` algorithm) on the real core. A correct response unlocks. A wrong signature, algorithm, length or permission mask each stay locked. A challenge is re-pushed after `ABORT`, the window expires on silence, and a replayed response fails on the fresh nonce of a `seed` stand-in (`test/dbg/karudbg_test_seed.v`). Responses that straddle the deadline, a last word after it and continuous ABORTs across it never produce a pop or grant later than the deadline plus 256 cycles (a monitor reads the ROM's deadline variable and `mcycle`). The 256 cycles are the measured software polling tolerance of this ROM and core configuration, not a proven bound or a hard cutoff (contract §5.3). A ROM with the reviewed late-response defect must fail. 129 checks. The per-word polling limit of `seed` (`TRNG_TRIES`): a ROM built for 300 polls gives up on a source that never delivers at poll 301, takes a first word that comes at the limit and gives up one poll later (27 checks; two ROM mutants, no limit and one poll early, must fail). One poll is measured at 53 clocks on this core and at 77 on a core built with the VCU118 image's defines (21 checks), both within the range that `window.c` states; a control that assumes one clock more must fail |
+| `dbg-auth-rom-host-test` | The same `window.c` on a host mailbox model with one cycle per CSR access. Exact-deadline, queued, split, repeated-ABORT and 400 random schedules; a `seed` that never delivers, one that reports `DEAD`, and one that delivers after exactly `TRNG_TRIES` polls without a word or one poll later. Seven mutants must fail: four of the deadline, one of them the reviewed defect, and three of the polling limit (no limit, one poll early, a limit over all sixteen words). `window.c` with a window of 2³⁰ must compile with its own `TRNG_TRIES` and refuse 200,000 and 20,000,000. Runs as part of `dbg-auth-window-test` |
 | `dbg-core-auth-open-test` | The whole real-core debug bench with `KARU_DBG_AUTH` in `OPEN`. The summary must match the base build: same checks, cycles and retirements. This is benchmark evidence: an authentication build always decodes the island range `[0x1_0000, 0x2_4000)`, so programs using that range differ (contract §7) |
 | `dbg-auth-window-seed-test` | The window bench with the FPGA entropy source and its noise model behind `seed`, in place of the stand-in (`test/dbg/karudbg_test_seed.v`) that `dbg-auth-window-test` uses; both ROMs read their nonce from `seed`. 108 checks; the bench confirms that every nonce is sixteen words taken from `seed` |
-| `dbg-auth-window-noseed-test` | The window bench on a core **without** `KARU_ZKR`, with the ROM that such an image gets (`-DAUTH_NO_SEED`, in the SHA3 build with the public test key): with a `REQUEST` and without one, the ROM pushes no challenge word, grants nothing, takes no illegal-instruction trap, closes the window and issues the first instruction of the next stage (after 41,061 clocks; most of them clear the island SRAM). A `REQUEST` after the hand-over finds the mailbox closed. 19 checks. Two controls must fail, each on its own check: the ROM built without the flag reads `seed`, an illegal instruction with no trap vector set; and a ROM whose `make_nonce()` reports success without a source pushes a challenge with a constant nonce. Added on 2026-11-19 after a reviewer ran this path once in a temporary bench |
+| `dbg-auth-window-noseed-test` | The window bench on a core **without** `KARU_ZKR`, with the ROM that such an image gets (`-DAUTH_NO_SEED`, in the SHA3 build with the public test key): with a `REQUEST` and without one, the ROM pushes no challenge word, grants nothing, takes no illegal-instruction trap, closes the window and issues the first instruction of the next stage (after 41,061 clocks; most of them clear the island SRAM). A `REQUEST` after the hand-over finds the mailbox closed. 19 checks. Two controls must fail, each on its own check: the ROM built without the flag reads `seed`, an illegal instruction with no trap vector set; and a ROM whose `make_nonce()` reports success without a source pushes a challenge with a constant nonce. Added on 2026-11-19, when this path had been run once in a temporary bench |
 | `sv39-auth-pma-test` | The island SRAM and the Debug Module's page lie inside the boot ROM's span and are not ROM in the access permissions. Checked through the address translator; the control, which makes the island SRAM executable again, is caught by the `HLVX` case |
 | `dbg-board-auth-rehearsal-test` | The board's client (`test/dbg/board/authlib.py`, `auth_phase.py`) and pristine OpenOCD against the simulated target running the real window ROM: locked examine, a correct response, a wrong one, a replay, a fresh nonce after another power-on reset, expiry and the straps; four client mutants and five wrong setups must be refused |
 | `dbg-board-auth-sha3-rehearsal-test` | The same rehearsal with the island ROM built for algorithm `0x04` (SHA3-256 shared secret) and the public test key: locked, authenticate, wrong response, replay, fresh nonce; a wrong key, no key and a TEST-only client are refused |
@@ -1423,7 +1510,7 @@ control fails as expected. The software-walker safeguards in the local patch
 remain independent of autoexec support. Incremental area and 200 MHz timing
 measurements are complete in [the matrix](MEASUREMENTS.md#extension-measurements--2026-10-29).
 The [current record](#current-combined-validation-record) covers the
-sources of 2026-11-19.
+current sources.
 
 ### E2 — hardware address breakpoints and watchpoints
 

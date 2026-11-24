@@ -27,11 +27,26 @@
    source; its ROM is built with -DAUTH_NO_SEED, makes no challenge and so
    never unlocks. (Reading seed there would trap, with no trap vector set.) */
 #define CSR_SEED 0x015
-/* Polls allowed per nonce word while the source reports BIST or WAIT. It
-   must cover the source's start-up test after reset. */
+/* Polls allowed per nonce word while the source reports BIST or WAIT; the
+   poll after them gives up. The limit has to cover, with room to spare, the
+   longest wait that a working source asks for one word: a full start-up
+   test and one burst of four words, (1024 + 64) samples of 256 clocks each
+   at the largest spacing floor, k = 128 (rtl/karu_entropy.v, kshift_i = 3).
+   That is 35.7 million clocks. One poll, a pass of the loop in make_nonce(),
+   takes TRNG_POLL_CLOCKS to TRNG_POLL_CLOCKS_MAX clocks on the island: 53
+   with the core of the window bench, 77 with a core built as the VCU118
+   image's. test/dbg/tb_auth_window.sv measures both (make
+   dbg-auth-window-test) and fails outside that range. 2,000,000 polls are
+   106 to 154 million clocks, 1.4 to 2.1 s at 75 MHz: at least 2.9 times
+   that wait, and at most a seventh of the production window of 2^30
+   cycles, so a source that never delivers is given up on long before the
+   window ends. */
 #ifndef TRNG_TRIES
-#define TRNG_TRIES 10000
+#define TRNG_TRIES 2000000
 #endif
+#define TRNG_POLL_CLOCKS 53
+#define TRNG_POLL_CLOCKS_MAX 77
+#define TRNG_WAIT_CLOCKS ((1024ull + 64) * 256 * 128)
 #define CSR_MBST 0xfc0
 
 #define AUTH_UNLOCK   (1u << 0)
@@ -53,6 +68,17 @@
 #endif
 #ifndef WINDOW_CYCLES
 #define WINDOW_CYCLES 400000ull     /* simulation bound; production 2^30 */
+#endif
+/* A build with a production window: the per-word polling limit covers at
+   least twice the longest wait for a word, at the shortest poll, and ends
+   within the first quarter of the window, at the longest. A simulation
+   build may have a window shorter than the limit; its deadline then ends
+   the wait, which make_nonce() checks first. */
+#if WINDOW_CYCLES >= 0x40000000ull && !defined(AUTH_NO_SEED)
+_Static_assert((uint64_t)TRNG_TRIES * TRNG_POLL_CLOCKS >= 2 * TRNG_WAIT_CLOCKS,
+               "TRNG_TRIES: the limit is under twice the longest wait for a seed word");
+_Static_assert((uint64_t)TRNG_TRIES * TRNG_POLL_CLOCKS_MAX <= WINDOW_CYCLES / 4,
+               "TRNG_TRIES: a source that never delivers holds the ROM for more than a quarter of the window");
 #endif
 
 #ifdef AUTH_ROM_HOST

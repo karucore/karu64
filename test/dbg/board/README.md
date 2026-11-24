@@ -7,15 +7,19 @@ campaign's artifact directory so that they are version-controlled. Logs,
 traces and results are written to an artifact directory under `_build`,
 never here.
 
-**Status.** Every script runs on the board with the `rom2m-auth` debug
-image, in the order of [the board test plan](../../../dbg/BOARD_TEST_PLAN.md),
-which also gives the boot files, the switch positions and what to try when
-a stage fails. All phases pass except translation (the known OpenOCD
-defect); the latest record is
-[2026-11-20](../../../dbg/BOARD_ACCEPTANCE-2026-11-20.md). The phases take
-the scratch addresses and the reset vector from the kind of image under
-test ([Image kinds](#image-kinds)). On this board an SSH connection takes
-30 to 55 s and a reboot about 440 s; the defaults allow for it
+**Board coverage.** The current image is the one-ring image
+`20f8b265…`. The acceptance phases, `rosc_count.py`, the capture scripts,
+`seed_restart.py` and `entropy_fault.py` ran on it on November 23 and 24
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-23.md)), and the entropy
+scripts target it
+([SP 800-90B assessment](../../../doc/sp800-90b-assessment.md)). The
+fallback, four-ring image `ddb168e1…`
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-20.md)), needs the capture
+scripts and fixtures of commit `ace91d5` for its entropy tests.
+
+The phases take the scratch addresses and the reset vector from the kind
+of image under test ([Image kinds](#image-kinds)). On this board an SSH
+connection takes 30 to 55 s and a reboot about 440 s; the defaults allow for it
 (`KARU_BOARD_SSH_TIMEOUT` 180 s, reboot and boot waits 900 s, the evidence
 copy of `post_linux_host.py` 900 s). Ask for the reset button by its label,
 `CPU_RESET`: PROG clears the FPGA's configuration.
@@ -65,6 +69,19 @@ lab's.
 | `KARU_BOARD_BURST_ADDR` | `0x88000000` | Where the burst payload is loaded in DDR; its buffer starts 64 KiB above |
 | `KARU_BOARD_BURST_CLOCK_HZ` | `75000000` | The hart's clock, recorded in the sidecar and used for the waits |
 | `KARU_BOARD_BURST_NOTE` | empty | Free text for the sidecar: bitstream, reset history, link state, temperature |
+| `KARU_BOARD_ROSC_SETTINGS` | `256x1,256x4,256x16,256x64` | Settings of `rosc_count.py`, one capture each per ring mask: clocks per raw sample (1 to 256) x raw samples per record (1 to 65,536). The defaults give a record every 256, 1,024, 4,096 and 16,384 clocks |
+| `KARU_BOARD_ROSC_COUNT` | `1000000`; `400000` at 16,384 clocks or more | Records per setting: one number for all settings, or one per setting. A capture that is to carry a bound needs 300,000 usable records (below) |
+| `KARU_BOARD_ROSC_SCALE` | `1` | A factor on every record count, the defaults or those of `KARU_BOARD_ROSC_COUNT` and `KARU_BOARD_ROSC_DIRECT_COUNT`: `0.1` takes a tenth of the records in a tenth of the time. The bursts are not scaled |
+| `KARU_BOARD_ROSC_MASKS` | `0x0f,0x3f` | Ring masks, each captured with every setting: ring r in bit r, rings 0 to 3 the lanes, 4 and 5 the reference rings. The defaults: the rings of normal operation first, then all six as the cross-check |
+| `KARU_BOARD_ROSC_DIRECT_COUNT` | `100000` | Records of each capture in direct mode, the cross-check of the divider: one per ring mask, at the first setting with a record every 1,024 clocks (the first setting, if there is none). `KARU_BOARD_ROSC_SCALE` applies. `0` for none, which also leaves out the count bursts in direct mode |
+| `KARU_BOARD_ROSC_BURSTS` | `4` | Bursts of each ring's count, one value per clock, for each of the six rings, each of the two views of its count and each way of counting, with all six rings on; `0` for none |
+| `KARU_BOARD_ROSC_REF_BURSTS` | `32` | Bursts of the reference bits per sampling period, with all six rings on; `0` for none. `KARU_BOARD_ROSC_SCALE` does not apply |
+| `KARU_BOARD_ROSC_REF_PERIODS` | `1,2,4,8,16,32,64` | Sampling periods, in clocks, of the bursts of the reference bits |
+| `KARU_BOARD_ROSC_MAX_LOSSES` | `16` | Losses after which a capture still goes on with a new run (at most 47); one more fails it |
+| `KARU_BOARD_ROSC_ADDR` | `0x88000000` | Where the meter payload is loaded in DDR; its buffer starts 64 KiB above (16 MB for a million records) |
+| `KARU_BOARD_ROSC_CLOCK_HZ` | `75000000` | The hart's clock, recorded in the sidecar and used for the waits |
+| `KARU_BOARD_ROSC_WAIT` | from the sizes | Seconds to wait for one capture before the hart is halted |
+| `KARU_BOARD_ROSC_NOTE` | empty | Free text for the sidecar: bitstream, straps, reset history, link state |
 | `KARU_BOARD_GETNOISE_WAIT` | from count and k | Seconds to wait for one capture before the hart is halted |
 | `KARU_BOARD_GETNOISE_NOTE` | empty | Free text copied into each capture's sidecar: bitstream, board, temperature |
 | `KARU_BOARD_AUTH_CASE` | none | The one case `auth_phase.py` runs; see [Authentication](#authentication) for the names and the other `KARU_BOARD_AUTH_*` settings |
@@ -155,6 +172,7 @@ a locked target is one of its passing checks.
 | 10 | `soak_phase.py` | fixture | `KARU_BOARD_SOAK_SECONDS` |
 | 10a | `getnoise_capture.py` | fixture; image built with `KARU_ZKR`; DIP switch 4 off; `make dbg-getnoise-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: raw noise capture, see [Noise capture](#noise-capture-getnoise) |
 | 10b | `getnoise_burst.py` | fixture; image with the burst capture block; DIP switch 4 off; `make dbg-getnoise-burst-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: bursts of raw noise at sampling periods of 1 to 256 clocks, see [Burst capture](#burst-capture) |
+| 10c | `rosc_count.py` | fixture; image with the meter (the next image, [board test plan, section 7](../../../dbg/BOARD_TEST_PLAN.md#7-the-next-image-one-ring-for-seed)); DIP switch 4 off; `make dbg-rosc-count-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT` | Optional, not an acceptance phase: the edge counts of the six rings, and bursts of the reference rings' bits, see [Meter capture](#meter-capture). About an hour and 45 minutes with the default settings, nearly all of it reading the records back; `KARU_BOARD_ROSC_SCALE=0.1` for a quarter of an hour |
 | 11 | `clean_detach_boot.py` | `linux-server.cfg` | Restart OpenOCD with `linux-server.cfg` first. Reset-halts, with the DPC at the image kind's reset vector, then reboots normally and shuts OpenOCD down |
 | 12 | `post_linux_host.py` | Linux over SSH | Copies and runs `post-linux.sh` on the board, collects evidence |
 | 13 | `complete_crypto.py` | Linux over SSH | Completes the OpenSSL matrix if step 12 timed out; gives the matrix verdict |
@@ -282,8 +300,8 @@ sample, and decimation k gives the same process with k sigma^2.
   the samples in clocks, which is the period times k (256 k for the
   captures through `mnoise`, the period for bursts).
 - For samples close together, where sigma^2 per sample is small and the
-  autocorrelation runs over hundreds of lags (added 2026-11-18 for the
-  burst captures; it applies to every capture):
+  autocorrelation runs over hundreds of lags (for the burst captures; it
+  applies to every capture):
   - a fit of (F, sigma^2) per window, at lags up to an eighth of the
     window, found from short lags outwards. Every run is a window; a run
     longer than `--window` (32,768) is cut. The report gives the median and
@@ -336,7 +354,7 @@ Limits of the long-lag fit, from the self-test on generated data
   about 0.05 F is not.
 - A lane whose correlation outlasts an eighth of a window (sigma^2 below
   about 4e-5 at 32,768 symbols) gets F and sigma^2 but no per-bit model
-  figure: it is refused, as before, because the lags do not reach.
+  figure: it is refused, because the lags do not reach.
 - Wander inside a burst raises the all-lag sigma^2; the value used is less
   exposed, not immune (a frequency ramp of 4e-3 across a burst raised it
   by a quarter).
@@ -370,7 +388,9 @@ clocks. The run lengths in the sidecar show it either way.
 
 ## Operational restart data and induced failures
 
-Both need an image with `mentropystat` (the VCU118 image), lifecycle `OPEN`,
+Both need an image with `mentropystat` whose `seed` delivers one lane (image
+`20f8b265…`; `ddb168e1…` delivers four lanes and needs the scripts as they
+are at commit `ace91d5`), lifecycle `OPEN`,
 the entropy source on (SW12 all off), `server.cfg`, and the fixtures of
 `make dbg-board-fixture dbg-seedcap-fixture`. Both reset the SoC, so read
 `mentropystat` first if the interval before them matters.
@@ -378,7 +398,10 @@ the entropy source on (SW12 all off), `server.cfg`, and the fixtures of
 **`seed_restart.py`** collects the operational restart data of SP 800-90B
 section 3.1.4: `KARU_BOARD_SEEDRESTART_COUNT` (1,000) restarts, and after
 each the first `KARU_BOARD_SEEDRESTART_SAMPLES` (1,000) samples the source
-delivers through `seed`. A restart is a debugger reset (`ndmreset`), which
+delivers through `seed`. A sample is one bit, of the lane that
+`mentropystat` names as the source, and a word holds sixteen: 63 words are
+read per restart and their first 1,000 bits kept. A restart is a debugger
+reset (`ndmreset`), which
 resets the hart, the SoC and the entropy source and gates the rings off;
 the hart is held by `haltreq` and halts before its first instruction (the
 phase checks DPC), so the boot ROM never runs. Through raw DMI writes the
@@ -389,8 +412,9 @@ configuration, without test mode, and stores the words from the first
 `ES16`) and that it kept up (its longest gap between polls is under one
 word); a restart that fails either check, or ends in a health-test alarm,
 is recorded with its reason and repeated. Output: `seed-restart-rows.bin`
-(one 4-bit sample per byte, row after row, the first sample of a word from
-its bits [15:12]) and `seed-restart.json`. Run `ea_restart` on the rows.
+(one sample per byte, 0 or 1, row after row, the first sample of a word
+from its bit 15), `seed-restart-words.bin` (the words as read) and
+`seed-restart.json`. Run `ea_restart` on the rows, as a binary source.
 `make dbg-seedcap-test` checks the payload on the simulation bench: it
 stores exactly the first samples after the start-up test, in order, and
 reports a late start, `DEAD` and an alarm.
@@ -400,13 +424,16 @@ Software may only make the tests stricter, and a cutoff far below the reset
 value makes the real source fail that test within seconds. The cases, each
 from a debugger reset (`KARU_BOARD_FAULT_CASES` selects some):
 `startup` (a start-up failure is fatal at once and raises no alarm),
-`each` (each of the four tests fires and `mentropystat` names it, with the
-lanes and lags), `strikes` (the alarm stays until one `seed` access has
+`each` (each of the two tests fires and `mentropystat` names it, with the
+source's lane and the lags), `strikes` (the alarm stays until one `seed`
+access has
 seen it, a `mentropycfg` write clears neither the alarm nor the strike, the
 third running failure is fatal and `seed` reports `DEAD`), `forgive` (2^24
-clean samples, about 15 minutes, clear a strike) and `limits` (weaker
+clean samples, about 16 minutes at k = 16 and in proportion to k, clear a
+strike) and `limits` (weaker
 values are replaced by the build's limits, the spacing outside test mode
-stays at k = 16, measured through `seed`, and the lock freezes the CSR until
+stays at the floor that `mentropystat` shows, k = 16 unless the image's
+strap raises it, measured through `seed`, and the lock freezes the CSR until
 reset). It leaves the hart halted after a reset.
 
 ## Burst capture
@@ -460,6 +487,263 @@ further apart than they need (the source paused).
 together with `getnoise-k*.bin` files; it takes the period from the
 sidecar. See [Noise capture](#noise-capture-getnoise) for what it reports.
 
+## Meter capture
+
+`rosc_count.py` records how many periods each of the six rings has made, at
+regular clock intervals: the four lanes (3, 5, 7 and 9 inverters) and the
+two reference rings (3 inverters, like lane 0). The meter next to the noise
+source (`flow/fpga/karu_rosc_meter.v`, registers at `0x1000_0868`) keeps a
+running total per ring, modulo 2^20, and at every `every`-th raw sample
+takes a record: the six totals and the four lane bits of one clock edge.
+From a series of records the analysis has each ring against the clock and
+every pair of rings against each other. The November 23 session used this
+meter on image `20f8b265…`; `make dbg-rosc-count-test` is its simulation
+test.
+
+**The unit of a count is two ring periods.** A ring is too fast to clock a
+flip-flop, so the meter's counters count each ring divided by two, and
+every total in a record is in counts. Nothing in a `.bin` is multiplied:
+the records are as read, and `count_unit` in the sidecar, 2, says what a
+count is. Whoever reads the totals multiplies by it.
+
+**Needs.** An image with the meter; an image with the burst capture block
+but without the meter fails every capture with status `NOMETER`, and one
+without the block stops at the first case. DIP switch 4 off. The hart
+reset-halted with the fixture loaded, as for `getnoise_capture.py`. The
+payload built into the artifact directory:
+`make dbg-rosc-count-fixture DBG_BOARD_OUT=$KARU_BOARD_OUT`.
+
+**What it does.** The phase checks the capture block's status register as
+`getnoise_burst.py` does and loads `rosc_count.S` into DDR. Then, for each
+ring mask in `KARU_BOARD_ROSC_MASKS` and each setting in
+`KARU_BOARD_ROSC_SETTINGS`, the payload, in M-mode, enters the entropy
+source's test mode, writes the sampling period, the ring mask and `every`,
+starts the meter with a second write, and for each record polls `DATA0`
+until it is valid, reads `DATA1`, which hands the record over, and stores
+both words. The meter holds one record and never overwrites it. If the
+payload is late, the meter drops the next record and sets its loss flag;
+the payload then ends the run, writes the start bit again and begins a new
+run with the next record. Runs are never joined, and after
+`KARU_BOARD_ROSC_MAX_LOSSES` losses one more fails the capture. Before the
+capture the payload takes two records that it does not keep: the first
+pass through its record loop is fetched from memory and takes longer than
+a record may wait. The payload leaves test mode on every path that entered
+it, which puts the sampling period and the rings back and restarts the
+start-up test of `seed`. `mentropycfg` is not written; a locked source, or
+one already in test mode, is refused untouched. While the payload runs,
+`seed` is in `BIST`.
+
+**Direct counting, a diagnostic mode.** With CTRL[28] of the meter the
+counters are clocked by the rings themselves and a count is one ring
+period. For the fastest rings that is outside what the part guarantees for
+a flip-flop, so it is no way to measure: a capture in direct mode is a
+diagnostic and never carries a bound. It is there as a cross-check of the
+divider on the board, where the two ways of counting must give totals in
+the ratio 2. For the first setting with a record every 1,024 clocks, and
+each ring mask, the phase takes one capture of `KARU_BOARD_ROSC_DIRECT_COUNT`
+records in direct mode, just before the divided capture of that setting so
+that the two are close in time. Its files are named `rosc-direct-...`, so
+that they cannot be taken for a capture that a bound rests on, and their
+sidecars have `count_unit` 1. `rosc_own.py <divided>.bin --pair
+<direct>.bin` compares the rates of the two. The write that changes the
+way of counting stops and restarts every ring; the payload starts its run
+long after that, with a second write.
+
+**The meter's flags.** The meter checks every count against the one before
+it: a ring's increment in a clock may not differ from its increment in the
+clock before by more than 2. A count that is wrong by sixteen, the one
+error that the decoding of a counter can make, differs by 16. A count that
+could not be read, or that does not fit, is flagged: the meter counts the
+clocks in which a ring of the mask had one (CTRL[63:48]) and keeps a bit
+per ring (CTRL[47:42]), both cleared by the start of a run. The sidecar has
+them for every run, `bad_counts` and `bad_rings`. **A flagged count fails
+no capture.** The case's detail has a warning, the analysis does not use
+such a run, and so that nobody overlooks them the last entry of
+`rosc-count-results.json`, "captures with flagged clocks", and the last
+line that the script prints list every capture that has one. In the
+divided mode a flagged count is not expected and wants an explanation. In
+direct mode it may come with reason: a counter that is clocked faster than
+its flip-flops are guaranteed for can miscount, which is what that mode is
+not trusted for.
+
+**The ring masks.** With the default image the two reference rings are off
+outside test mode (`strap_mask` in the sidecar, the meter's CTRL[37:32]:
+`0x0f`). What is measured with them on is not what `seed` sees, so a bound
+can only be claimed from a capture taken with the rings of normal
+operation. The default therefore captures with `0x0f` first and then with
+all six rings, `0x3f`, as the cross-check.
+
+After the records, for each of the six rings, the phase takes
+`KARU_BOARD_ROSC_BURSTS` bursts of that ring's count, with all six rings
+on: the meter puts four bits of the ring's count, a count modulo 64, in
+place of the lane bits that the burst capture block records, at a sampling
+period of one clock, so a burst is those bits at 32,768 consecutive
+clocks. It is a check of every ring's counter. There are two views of each
+ring. The upper four bits (CTRL[27], files `-hi`) are the count divided by
+four: a 3-stage ring advances 8 to 18 counts per clock, so this view steps
+by 2 to 4.5 per clock, and the steps, times four and times the unit, are
+the ring's periods per clock; an error of sixteen in a count shows in it
+as a step of four. The lower four bits (files `-lo`) are the position of
+the counter; a step of more than 16 counts shows in them only modulo 16.
+With direct captures on, both views are taken in direct mode as well
+(`rosc-direct-burst-...`), where a 3-stage ring advances 16 to 36 counts
+per clock.
+
+**The reference bits.** Last, the phase takes
+`KARU_BOARD_ROSC_REF_BURSTS` bursts at each sampling period in
+`KARU_BOARD_ROSC_REF_PERIODS`, again with all six rings on, in which the
+meter gives the burst capture block the sampled bits of the two reference
+rings with lanes 0 and 1: a sample is {reference 1, reference 0, lane 1,
+lane 0} in bits [3:0], all four of one clock edge. Lane 0 and the two
+references are three rings of one kind. The difference of the phases of two
+of them loses what they share, so the three pairs give each ring's own
+jitter, without the counters: a cross-check of the meter's analysis at
+spans of up to a few hundred clocks. The files go to the subdirectory
+`refbits` of the artifact directory under the names of ordinary burst
+captures, `getnoise-burst-p<P>`, so that the burst analysis reads them as
+they are. **The subdirectory is what keeps them apart from captures of the
+four lanes:** in these files bits 2 and 3 are the reference rings, not the
+7- and 9-stage lanes. Do not copy them next to the files of
+`getnoise_burst.py`.
+
+**Output**, in the artifact directory:
+
+| File | Content |
+| --- | --- |
+| `rosc-count-p<P>-e<E>-m<mask>.bin` | The records as read, 16 bytes each, two little-endian 64-bit words. `DATA0`: [63] valid, [62] loss, [61:60] sequence number, [59:40] total of ring 2, [39:20] ring 1, [19:0] ring 0. `DATA1`: [63:60] the lane bits at the record's clock edge (bit 60 is lane 0), [59:40] total of ring 5, [39:20] ring 4, [19:0] ring 3. P is the sampling period in clocks, E is `every`, the mask is two hexadecimal digits |
+| `rosc-count-p<P>-e<E>-m<mask>.json` | `clock_hz`; `period` (clocks per raw sample) and `every`; `count_unit`, the ring periods in a count: 2; `ring_mask`, a number; `stages`, the inverters of rings 0 to 5; `runs`, a list of `{"start": index of the first record, "records": n, "cycle_start":, "cycle_end":}` with the clock-cycle count before the run was started and after it ended; `bad_counts`, for each run the clock cycles with a flagged count (CTRL[63:48] at the end of the run), and `bad_rings`, the rings that had one (CTRL[47:42]); `run_ctrl`, the whole control register at the end of each run ([41] the loss flag); `time`, when the capture ended, before its records were read back; `ctrl`, the control register read back after it was written (the write that changes the rings sets its loss flag; the start clears it) and `strap_mask`, the rings that run outside test mode; `mentropycfg` and `mentropystat` before and after; the temperature readout before and after, raw and decoded; `losses`, `polls`; SHA-256 of the `.bin` and of the payload; `for_bound` and `for_bound_why` (see "Records for a bound"); `KARU_BOARD_ROSC_NOTE` |
+| `rosc-direct-p<P>-e<E>-m<mask>.bin`, `.json` | The capture in direct mode: the same format, `count_unit` 1, `for_bound` false. A cross-check of the divider, not a capture for a bound |
+| `rosc-burst-r<R>-hi.bin`, `-lo.bin` | The count bursts of ring R in the format of `getnoise-burst-p<P>.bin`: one byte per value, bits [3:0] the upper four bits of the count (`-hi`: the count divided by four, modulo 16) or its lower four (`-lo`: the count modulo 16), bit 7 on the first value of a burst |
+| `rosc-burst-r<R>-hi.json`, `-lo.json` | As for a burst capture, with `"source": "count"`, `"ring"`, `"view"` (`upper` or `lower`), `"count_bits"`, `"count_unit"`, the ring mask, and the meter's flags over the capture, `bad_count` and `bad_rings`. `getnoise_analyze.py` does not read `source`: do not give it these files |
+| `rosc-direct-burst-r<R>-hi`, `-lo` | The same two views in direct mode, `count_unit` 1 |
+| `refbits/getnoise-burst-p<P>.bin` | The bursts of the reference bits at a sampling period of P clocks, in the format of `getnoise-burst-p<P>.bin`: one byte per sample, bit 0 lane 0, bit 1 lane 1, bit 2 reference ring 0, bit 3 reference ring 1, bit 7 on the first sample of a burst |
+| `refbits/getnoise-burst-p<P>.json` | As for a burst capture, with `"source": "refbits"`, `"lanes": ["lane 0", "lane 1", "reference 0", "reference 1"]` and the ring mask |
+| `rosc-count-results.json`, `rosc-count-commands.jsonl` | Case results and OpenOCD trace, as for every phase |
+
+Within a run the records are `period` x `every` clocks apart and their
+sequence numbers count 0, 1, 2, 3, 0. Nothing is known about the time
+between two runs but the stamps. A run whose `bad_counts` entry is not zero
+is not used by the analysis; it does not fail the capture (see "The
+meter's flags"). A capture's files replace the previous ones
+only when both are complete. A capture fails, and the phase exits
+non-zero, on a payload status other than `OK` (`LOCKED`, `BUSY`, `NOBLOCK`,
+`NOMETER`, `TIMEOUT`, `LOSSES`, `ABORTED`, `TRAP` and so on, named in the
+case detail), if test mode was not left or the meter still answers
+afterwards, if the period or the control register read back is not what
+was asked for, if the run table does not cover the records, if a run's
+stamps are closer together than its records take or further apart than
+they need, if a record lacks its valid flag or has the loss flag, and if
+the sequence numbers within a run do not follow each other.
+
+**How long it takes.** Capturing is short. Reading the records back
+through the debugger is not: the captures of 2026-11-19 were read at
+20 KiB/s (19.7 to 21.1 over the eight burst runs, 20.0 for the k-sweep),
+and a record is 16 bytes. With the defaults, at 75 MHz, for one ring mask:
+
+| Setting | Clocks between records | Records | Capture | Readout |
+| --- | --- | --- | --- | --- |
+| `256x1` | 256 | 1,000,000 | 3.4 s | 13 min |
+| `256x4` | 1,024 | 1,000,000 | 13.7 s | 13 min |
+| `256x16` | 4,096 | 1,000,000 | 55 s | 13 min |
+| `256x64` | 16,384 | 400,000 | 87 s | 5.2 min |
+
+That is 47 minutes for a mask and an hour and 35 minutes for the two
+default masks. The two captures in direct mode (100,000 records each: 1.4 s, and
+78 s to read) add less than three minutes. The count bursts, 24 captures
+of four bursts for the six rings, the two views and the two ways of
+counting, add two minutes, and the reference bits (seven periods, 32
+bursts each: 3.5 MB) three; `KARU_BOARD_ROSC_SCALE` changes neither of
+these two. In all about an hour and 45 minutes. `KARU_BOARD_ROSC_SCALE=0.1`
+takes a quarter of an hour in all, for bring-up only.
+`rosc-count-commands.jsonl` gets a line for every block of 32 KiB read; to
+follow a run, `tail -f` it.
+
+**Records for a bound.** A capture that is to carry a bound needs at least
+300,000 usable records: those in the blocks that enter the fit, after
+runs with a flagged count are set aside, without the ends of runs too
+short for another block (`rosc_own.py` prints them beside the records of
+the runs kept). With counts of two ring periods, the analysis's checks of
+its own assumptions miss small violations at 30,000 records that they flag
+at 300,000 (`rosc_own.py`, `MIN_RECORDS`; its validation is in
+`test_rosc_own.py --coverage`). With fewer, `rosc_own.py` gives its
+estimates and bound for bring-up and the verdict "not established";
+`--min-records` lowers the number for the analysis's own tests only and is
+never used on a capture that is to carry a bound. The defaults, a million
+records and 400,000 at 16,384 clocks, leave room for exclusions. Each
+sidecar says whether its capture can carry a bound (`for_bound`, with
+`for_bound_why`): false for a direct capture and for one planned with
+fewer than 300,000 records, which the phase also prints.
+
+**How fast records can come.** A record costs the payload eight
+instructions, two register reads and two stores to DDR. In the SoC
+simulation that is 56 clocks, and no record was lost at any spacing tried
+from 58 to 256 clocks (400 or 600 records each; at 57 and below records
+are lost time and again). On the board a store to DDR takes about 10 clocks longer than in
+the simulation, so about 78 clocks is the shortest `period` x `every` it
+keeps up with; a store that waits for the memory controller delays one
+record, so below about 128 clocks expect losses. The defaults start at
+256. A capture shows the cost: a poll that finds no record takes about 33
+clocks, and the clocks between two records less 33 times `polls` /
+`records` is what a record took, 66 in the simulation at 128 and 256
+clocks between records (the 56, and 10 for going by way of the wait).
+
+**Analysis.** `python3 test/dbg/board/rosc_own.py <name>.bin --text`, which
+reads `<name>.json` beside it; it needs only the two files, takes the unit
+of the counts from the sidecar and does not use a run with a flagged count.
+It gives each ring's own phase variance, for lane 0 the one-sided 99%
+lower bound on the part that grows in proportion to time, the assumption
+checks, and for the spacings of 4,096 and 16,384 clocks a verdict: `pass`,
+`fail`, `not established`, or `cross-check only` for a capture in direct
+mode or not taken with the rings of normal operation. A pass needs a bound
+of at least twice the variance that 0.75 bit needs at the measured
+duty-cycle bound, every assumption check, no flagged count and the usable
+records above. Its exit status is 0 when the capture was analysed, whatever
+the verdict, and 2 when it could not be (no usable run, fewer than two
+running rings, an input it cannot read such as a missing sidecar).
+`rosc_count.py` takes no arguments and analyses nothing.
+
+Nothing inside one capture shows that a count is two ring periods. Two
+checks from outside do, and both are needed on every ring that runs, before
+any count of the image is used for a bound
+([board test plan, section 7](../../../dbg/BOARD_TEST_PLAN.md#7-the-next-image-one-ring-for-seed)):
+
+- `--pair <other>.bin`, the capture of the same rings and spacing in the
+  other way of counting: per ring, the two rates in ring periods per clock
+  must be equal. It sees a count wrong by a whole number of periods per
+  clock unless both ways share it, and cannot tell which way is wrong.
+- `--bits <dir>/getnoise-analysis.json`, the analysis of bursts at a
+  sampling period of one clock: each ring's count rate against the
+  frequency of its sampled bits, which pass no counter and no divider.
+  `--bits-map` names the ring of each burst lane; the default,
+  `0:0,1:1,2:4,3:5`, is for the reference bits under `refbits/`, and
+  ordinary bursts of `getnoise_burst.py` need `0:0,1:1,2:2,3:3`. Every
+  mapped ring that runs in the capture must have a usable frequency fit and
+  agree. It compares only the folded frequency, the fraction of the periods
+  per clock: a count wrong by a whole number of periods per clock passes
+  it, which `--pair` catches.
+
+For the reference bits, from the repository root:
+
+    python3 test/dbg/board/getnoise_analyze.py $KARU_BOARD_OUT/refbits/getnoise-burst-p*.bin
+    python3 test/dbg/board/entropy_claim.py --analysis $KARU_BOARD_OUT/refbits/getnoise-analysis.json --own $KARU_BOARD_OUT/refbits
+
+The first takes the files, not the directory, and writes
+`refbits/getnoise-analysis.txt` and `.json` next to them; in its report
+lanes 2 and 3 are the reference rings. The second needs scipy (where it is
+not installed, a copy under `_build/pylib` serves with
+`PYTHONPATH=_build/pylib`) and takes a few minutes. It prints, per
+sampling period, the variance per clock of the difference of the phase
+increments of each pair among lane 0 and the two references, from them
+each ring's own variance per clock with its standard error over the
+bursts, the mean over the periods, and for lane 0 that variance at 4,096
+and at 16,384 clocks as a ratio to what 0.75 bit per bit needs. It assumes
+that the three rings share alike what they share and that a ring's own
+jitter is white and independent of the others'; it sees spans of 64
+samples and nothing beyond, so the two ratios are extrapolations. It is a
+cross-check of `rosc_own.py`, not a second bound; the header of
+`entropy_claim.py` has the assumptions and the measured bias of the
+estimator.
+
 ## Authentication
 
 `auth_phase.py` runs the debug authentication exchange of
@@ -484,10 +768,11 @@ can compute it. These cases show that the mechanism works; they say nothing
 about keeping an attacker out, and an image with this ROM is not protected
 in lifecycle `AUTH`. The production algorithm is decision D3 of the plan.
 
-**On the board** with the current image, `locked`, `authenticate`,
-`wrong-response`, `replay`, `expiry` and `entropy-off` pass with `0x04`
-([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-20.md)); `open`,
-`fresh-nonce`, `no-hold`, `disabled`, `reboot` and `reboot-locked` last ran
+**On the board** with the current image `20f8b265…`, `locked`,
+`authenticate`, `reboot`, `wrong-response`, `replay`, `expiry` and
+`entropy-off` pass with `0x04`
+([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-23.md)); `open`,
+`fresh-nonce`, `no-hold`, `disabled` and `reboot-locked` last ran
 on the board with a `TEST` ROM
 ([record](../../../dbg/BOARD_ACCEPTANCE-2026-11-18.md)). Every case is also
 rehearsed on the simulated target with the same ROM source
@@ -586,9 +871,14 @@ covered there, and shown only on the board:
 | `make dbg-board-auth-rehearsal-test` | `auth_rehearse.py`: pristine OpenOCD and `auth_phase.py` with its own client against the simulated JTAG target running the window ROM of `test/dbg/auth_rom`. In one model run, with a power-on reset between cases: `locked`, `wrong-response`, `expiry`, `authenticate`, `replay`, `fresh-nonce`. In further runs, with the straps as plusargs: `no-hold`, `entropy-off` (a source in `BIST` and a dead one), `disabled`, `open`. Negative controls: four clients with a wrong TEST computation must fail to unlock, and cases started with the wrong switches must stop with the message that names them |
 | `make dbg-getnoise-burst-test` | `test_getnoise_burst.py`: the burst payload on the DDR SoC simulation with the entropy source, through the real bus decode. Every burst is compared with a Python copy of the simulated noise source (`noise_model.py`): a stretch of every P-th symbol, bursts in order, at distances that agree with the payload's time stamps; for the default model and for the model with known parameters. Refusals (locked, already in test mode, bad parameters, an image without the capture block), a source without symbols, a fault, three payload mutants and three tampered captures. Then the phase against a stand-in for OpenOCD that runs the same simulation, and the analysis on the files the phase wrote |
 | `make dbg-burst-analysis-test` | `test_burst_analysis.py`: the analysis of bursts on generated data with known (F, D, sigma^2): the per-window fit from 1e-5 to 1e-2; the copy of the simulated source decimated to periods of 1 to 256 clocks; proportionality to the spacing and a wrong period label; frequency wander within one lane and shared by two; an injected spur; locked lanes against independent lanes of equal frequency; agreement between a burst capture and a k = 1 capture; joined bursts; five controls that break one step of the analysis |
+| `make dbg-rosc-count-test` | `test_rosc_count.py`: the meter payload and its phase on two targets. The first is a model in the test itself, which executes the payload's instructions against the registers as their headers describe them and lists every record that the meter handed out; the second is the DDR SoC simulation with the entropy source and its meter. On both, every run of records is compared with the rings themselves (for the simulation, `noise_model.py`): the totals of all six rings and the lane bits at clock edges `period` x `every` clocks apart, runs in order, at distances that agree with the payload's stamps; a ring that the capture switched on must fit one phase. Bursts of each ring's count; losses by records that come too fast and by slowing the payload down, with the limit on losses; refusals (locked, already in test mode, bad parameters, an image without the capture block or without the meter), a source without samples, a fault, ten payload mutants and tampered captures. Counts of two periods and, in direct mode, of one: the write that changes the way of counting restarts the rings and the run after it starts clean, and a direct capture's totals are twice a divided one's. Both views of a ring's count in both ways of counting, with the ring's periods per clock rebuilt from the steps of the upper view. On the model, a count that is 16 too high in one clock is flagged. Bursts of the reference bits, compared bit by bit with the rings. Then the phase against a stand-in for OpenOCD with either target behind it: the files and the sidecar, the unwrapped totals, the count unit and the meter's flags in the sidecars, the captures in direct mode under their own names, the default order of the ring masks and the scaling of the counts, runs split by losses, a flagged count that fails nothing and is listed in the phase's summary, refusal to analyse and of bad settings, error statuses, twelve alterations of the result block, the run table and the buffer; and `rosc_own.py` as a process on the record files, which has to find their runs and rings and end without an error, likewise `getnoise_analyze.py` and `entropy_claim.py --own` on the reference bits (the last only if scipy can be imported; the test's last line says when it was not run). `make dbg-rosc-count-model-test` runs the first target alone, in seconds |
+| `make dbg-rosc-own-test` | `test_rosc_own.py`: `rosc_own.py` on generated rings whose own and shared noise are known, with the controls that must not pass (no own noise, own noise that is not white, locked rings, a mask other than that of normal operation, an unreadable counter), and on the captures that `make dbg-rosc-count-test` has just written, so that what the phase writes is what the analysis reads. About a minute. The coverage study behind the confidence bound, `test_rosc_own.py --coverage`, is not part of it |
+| `make dbg-entropy-claim-test` | `entropy_claim.py --self-test`: the fit of two rings' phase increments on generated rings of known correlation; then `--own` on three generated rings of nearly one frequency whose shared jitter has 20 times the variance of their own: ring 0's own variance must come out within its stated error when all three are equal and when it is four times the others', and not significantly above zero when it is zero; the first case once more from files through `getnoise_analyze.py`. It needs scipy and uses a copy under `_build/pylib` if there is one; without scipy the target does not fail, and its last line says that the test was SKIPPED |
 | `make dbg-getnoise-test` | `test_getnoise.py`: the capture payload on the Zkr simulation bench, compared symbol by symbol with a copy of the bench's noise model, with refusals, lost symbols, timeouts, a fault and three payload mutants; the capture phase as a process against a stand-in for OpenOCD that runs the loaded memory image on the same bench; the analysis on data generated from the model, with dependent lanes that must be flagged |
 
-All six are part of `make dbg-test`. The
+All of these are part of `make dbg-test`; `make dbg-entropy-claim-test` runs
+there only where scipy can be imported and says so in its last line when it
+was skipped. The
 simulated target has the scratch SRAM of `rtl/karu_bootmap.vh` and 64 KiB of
 RAM at `0x80000000`, which are one memory seen at two addresses, and its
 reset vector is `0x80000000`. It has no other DDR and no UART, so only
@@ -611,6 +901,9 @@ a defect that it should catch.
 | `auth_rehearse.py`, `auth-sim-server.cfg` | Rehearsal of the authentication phase on the simulated target |
 | `getnoise.S`, `getnoise_capture.py` | GetNoise capture payload (position independent, loaded into DDR) and its phase |
 | `getnoise_burst.S`, `getnoise_burst.py` | Burst capture payload and its phase |
+| `rosc_count.S`, `rosc_count.py` | Meter capture payload (records of the six rings' totals, and bursts of one ring's count) and its phase |
+| `test_rosc_count.py` | Self-test of the two without a board (`make dbg-rosc-count-test`) |
+| `rosc_own.py`, `test_rosc_own.py` | Offline analysis of the meter's records ([Meter capture](#meter-capture)), and its self-test (`make dbg-rosc-own-test`) |
 | `noise_model.py` | Python copy of the simulation's noise source, for the self-tests |
 | `test_getnoise_burst.py`, `test_burst_analysis.py` | Self-tests of the burst capture and of the analysis of bursts, without a board |
 | `getnoise_analyze.py` | Offline analysis of the captures |
@@ -618,10 +911,10 @@ a defect that it should catch.
 | `getnoise_restart.py` | Delayed warm-restart data for SP 800-90B section 3.1.4 (1,000 restarts of 1,000 symbols, through GetNoise) |
 | `seedcap.S`, `seed_restart.py` | Operational restart data for SP 800-90B section 3.1.4: after each debugger reset, the first 1,000 samples that `seed` delivers ([below](#operational-restart-data-and-induced-failures)) |
 | `entropy_fault.py` | Induced health-test failures on the real rings, by stricter cutoffs ([below](#operational-restart-data-and-induced-failures)) |
-| `entropy_claim.py` | The bound of the SP 800-90B argument (per-sample min-entropy for a credited share of each ring's jitter, worst case over the previous phase) and `--pairs`, the covariance of the rings' phase increments from the burst captures, with `--self-test` ([assessment, section 1](../../../doc/sp800-90b-assessment.md#1-entropy-claim-none-yet)) |
+| `entropy_claim.py` | The bound of the SP 800-90B argument (per-sample min-entropy for a credited share of each ring's jitter, worst case over the previous phase) and `--pairs`, the covariance of the rings' phase increments from the burst captures; `--own`, lane 0's own jitter from the reference bits that `rosc_count.py` captures, a cross-check of `rosc_own.py` ([Meter capture](#meter-capture)); with `--self-test` (`make dbg-entropy-claim-test`) ([assessment, section 1](../../../doc/sp800-90b-assessment.md#12-technical-justification); the four-ring argument is in [its dated record](../../../doc/sp800-90b-assessment-2026-11-20.md#11-the-argument-and-the-step-that-fails)) |
 | `test_seedcap.py` | Self-test of `seedcap.S` on the Zkr simulation bench (`make dbg-seedcap-test`) |
 | `sp80090b_health.py` | Replay of captures through the per-lane tests of the images up to `85f07e58…`, and the section 4.5 criteria for them |
-| `entropy_health.py` | Python copy of the health tests of the current `rtl/karu_entropy.v`: cutoffs for a claim and a false-alarm probability, replay of captures, the section 4.5 criteria and the failure modes. `make entropy-test` compares the RTL with it |
+| `entropy_health.py` | Python copy of the health tests of the current `rtl/karu_entropy.v`: cutoffs for an entropy rate and a false-alarm probability, replay of captures, the section 4.5 criteria and the failure modes. `make entropy-test` compares the RTL with it |
 
 The Linux selftest binaries and the installed `openssl_zvk_bench` come from
 karudeb and are not part of this repository.

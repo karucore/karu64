@@ -109,7 +109,7 @@ $(DBG_BOARD_OUT)/getnoise.symbols $(DBG_GETNOISE_TEST)/getnoise.symbols: %/getno
 # Offline self-test of the capture payload, the capture phase and the
 # analysis (test_getnoise.py): the payload runs on the Zkr simulation bench,
 # the phase against a stand-in for OpenOCD that runs the same bench, the
-# analysis on data generated from the model. Not part of a gate list.
+# analysis on data generated from the model. In the list of make dbg-test.
 .PHONY: dbg-getnoise-test
 dbg-getnoise-test: $(DBG_GETNOISE_TEST)/getnoise.symbols $(ZKR_DIR)/Vhtif_h/Vhtif_tb
 	python3 $(DBG_BOARD_SRC)/test_getnoise.py --out $(DBG_GETNOISE_TEST) --bench $(ZKR_DIR)/Vhtif_h/Vhtif_tb \
@@ -117,8 +117,10 @@ dbg-getnoise-test: $(DBG_GETNOISE_TEST)/getnoise.symbols $(ZKR_DIR)/Vhtif_h/Vhti
 	@grep 'getnoise self-test: PASS' $(BUILD)/dbg/getnoise-test.log
 
 # Operational restart data and induced health-test failures (seed_restart.py,
-# entropy_fault.py; images with KARU_ZKR and mentropystat, bitstream ddb168e1
-# or later): seedcap.S reads seed from the first ES16 after a reset. Position
+# entropy_fault.py; images with KARU_ZKR whose seed delivers one lane, built
+# after 2026-11-20. The image ddb168e1 delivers four lanes and has other
+# mentropycfg fields: it needs these scripts as they were when it was built):
+# seedcap.S reads seed from the first ES16 after a reset. Position
 # independent and linked at 0, like getnoise.S.
 DBG_SEEDCAP_TEST  = $(BUILD)/dbg/seedcap-test
 DBG_SEEDCAP_FLAGS = -march=rv64gc_zicsr -mabi=lp64d -nostdlib -static -Wl,-Ttext=0,--no-relax,-e,seedcap
@@ -171,6 +173,77 @@ dbg-burst-analysis-test:
 	  > $(BUILD)/dbg/burst-analysis-test.log 2>&1 || { tail -5 $(BUILD)/dbg/burst-analysis-test.log; exit 1; }
 	@grep 'burst analysis self-test: PASS' $(BUILD)/dbg/burst-analysis-test.log
 
+# Meter capture: records of the ring-oscillator meter, and bursts of one
+# ring's count (rosc_count.py, needs an image with the meter of
+# flow/fpga/karu_rosc_meter.v, built after 2026-11-20). rosc_count.S is
+# position independent and is linked at 0, like getnoise_burst.S.
+DBG_ROSC_TEST  = $(BUILD)/dbg/rosc-count-test
+DBG_ROSC_FLAGS = -march=rv64gc_zicsr -mabi=lp64d -nostdlib -static -Wl,-Ttext=0,--no-relax,-e,rosc_count
+.PHONY: dbg-rosc-count-fixture
+# The phase also needs the bare-metal fixture of baremetal_phase.py.
+dbg-rosc-count-fixture: $(DBG_BOARD_OUT)/rosc_count.symbols $(DBG_BOARD_OUT)/payload.symbols
+$(DBG_BOARD_OUT)/rosc_count.symbols $(DBG_ROSC_TEST)/rosc_count.symbols: %/rosc_count.symbols: $(DBG_BOARD_SRC)/rosc_count.S dbg/board.mk
+	mkdir -p $(@D)
+	$(XCHAIN)gcc $(DBG_ROSC_FLAGS) -o $(@D)/rosc_count.elf $<
+	$(XCHAIN)objcopy -O binary -j .text $(@D)/rosc_count.elf $(@D)/rosc_count.bin
+	$(XCHAIN)nm -n $(@D)/rosc_count.elf > $@
+
+# Offline self-test of the meter payload and its phase (test_rosc_count.py).
+# The same cases run on two targets: a model of the target in the test
+# itself, which executes the payload's instructions against the registers as
+# their headers describe them, and the DDR SoC simulation with the entropy
+# source and its meter (ddr-noise-burst-sim), where the records are compared
+# with the Python copy of the bench's rings (noise_model.py). The phase runs
+# against a stand-in for OpenOCD with either target behind it, and the
+# analysis (rosc_own.py) runs as a process on the files that the phase
+# wrote: it has to find their runs and rings and end without an error.
+# dbg-rosc-count-model-test is the first target alone: a few seconds, no
+# simulation. It is not the whole test and its last line says so.
+.PHONY: dbg-rosc-count-test dbg-rosc-count-model-test
+dbg-rosc-count-test: $(DBG_ROSC_TEST)/rosc_count.symbols ddr-noise-burst-sim
+	python3 $(DBG_BOARD_SRC)/test_rosc_count.py --out $(DBG_ROSC_TEST) --bench $(NB_SIM) \
+	  --xchain $(XCHAIN) > $(BUILD)/dbg/rosc-count-test.log 2>&1 || { tail -5 $(BUILD)/dbg/rosc-count-test.log; exit 1; }
+	@grep 'rosc count self-test: PASS' $(BUILD)/dbg/rosc-count-test.log
+dbg-rosc-count-model-test: $(DBG_ROSC_TEST)/rosc_count.symbols
+	python3 $(DBG_BOARD_SRC)/test_rosc_count.py --out $(DBG_ROSC_TEST) --offline \
+	  --xchain $(XCHAIN) > $(BUILD)/dbg/rosc-count-model-test.log 2>&1 || { tail -5 $(BUILD)/dbg/rosc-count-model-test.log; exit 1; }
+	@grep 'rosc count self-test, model only, the SoC simulation not run: PASS' $(BUILD)/dbg/rosc-count-model-test.log
+
+# The self-test of entropy_claim.py: the fit of two rings' phase increments
+# on generated rings of known correlation, and --own, lane 0's own jitter
+# from the reference bits that rosc_count.py captures, on three generated
+# rings of known own variance; one case goes through files and
+# getnoise_analyze.py. The fit needs scipy, which is not installed
+# everywhere: a copy under $(BUILD)/pylib is used if there is one. Without
+# scipy the target does not fail, and its last line says that the test was
+# SKIPPED.
+DBG_ENTROPY_CLAIM_PY = PYTHONPATH=$(abspath $(BUILD)/pylib)$${PYTHONPATH:+:$$PYTHONPATH} python3
+.PHONY: dbg-entropy-claim-test
+dbg-entropy-claim-test:
+	@mkdir -p $(BUILD)/dbg/entropy-claim-test
+	@if ! $(DBG_ENTROPY_CLAIM_PY) -c 'import numpy, scipy.optimize' > $(BUILD)/dbg/entropy-claim-test.log 2>&1; then \
+	  echo "dbg-entropy-claim-test: SKIPPED, entropy_claim.py --self-test was NOT RUN: python3 cannot import numpy and scipy.optimize" \
+	    "($$(tail -1 $(BUILD)/dbg/entropy-claim-test.log)); there is no copy under $(BUILD)/pylib either"; \
+	else \
+	  $(DBG_ENTROPY_CLAIM_PY) $(DBG_BOARD_SRC)/entropy_claim.py --self-test $(BUILD)/dbg/entropy-claim-test \
+	    > $(BUILD)/dbg/entropy-claim-test.log 2>&1 || { tail -9 $(BUILD)/dbg/entropy-claim-test.log; exit 1; }; \
+	  grep 'entropy_claim self-test: PASS' $(BUILD)/dbg/entropy-claim-test.log; \
+	fi
+
+# Self-test of the analysis of meter records (test_rosc_own.py): rosc_own.py
+# on generated rings whose own and shared noise are known, with the controls
+# that must not pass (no own noise, own noise that is not white, locked
+# rings, a mask other than that of normal operation, an unreadable counter),
+# and on the captures that the capture test just wrote, so that what the
+# phase writes is what the analysis reads. About two minutes. The coverage
+# study behind the confidence bound (test_rosc_own.py --coverage, about 25
+# minutes on 18 processes) is not part of it.
+.PHONY: dbg-rosc-own-test
+dbg-rosc-own-test: dbg-rosc-count-test
+	python3 $(DBG_BOARD_SRC)/test_rosc_own.py --producer $(DBG_ROSC_TEST) > $(BUILD)/dbg/rosc-own-test.log 2>&1 \
+	  || { tail -5 $(BUILD)/dbg/rosc-own-test.log; exit 1; }
+	@grep 'rosc_own self-test: PASS' $(BUILD)/dbg/rosc-own-test.log
+
 # Debug authentication phase (auth_phase.py), rehearsed without a board:
 # pristine OpenOCD and the phase with its own client against the simulated
 # JTAG target running the real window ROM, the simulation ROM that
@@ -181,7 +254,7 @@ dbg-burst-analysis-test:
 # wrong TEST computation must fail to unlock, and four cases started with
 # the wrong straps must stop with the message that names them. Last, the
 # board's OpenOCD configuration is parsed with a dummy adapter: it must
-# leave the target unexamined. Not part of a gate list.
+# leave the target unexamined. In the list of make dbg-test.
 DBG_BOARD_AUTH    = $(BUILD)/dbg/board-auth-rehearsal
 DBG_BOARD_AUTH_TB ?= test/dbg/tb_jtag_core.v
 $(DBG_BOARD_AUTH)/obj/Vtb_jtag_core: $(DBG_BOARD_AUTH_TB) test/dbg/karudbg_test_ram.sv test/dbg/karudbg_test_seed.v test/dbg/remote_bitbang.cc \

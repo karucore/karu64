@@ -109,8 +109,10 @@ agrees: no failure on the 10⁶-sample k = 16 capture (largest counts 6 of
 left running Linux; at 12:54:57, before any reset, `mentropystat` read `0x1`
 with 0 failures: 55 minutes. The afternoon tests then reset the source. A
 second run started with the detach at about 13:15 and was left going, for
-a reading of several hours before the next reset. Over the day the readings
-cover about 2.4 hours of the source outside test mode (an estimated
+a reading of several hours before the next reset. That reading was lost:
+the board was powered off before it was read, and on 2026-11-23 the FPGA
+came up blank (OpenOCD: "Unsupported DTM version: -1"). Over the day the
+readings cover about 2.4 hours of the source outside test mode (an estimated
 1.6 × 10⁸ kept samples, from the sampling rate), and every one of them
 ended with zero failures; the intervals listed above as not read are not
 part of that.
@@ -132,7 +134,7 @@ came about 56.7 ms after the reset, and none needed a repeat or raised an
 alarm. 189 s, die 24.6–25.0 °C, rows `cf31abe4…e92b`. `ea_restart -n -v`
 with the D20 estimate 3.555965: X_max 98 (cutoff 132), H_r and H_c 3.688,
 validation passed. Details:
-[assessment, section 4.4](../doc/sp800-90b-assessment.md#44-restart-tests-314).
+[assessment, section 4.4](../doc/sp800-90b-assessment-2026-11-20.md#44-restart-tests-314).
 
 **Induced failures** (`entropy_fault.py`), each from a debugger reset with
 the hart halted, all five cases PASS:
@@ -154,7 +156,7 @@ the hart halted, all five cases PASS:
 
 These are failures of stricter tests on a healthy source, not of a failing
 source. The table is in
-[the assessment, section 5.5](../doc/sp800-90b-assessment.md#55-evidence).
+[the assessment, section 5.5](../doc/sp800-90b-assessment-2026-11-20.md#55-evidence).
 
 ## Noise capture and entropy estimates
 
@@ -167,7 +169,7 @@ source. The table is in
 
 These are statistical estimates, not an established H_I, and the restart
 data is the delayed warm-restart experiment of the
-[assessment](../doc/sp800-90b-assessment.md#44-restart-tests-314),
+[assessment](../doc/sp800-90b-assessment-2026-11-20.md#44-restart-tests-314),
 not the operational restart requirement.
 
 **The ring frequencies are a property of the bitstream.** The burst capture
@@ -231,6 +233,7 @@ wrapper (`campaign-tools/run_stage_cd.sh`) and passed.
 - Authentication cases `open`, `no-hold`, `disabled`, `reboot`,
   `reboot-locked` and `fresh-nonce` on this image: deferred.
 - The hardware window limit on the board (the ROM's deadline comes first).
-- The reading of the second long run, started at about 13:15.
+- The reading of the second long run, started at about 13:15: lost, the
+  board was powered off before it was read.
 - A wider temperature range, and a fallback image on the lab host:
   `85f07e58…` was not available here if this image had failed to boot.

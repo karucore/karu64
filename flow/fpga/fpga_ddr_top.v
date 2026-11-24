@@ -78,9 +78,10 @@ module fpga_ddr_top #(
 	// synthesis translate_on
 
 	//	Zkr: the entropy source behind seed, mnoise and mentropycfg.
-	//	The registers of its burst capture, in the xbar's system-control
-	//	block, and at register 4 the temperature readout (a model of it
-	//	here: fixed codes, an update every 1024 clocks). +zkr_burst=0 takes
+	//	The registers of its burst capture (0 to 3) and of its ring meter
+	//	(5 to 7), in the xbar's system-control block, and at register 4 the
+	//	temperature readout (a model of it here: fixed codes, an update
+	//	every 1024 clocks). +zkr_burst=0 takes
 	//	them all away: the range then reads zero, as in an image built
 	//	before they existed.
 	wire		sysreg_re, sysreg_we;

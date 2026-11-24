@@ -1,338 +1,417 @@
 # SP 800-90B assessment of the Karu64 Zkr entropy source
 
-Status: **assessment of the current design, 2026-11-20.** The entropy
-block `rtl/karu_entropy.v` and the ring-oscillator noise source of the
-VCU118 debug image, bitstream `ddb168e1…`, board-tested on 2026-11-20
-([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). The board data is from
-that bitstream and, as further data on the same noise source, from the two
-bitstreams before it (§2). Analysed with NIST's SP 800-90B tools. This is an
-engineering self-assessment against
-[NIST SP 800-90B](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-90B.pdf)
-(January 2018), not a validation: no accredited laboratory has been
-involved, and the FPGA ring oscillators are a stand-in for an ASIC noise
-source.
+Karu64's Zkr entropy source is one sampled ring oscillator behind the
+RISC-V `seed` CSR, with SP 800-90B health tests and no conditioning in
+hardware. This is the developer's self-assessment of it on VCU118 image
+`20f8b265…`.
 
-## 1. Entropy claim: none yet
+**The goal** is the one that the RISC-V Zkr text sets for a physical
+entropy source on its SP 800-90B route: every SP 800-90B component and
+health-test mechanism, and a min-entropy of 192 bits in each 256 bits
+that `seed` delivers (a rate of 0.75), so that software which conditions
+2:1 with a vetted conditioner obtains 128-bit full-entropy blocks. The
+hardware and that software are then one SP 800-90B entropy source: noise
+source, sampling and health tests in hardware, conditioning in software.
+[Sign-off criteria](zkr-followup-plan.md#zkr-and-software-sign-off)
 
-**No min-entropy claim is made.** On the tested image NIST's non-IID
-estimate is 3.556 bits per 4-bit sample, and both restart datasets pass
-with a trial entropy value of 3.0 (§4). A claim also needs H_submitter, the
-developer's estimate with a technical argument about the noise source
-(§3.1.3, §3.2.2). The argument below is complete but for one input, and
-measuring that input shows that it does not support 3 bits per sample at
-the shipped spacing.
+**Result.** The source implements `seed` and the SP 800-90B components
+that belong in hardware. On the board, two sequential captures gave
+non-IID estimates of 0.810451 and 0.838673 bits per sampled bit, and both
+restart datasets pass at 0.75, including the first outputs delivered
+through `seed` after 1,000 resets. **We propose 0.75 bit per delivered
+bit** as the developer's estimate, for this board under the tested lab
+conditions ([§1](#1-the-entropy-statement-and-its-justification)). One
+step of its justification is open: how much of the ring's measured phase
+variation is fresh at each kept bit, once the known disturbance and the
+drift are accounted for. The conditioner is the consuming software's
+part, is not in this repository, and remains to be assessed
+([§6](#6-software-post-processing)).
 
-### 1.1 The argument, and the step that fails
+This is a self-assessment ("self-certification" in the RISC-V text). A
+validation is a separate process at an accredited laboratory. The FPGA
+measurements apply to the tested bitstream and board; an ASIC needs its
+own. The four-ring source of the earlier image `ddb168e1…` has
+[its own dated assessment](sp800-90b-assessment-2026-11-20.md).
 
-A claim of 3 bits per 4-bit sample means: **the best prediction of the next
-sample, given all earlier samples and everything the four rings share,
-succeeds with probability at most 1/8.**
+## 1. The entropy statement and its justification
 
-**Model** (arXiv:2102.02196, the model of `getnoise_analyze.py`). Each
-ring's phase, in ring periods, advances from one kept sample to the next
-(4,096 clocks) by a known amount plus Gaussian jitter; the sampled bit is 1
-while the phase mod 1 lies in [0, D), D the ring's duty cycle as sampled.
-The predictor is given the exact phase of every ring at the previous
-sample, the ring frequencies with their wander, and every influence the
-rings share. What can be credited is the white jitter of each ring's own
-devices: fresh at every step and independent of the other rings.
+### 1.1 The statement
 
-**The bound.** For one ring with s² of credited variance over 4,096 clocks,
-the best guess of the next bit succeeds with probability
-p = max over u of max(q(u), 1 − q(u)), q(u) = P(N(u, s²) mod 1 ∈ [0, D)),
-the worst case over the previous phase u. With independent credited jitter
-in the four rings, H∞(sample | past) ≥ Σ −log₂ p, and a `seed` word, four
-consecutive samples, has four times that. The bursts give each ring's
-total jitter rate at the shortest lags (the lower end of the fit, per
-clock): 1.82 × 10⁻³, 8.74 × 10⁻⁴, 4.39 × 10⁻⁴ and 2.44 × 10⁻⁴ ring
-periods² for lanes 0 to 3; the duty cycles' bias is at most 0.011.
-Under the model, crediting a share of each ring's rate as fresh,
-independent Gaussian noise gives (`test/dbg/board/entropy_claim.py`):
+**The proposed developer's estimate (H_submitter) is 0.75 bit of
+min-entropy per sample**, given all earlier samples: 12 bits per `seed`
+word and 192 bits per 256 delivered bits, from the first word after a
+reset. It is proposed for image `20f8b265…` at k = 16 with ring mask
+`0x0f`, in the conditions of §2. It is the rate that RISC-V requires, not
+the most that the statistics would allow: every statistical estimate
+below is higher. It stays a proposal until the open step of 1.2 is
+closed.
 
-| Credited share of each ring's fitted short-lag variance | Bound, bits per 4-bit sample | Per lane |
-| --- | --- | --- |
-| all | 3.92 | 0.986, 0.975, 0.969, 0.992 |
-| 10 % | 3.64 | 0.986, 0.973, 0.919, 0.758 |
-| 5 % | 3.04 | 0.985, 0.923, 0.693, 0.435 |
+### 1.2 Technical justification
 
-3 bits per sample needs at least 4.85 % of each ring's fitted short-lag
-variance to be fresh, independent noise of that ring.
+RISC-V asks for "a stochastic model or a heuristic argument that explains
+why the noise source output is from a random, rather than pseudorandom
+(deterministic) process, and is not easily predictable or externally
+observable", and adds that a complete physical model is not necessary.
+SP 800-90B §3.2.2 asks for the same: where the unpredictability comes
+from, and a technical argument for the stated rate.
 
-**Measured: most of that jitter is shared.** `entropy_claim.py --pairs`
-estimates, for each pair of rings and each burst window, the covariance of
-the two rings' phase increments. The product of two lanes' bits has
-components at the sum and the difference of the two ring frequencies; they
-decay with the variance of the sum and of the difference of the two phase
-increments, so the two decay rates give the covariance. On generated rings
-the estimator returns the correlation it was given (0, 0.5 and 0.95,
-within 0.02; `--self-test`). On the board, |ρ| per pair, the mean over 32
-windows (standard error 0.001 to 0.01 at the short spans):
+**Where the unpredictability comes from.** The ring has no state but its
+phase. Thermal noise in its three stages makes every period a little
+longer or shorter, independently of the periods before, so the phase
+performs a random walk whose variance grows in proportion to time
+(Hajimiri et al.; Baudet et al.). The sampling flip-flop reads which half
+of its period the ring is in at a clock edge that is not synchronised to
+it. The model is that of arXiv:2102.02196: between two kept samples the
+phase advances by a fixed amount plus Gaussian jitter of variance s², in
+ring periods², and the bit is 1 while the phase mod 1 lies in [0, D),
+D being the duty cycle as sampled. On this bitstream the ring makes 19.51
+periods per clock, so a kept sample is 79,900 ring periods after the one
+before, and D differs from one half by about 0.013.
 
-| Pair of lanes | Sampling period 1 | 2 | 4 | 8 | 16 | 32 | 64 clocks |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 0–1 | 0.97 | 0.97 | 1.00 | 0.92 | 0.84 | 0.82 | 0.84 |
-| 0–2 | 0.95 | 0.97 | 0.96 | 0.89 | 0.45 | 0.63 | 0.28 |
-| 0–3 | 0.90 | 0.91 | 0.94 | 0.91 | 0.23 | 0.81 | 0.42 |
-| 1–2 | 0.97 | 0.96 | 0.99 | 0.98 | 0.91 | 0.83 | 0.81 |
-| 1–3 | 0.99 | 0.99 | 0.97 | 1.00 | 0.78 | 0.95 | 0.89 |
-| 2–3 | 0.95 | 0.95 | 0.94 | 0.96 | 0.96 | 0.98 | 0.90 |
+**How much jitter 0.75 bit needs.** Give the predictor the exact phase at
+the previous sample, the ring's frequency with all its slow wander, and
+every periodic or shared disturbance: everything except the jitter that
+is fresh since the previous sample. Its best guess of the next bit then
+succeeds with probability p = max over u of max(q(u), 1 − q(u)),
+q(u) = P(N(u, s²) mod 1 ∈ [0, D)), and the bit has −log₂ p of
+min-entropy given the past (`test/dbg/board/entropy_claim.py`):
 
-At the short spans the rate is measured over, the rings' phase increments
-are 90 to 100 % correlated. One shared driver with a loading per ring
-would leave each ring between about 0 and 20 % of its variance as its own;
-the estimates from different pairs do not agree, and for lane 1 they leave
-none. The jitter the bursts measure is mostly common to the four rings.
-Jitter of the sampling clock, which every ring sees in proportion to its
-frequency, or a shared supply would both do that; the ratios of the rings'
-rates, close to 1/stages², fit either. Over spans of a few hundred clocks
-(periods 16 to 64) the correlation stays above 0.8 for most pairs and
-drops to 0.2–0.6 for lane 0's pairs; no capture measures it at the 4,096
-clocks of the shipped spacing.
-
-**So the independent share the bound needs is not established, and for at
-least one ring the short-lag data leaves none.** The samples may still
-carry entropy from the shared component, which is physical noise too, and
-from the rings' own noise over longer spans; but a claim needs a bound,
-and this data does not give one. The analyser's cross-lane checks, which
-flagged nothing, look at the bits and cannot see a shared jitter between
-rings of different frequencies; the pairwise covariance can.
-
-**What would close it** (§7): measure the shared component and how it
-accumulates over 4,096 clocks (a clock locked by a PLL does not
-accumulate phase error over long spans, a shared supply can); measure the
-rings against each other rather than against the common clock, which
-cancels the clock's jitter; or choose a spacing at which the measured
-independent share suffices.
-
-### 1.2 SP 800-90B status
-
-**The source is not SP 800-90B compliant: there is no min-entropy claim.**
-
-| Area | State |
+| Fresh jitter between two samples, s² (s), in ring periods | Min-entropy per bit at D = 0.513 |
 | --- | --- |
-| Noise source, no conditioning, raw samples available | In place: four sampled ring oscillators, bits never combined (§3) |
-| Entropy claim (§3.1.3, §3.2.2) | **None.** The argument of §1.1 needs each ring's own jitter, and the jitter measured against the sampling clock is mostly shared between the rings |
-| Entropy estimate on the 4-bit sample (§3.1.3) | NIST's non-IID estimate 3.556 bits per sample at the shipped spacing (§4.3); a statistical estimate, not H_I |
-| Restart tests (§3.1.4) | **Pass** with trial values of 3.556 and 3.0 on the operational output path: 1,000 restarts by a full reset of the entropy source, samples through `seed` (§4.4). Not at that count by power-on |
-| Approved continuous tests on the noise-source sample (§4.3 item 1) | **Met:** §4.4.1 and §4.4.2 on the 4-bit sample; lane tests in addition (§5.1) |
-| Cutoffs and false-alarm probability (§4.3 item 3) | Documented: derived from a target of 3 bits per sample at α = 2⁻⁴⁰ per test (§5.2). The target is not a claim; the lane cutoffs rest on a separate premise of 0.75 bit per lane bit |
-| Failure notification, intermittent and persistent (§4.3 item 2) | **Met in mechanism**, and shown on the board with induced failures (§5.3, §5.5). A real failure of the source has not been observed |
-| Start-up and on-demand testing (§4.3 items 4, 5) | Start-up: met on every test; on the board the first output comes 56.7 ms after a reset. On demand: a `mentropycfg` write or a reset, not yet named in an integration guide |
-| Failure modes and operating edge (§4.3 items 8, 9) | Stuck lane, lane patterns of period 1 to 4, biased lane, dominant sample: tested. Not covered: lanes locked to each other, shared jitter, loss of jitter without a short period; no data away from 24 °C |
-| Configuration | One-sided limits: software can only make the tests stricter and the spacing longer (outside test mode, k is at least 16); both shown on the board. The boot chain sets no lock (§6) |
-| Health tests on the real rings | Every interval read between resets ended with zero failures: about 2.4 hours in all, the longest 55 minutes (§5.5) |
-| Operating range (§3.2.1 item 3) | One board, 23.9–25.2 °C, nominal supply |
+| 0.05 (0.22) | 0.416 |
+| **0.104 (0.32)** | **0.750** |
+| 0.2 (0.45) | 0.929 |
+| 0.42 (0.65) and more | 0.963, the cap that the duty cycle sets |
 
-What a claim needs first is a measurement of each ring's own jitter
-against another ring rather than against the sampling clock, and from it
-the spacing at which that jitter alone gives the target (§7).
+So the requirement is a third of a ring period of fresh jitter, standard
+deviation, per kept sample: 0.22 ns in 54.6 µs.
 
-Recommended release wording: *"Karu64 implements the approved continuous
-health tests of SP 800-90B on the four-bit noise-source sample, with
-per-lane tests, start-up testing and a latched failure alarm. On the tested
-VCU118 image NIST's non-IID estimate was 3.556 bits per four-bit sample,
-and both restart datasets passed with a trial entropy value of 3.0. Most of
-the jitter that the board shows is shared between the four rings; how much
-of it is each ring's own has not been established, and no min-entropy is
-claimed."* Linux keeps `random.trust_cpu=off`.
+**How much the board shows.** Three measurements of 2026-11-23, by
+different instruments:
+
+1. *The ring's own jitter, against the other rings.* The meter counts
+   the periods of every ring on the same clock edges. In the difference
+   of two rings' counts the sampling clock's jitter and what both rings
+   see alike cancel, and the pairs give each ring's own phase variance
+   by span (`rosc_own.py`). In the capture of the operating rings with
+   records every 256 clocks, the term of lane 0's own variance that
+   grows in proportion to the span, as fresh noise must, is 4.0 × 10⁻⁴
+   periods² per clock, and 2.0 × 10⁻⁴ at the one-sided 99 % lower end of
+   the fit: 0.84 periods² per kept sample at the lower end, 8 times the
+   0.104 needed. **The fit does not say how much of that term is fresh.**
+   The same report finds that a periodic line could add 27.8 periods² to
+   a pair's phase variance, and that the fitted constant lies 25 standard
+   errors below the value that counting gives, which means that part of
+   the linear growth has a memory. With all six rings running the lower
+   end is 0.42 (4 times the need), with a line that could add 0.69. Lane
+   0's whole own variance over one kept sample is 11.7 to 19.6 periods²
+   by every method and capture; most of that is slow wander and the
+   line.
+2. *The jitter against the sampling clock, from the bits.* Sampled every
+   clock, the ring's bits lose their correlation at a rate of 4.3 × 10⁻⁴
+   periods² per clock (lower end 3.5 × 10⁻⁴), and faster at longer
+   spacings (`getnoise_analyze.py` on the burst captures). In proportion
+   that is 1.4 to 1.8 periods² per kept sample. It counts everything
+   that moves the ring against the clock at that time scale, the clock's
+   own jitter included.
+3. *The delivered bits themselves.* In G23, 10⁶ samples at the delivered
+   spacing, no autocorrelation at lags 1 to 8 is above four standard
+   errors. Under the model that needs at least 0.13 periods² per kept
+   sample, which is as much as 10⁶ bits can show and gives at least
+   0.754 bit. A predictor with twelve bits of context, trained on the
+   first half of the capture, guesses a bit of the second half with a
+   success that leaves 0.990 bit. This is about predictors that use the
+   bits alone, not one that knows the disturbance.
+
+**The statistics support the proposal.** The lowest of NIST's ten
+non-IID estimators gives 0.810 bit per bit on one capture of 10⁶ bits and
+0.839 on another ([§4.3](#43-initial-entropy-estimate-313-63)), and both
+restart datasets pass at 0.75. They do not replace the argument:
+SP 800-90B takes the initial estimate as the smaller of the developer's
+estimate and the statistical one, so H_I = 0.75 holds once
+H_submitter = 0.75 is justified.
+
+**What is not counted.**
+
+- What lane 0 shares with the other rings: the sampling clock's jitter
+  and common disturbances. Over one kept sample that is 27 times lane 0's
+  own variance (the meter, at 4,096 clocks). On the four-ring image it
+  was the obstacle
+  ([its assessment](sp800-90b-assessment-2026-11-20.md#11-the-argument-and-the-step-that-fails));
+  with one ring as the source the argument does not need it.
+- The slow wander of the ring's own frequency, and a periodic disturbance
+  at 4,779.7 Hz that modulates all the rings by about 0.04 %
+  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md#the-captures-74)). Both
+  move the phase by many periods between samples, and both are given to
+  the predictor in full.
+
+**The open step.** The argument needs 0.104 periods² of fresh jitter per
+kept sample: one eighth of the lower end of the linear term that the
+meter fits for the operating rings, a quarter with all six. A heuristic argument may
+supply that, as RISC-V allows; what it has to give is a reason to credit
+that share as unpredictable once the 4,779.7 Hz line and the drift are
+accounted for. The meter does not give one. It was built to turn
+measurement 1 into a lower confidence bound under a stated model, and by
+its own rules no capture gives a bound: the model of the own variance (a
+constant, a linear and a quadratic term) does not fit, the constant term
+is below that of counting, and the line is left in the pairs of unlike
+rings. The figures above are therefore measured sizes, not bounds on
+what is fresh. Until that step is closed, 0.75 is a proposal that the
+physics makes plausible and that the measurements and the statistics
+support, for the conditions of §2 and not beyond them
+([§7](#7-other-requirements-resilience-and-limits)).
+
+**Why the rate should not change in normal operation.** The cause is
+thermal noise, which does not wear out. The meter's stationarity check
+(the linear part of the own variance in eight segments of a capture)
+passes on seven of the eight captures, and fails on one of the two with
+records every 16,384 clocks, where the rate drifts. The ones fraction of
+lane 0 is 0.487 to 0.489 in every capture of the session, and the health
+tests, whose cutoffs are those of this rate, raised no alarm in 20.5
+hours ([§5.5](#55-evidence)). Temperature and supply change the ring's
+frequency and its jitter; no data away from the lab conditions exists.
+
+### 1.3 Status
+
+By the items of RISC-V's "Checklists for Design and Self-Certification":
+
+| Item | State | Section |
+| --- | --- | --- |
+| ISA behaviour of `seed`: states, access control, destructive reads | **Met**, in simulation and on the board | [§3.2](#32-risc-v-requirements-at-seed) |
+| Technical justification for entropy | **Proposed, with one step open.** An argument from the physics of the ring with measurements of its jitter, of the kind that RISC-V asks for. Open: a reason to credit the needed share of the measured jitter as fresh. The meter's stochastic-model bound is not established | [§1.2](#12-technical-justification) |
+| Entropy source design review | Noise source, health tests and a security boundary are in place; the approved tests of SP 800-90B §4.4 run on the noise-source sample. The conditioner is software's. §4.3 of SP 800-90B item by item | [§3](#3-the-entropy-source-as-built), [§5.4](#54-43-item-by-item), [§6](#6-software-post-processing) |
+| Experimental tests | NIST's non-IID estimate is 0.810 bit per bit (0.839 on a second capture), above the 0.75 required; both restart tests pass; the health tests fire, latch and end the source as designed, and raised no alarm in 20.5 hours | [§4](#4-entropy-estimation-31-63), [§5.5](#55-evidence) |
+| Resilience | **Not assessed** beyond lab conditions: one board, 23.7–24.8 °C, nominal supply, no active attack | [§7](#7-other-requirements-resilience-and-limits) |
+
+The figures, all for lane 0 at the shipped spacing (one kept bit every
+4,096 clocks) with the operating ring mask:
+
+| | |
+| --- | --- |
+| Developer's estimate, H_submitter (proposed) | 0.75 bit per bit: 12 bits per `seed` word, 192 per 256 bits |
+| NIST non-IID estimate, H_original | **0.810451** on 10⁶ bits from the meter; 0.838673 on 10⁶ bits through GetNoise |
+| Initial estimate, H_I = min(H_submitter, H_original) | 0.75, once the proposed H_submitter is justified |
+| Restart tests at 0.75 | pass, on 1,000 operational restarts through `seed` and on 1,000 delayed warm restarts |
+| Health tests | repetition count (cutoff 55) and adaptive proportion (W = 1024, cutoff 719), for 0.75 bit at α = 2⁻⁴⁰; no failure in an estimated 1.35 × 10⁹ samples |
+| Delivery | the first `seed` word 59.4 ms after a reset; then 1,144 words per second, 256 bits in 14.0 ms |
 
 ## 2. Scope and data
 
 | Item | Value |
 | --- | --- |
-| Image | VCU118 bitstream `ddb168e1081c9b73c29cd5a16ab777ee8106a52d382469b5b741b094bc096aad` ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md)). Further data on the same noise source from `85f07e58…` ([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md)) and `d7ff00dc…` ([record](../dbg/BOARD_ACCEPTANCE-2026-11-18.md)): the same ring RTL and placement, a different routing, and so other ring frequencies relative to the clock (§4.5) |
+| Image | VCU118 bitstream `20f8b265bc6189d5a2428bfbc5bce586c92d0c474a6cc41550e6d66d7b6c630a` ([build and sources](../dbg/MEASUREMENTS.md#fpga-image--2026-11-21); [board record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md)) |
+| Straps | lane 0 is the source; spacing floor k = 16; rings `0x0f` (the four lanes run outside test mode) |
 | Clock | 75 MHz CPU clock (`ui_clk` ÷ 4 of the DDR4 controller) |
-| Shipped sampling | one raw symbol every 256 clocks; decimation k = 16 (`mentropycfg` reset value): one kept 4-bit sample every 4,096 clocks (54.6 µs, 18,310 samples/s), one 16-bit `seed` word per 4 samples |
-| Shipped health-test configuration | `mentropycfg` = `0x30c7c1eb3c37000f`: on the 4-bit sample, repetition count cutoff 15 and adaptive proportion (W = 512) cutoff 124; per lane, repetition count at lags 1 to 4 cutoff 55 and adaptive proportion (W = 1024) cutoff 719; the third running failure within 2^24 clean samples is fatal; start-up test over 1,024 kept samples |
-| Datasets on `ddb168e1…` (2026-11-20) | **D20**: 10⁶ consecutive kept samples at k = 16 through GetNoise (capture SHA-256 `0b87780b…eea9`). **S20**: operational restart data, 1,000 restarts × the first 1,000 samples through `seed` (`cf31abe4…e92b`). **R20**: delayed warm-restart data, 1,000 restarts × 1,000 samples through GetNoise (`67b2c695…71dd`) |
-| Datasets on earlier bitstreams | **D19** (`85f07e58…`, 2026-11-19, `2dd45d85…2879`) and **D18** (`d7ff00dc…`, 2026-11-18, `c5940f11…99cc`), as D20; **R19** (`85f07e58…`, `1c3f37a1…33a4ac`), as R20 |
-| Conditions | lab VCU118, die 23.9–25.2 °C, VCCINT 0.846–0.847 V (on-chip readout), lifecycle `OPEN`. The D and R captures ran under the debugger with the hart halted; S20 with the hart running the capture payload from reset |
-| Tools | NIST `SP800-90B_EntropyAssessment` commit `87c104d` (2026-05-26; `ea_non_iid` 1.1.8), built locally; `test/dbg/board/entropy_health.py` and `make entropy-test` for the health tests |
+| Sampling | one raw sample every 256 clocks; every 16th is kept: one sample every 4,096 clocks (54.6 µs, 18,311 per second); a `seed` word is 16 samples, 65,536 clocks (1,144 words per second) |
+| Health-test configuration | `mentropycfg` = `0x30c0000b3c37000f`, the reset value: repetition cutoff 55, proportion cutoff 719, the third running failure within 2²⁴ clean samples fatal; start-up test over 1,024 samples |
+| Conditions | one lab VCU118; die 23.7–24.8 °C, VCCINT 0.846–0.848 V (on-chip readout); Ethernet link up; lifecycle `OPEN` |
+| Tools | NIST `SP800-90B_EntropyAssessment` commit `87c104d` (`ea_non_iid` 1.1.8), built locally; `test/dbg/board/entropy_health.py` and `make entropy-test` for the health tests; `rosc_own.py` and `getnoise_analyze.py` for the jitter |
 
-Data files (lab host, not tracked): D20 is
-`_build/dbg/board-accept-20261120-rom2m-auth/noise-run1/getnoise-k16.bin`,
-S20 `_build/dbg/board-accept-20261120-rom2m-auth/seed-restart-rows.bin`, R20
-`_build/dbg/board-accept-20261120-rom2m-auth/restart-rows.bin`; D19
-`_build/dbg/board-accept-20261119-rom2m-auth/noise-run1-warm-linkup/getnoise-k16.bin`,
-D18 `_build/dbg/board-accept-20261118-rom2m-auth/getnoise-k16.bin`, R19
-`_build/dbg/sp80090b-restart-20261119/restart-rows.bin`. The tool inputs
-(4-bit samples, one per byte; for GetNoise captures with the run-marker bit
-stripped) and every tool output are in `_build/nist-90b/data/` and
-`_build/nist-90b/results/`.
+Datasets, all of 2026-11-23 (lab host, not tracked; in
+`_build/dbg/board-accept-20261123-20f8b265/`, the tool inputs and outputs
+in `_build/nist-90b/`):
+
+| | Content | File (SHA-256) |
+| --- | --- | --- |
+| **M23** | 10⁶ consecutive samples, recorded by the meter in test mode beside the ring counts | lane 0 of `rosc-full-1/rosc-count-p256-e16-m0f.bin` (`34ff40a5…`); bits `8fc17444…` |
+| **G23** | 10⁶ consecutive samples through GetNoise (`mnoise`) at k = 16 | lane 0 of `noise-run1/getnoise-k16.bin` (`5b0fe147…`); bits `ff4dd951…` |
+| **S23** | operational restart data: 1,000 restarts, the first 1,000 samples of each through `seed` | `seed-restart-1/seed-restart-rows.bin` (`1e0676a0…`) |
+| **W23** | delayed warm restarts: 1,000 restarts, 1,000 samples of each through GetNoise | lane 0 of `noise-run1/restart-rows.bin` (`b4f3b9f2…`); bits `8c1101c2…` |
+
+The jitter measurements use the meter's ring counts (`rosc-full-1/`,
+eight captures) and the burst captures of the same session
+(`noise-run1/`).
 
 ## 3. The entropy source as built
 
 | SP 800-90B component (§2.2) | Karu64 | Source |
 | --- | --- | --- |
-| Noise source | Four free-running inverter rings of 3, 5, 7 and 9 stages, each LUT placed by hand in its own slices; each ring sampled by a flip-flop on the 75 MHz clock, with a second flip-flop against metastability. One raw sample is the 4-bit vector of the four rings, taken every 256 clocks. The rings are gated off during any reset | [`flow/fpga/karu_rosc_rng.v`](../flow/fpga/karu_rosc_rng.v), [`flow/fpga/rosc_constraints.tcl`](../flow/fpga/rosc_constraints.tcl) |
-| Digitisation and decimation | Every k-th raw sample is kept (k = 16 at reset). Outside test mode k cannot go below the build's 16. The kept samples are what the health tests see and what `seed` delivers | [`rtl/karu_entropy.v`](../rtl/karu_entropy.v) |
-| Health tests | On the 4-bit sample: repetition count and adaptive proportion (W = 512). Per lane: repetition count at lags 1 to 4 and adaptive proportion (W = 1024). A start-up test of 1,024 kept samples. Not run in test mode (§5) | `rtl/karu_entropy.v` |
-| Conditioning | **None.** Four consecutive kept samples are packed into a 16-bit `seed` word, the first in bits [15:12]; no bit is combined with another | `rtl/karu_entropy.v` (`part_q`, `fifo`) |
-| Output | `seed` CSR (`0x015`): `OPST` (`BIST`, `WAIT`, `ES16`, `DEAD`) and 16 bits in `ES16`; words buffered (8) and released four at a time; each word is wiped as it is read. `seed` is the only way out: the debug-authentication ROM reads it like any other M-mode software | `rtl/karu_entropy.v`; [`rtl/karu_csr.v`](../rtl/karu_csr.v) (access rules) |
-| Test interfaces | `mnoise` (`0x7C8`, GetNoise, one raw kept sample per access) and the burst capture (consecutive raw samples at periods of 1–256 clocks); both only in test mode, during which `seed` reports `BIST`. `mentropycfg` (`0x7C9`) holds k, the four cutoffs, the strike number, the clean-sample count and a lock; `mentropystat` (`0x7CA`) reports the tests' state | `rtl/karu_entropy.v`, [`flow/fpga/karu_noise_burst.v`](../flow/fpga/karu_noise_burst.v) |
-| Enable | Platform strap (SW12 position 4 on the VCU118): on holds the source off and `seed` in `BIST`; off, the default, leaves it on | [`flow/fpga/karu_entropy_src.v`](../flow/fpga/karu_entropy_src.v) |
+| Noise source | A free-running ring of three inverters, each a LUT placed by hand, at 1,463 MHz on this bitstream. A flip-flop on the 75 MHz clock samples it, with a second flip-flop against metastability; one raw sample every 256 clocks. Three more rings of 5, 7 and 9 stages run beside it; two further 3-stage rings run in test mode only. No other ring reaches `seed` or a health test. The rings are gated off during any reset | [`flow/fpga/karu_rosc_rng.v`](../flow/fpga/karu_rosc_rng.v), [`flow/fpga/rosc_constraints.tcl`](../flow/fpga/rosc_constraints.tcl), [`flow/fpga/karu_softstrap.v`](../flow/fpga/karu_softstrap.v) |
+| Digitisation and decimation | Every k-th raw sample is kept: k = 16 at reset, and never less outside test mode whatever software writes. The kept bit of the 3-stage ring is the noise-source sample: what the health tests see and what `seed` delivers | [`rtl/karu_entropy.v`](../rtl/karu_entropy.v) |
+| Health tests | Repetition count at lags 1 to 4 and adaptive proportion (W = 1024); a start-up test of 1,024 samples. Not run in test mode ([§5](#5-health-tests-4)) | `rtl/karu_entropy.v` |
+| Conditioning | **None in hardware.** Sixteen consecutive samples are packed into a `seed` word, the first in bit 15; no bit is combined with another. Conditioning is the consuming software's ([§6](#6-software-post-processing)) | `rtl/karu_entropy.v` |
+| Output | `seed` CSR (`0x015`): `OPST` (`BIST`, `WAIT`, `ES16`, `DEAD`) and 16 bits in `ES16`; words buffered (8) and released four at a time; each word is wiped as it is read. `seed` is the only way out | `rtl/karu_entropy.v`; [`rtl/karu_csr.v`](../rtl/karu_csr.v) (access rules) |
+| Test interfaces | `mnoise` (`0x7C8`, GetNoise: the raw kept samples of all four lanes), the burst capture and the meter of ring counts; all in test mode only, during which `seed` reports `BIST`. `mentropycfg` (`0x7C9`): k, the two cutoffs, the strike number, the clean-sample count and a lock. `mentropystat` (`0x7CA`): the tests' state | `rtl/karu_entropy.v`, [`flow/fpga/karu_noise_burst.v`](../flow/fpga/karu_noise_burst.v), [`flow/fpga/karu_rosc_meter.v`](../flow/fpga/karu_rosc_meter.v) |
+| Enable | Platform strap (SW12 position 4 on the VCU118): on holds the source off and `seed` in `BIST` | [`flow/fpga/karu_entropy_src.v`](../flow/fpga/karu_entropy_src.v) |
 
-**The sample is the 4-bit vector, not four bits.** SP 800-90B §3.1.6:
-*"multiple copies of the same physical noise source are considered as a
-single noise source (e.g., a source with eight ring oscillators, where the
-sampled bits are concatenated to get an eight-bit output …)"*. The entropy
-claim, the approved tests and their cutoffs therefore belong to the 4-bit
-sample. Per-lane figures are diagnostics; they are not to be added, and the
-board data shows why: on bitstream `85f07e58…` lanes 2 and 3 shared
-frequency wander and, in one run, a coherence peak at about 2.05 MHz
-([burst-capture findings](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).
-On `ddb168e1…` no lane pair was flagged.
+[The FPGA guide](fpga.md#the-ddr4-soc-linux-target) describes the
+hardware in full.
 
-## 4. Entropy estimation (§3.1, §5, §6)
+### 3.1 The sample is one bit
+
+SP 800-90B §3.1.6 counts several copies of one physical noise source as a
+single source whose sample is their concatenation. Here one ring is the
+source: the other rings reach neither `seed` nor a health test, so no
+statement about independence between rings is needed, and none is made.
+The sample is one bit, the estimate, the approved tests and their cutoffs
+are for that bit, and a `seed` word holds sixteen samples.
+
+### 3.2 RISC-V requirements at `seed`
+
+The normative text is "Entropy Source" in the scalar cryptography chapter
+of the RISC-V unprivileged specification; the test interface follows its
+"Suggested GetNoise Test Interface".
+
+| Requirement | Karu64 | Shown by |
+| --- | --- | --- |
+| `seed` at `0x015`; `OPST` in [31:30], `entropy` in [15:0]; `entropy` is zero unless `OPST` is `ES16` | As specified; the reserved and the custom bits read zero | `make zkr-test` |
+| A read-only CSR instruction raises an illegal-instruction exception; any other form reads `seed`, and the written value is ignored | The core rejects every form that does not write, in every mode | `make zkr-test`, and `make zkr-test-spike` as a cross-check |
+| Access outside M-mode only where `mseccfg.SSEED` or `USEED` grants it | S and HS mode need `SSEED`, U mode `USEED`; VS and VU mode get a virtual-instruction exception with `SSEED` set, so that a hypervisor can emulate the access, and an illegal-instruction exception otherwise | `make zkr-test`, with and without H |
+| Wipe-on-read: no `entropy` word is made available twice | A word is wiped as it is read; buffered words are wiped on every restart and failure | `make entropy-test` |
+| `BIST` during the self-test, and as the non-fatal alarm "latched until polled at least once" | `BIST` through the start-up test; after a running failure `BIST` until one `seed` access has seen it, however much later | `make entropy-test`; on the board ([§5.5](#55-evidence)) |
+| `WAIT` when no word is available yet | As specified | `make entropy-test` |
+| `DEAD`: an unrecoverable self-test error | A failure in a start-up test, or the third running failure; until reset, with the noise source switched off | `make entropy-test`; on the board |
+| Initialization, test mode and health alarms are signalled | All three read as `BIST`; a fatal failure as `DEAD` | the same |
+| A physical source on the SP 800-90B route: all required components and health-test mechanisms | [§3](#3-the-entropy-source-as-built), [§5](#5-health-tests-4); the conditioner in software | this document |
+| 192 bits of min-entropy in each 256 bits of `ES16` output, a rate of 0.75 | Proposed as the developer's estimate, with NIST's estimates of 0.810 and 0.839; one step of its justification is open | [§1](#1-the-entropy-statement-and-its-justification), [§4](#4-entropy-estimation-31-63) |
+| Test interface (suggested): a custom M-mode CSR; with `noise_test` set, `seed` returns no `ES16`; on leaving, back through zeroization and self-test | `mnoise` at `0x7C8`: `seed` reports `BIST` in test mode; leaving it empties the buffer and runs the start-up test again. No captured sample is ever delivered as entropy | `make zkr-test`, `make noise-burst-test` |
+
+On the board, U-Boot and Linux read `seed` in every boot and the
+debug-authentication ROM in every authentication. The
+[acceptance](../dbg/BOARD_ACCEPTANCE-2026-11-23.md) passes with the
+source on, and the boot with the source off (U-Boot's and the ROM's
+time-out paths) in its `entropy-off` case.
+
+<a id="current-board-measurement"></a>
+
+## 4. Entropy estimation (§3.1, §6.3)
 
 ### 4.1 Data collection (§3.1.1)
 
-D20, D19 and D18 are 10⁶ consecutive kept samples each, at the shipped
-spacing, taken through `mnoise` by `test/dbg/board/getnoise_capture.py`.
-Each is a single run without a lost sample. Test mode is entered for the
-capture: the samples are the same kept samples the health tests and
-`seed` would see, but the capture is not the operational output path, and
-it ran with the hart halted under the debugger. Tool input: one sample per
-byte, lane i in bit i.
+M23 and G23 are 10⁶ consecutive samples each, at the shipped spacing and
+ring mask, each a single run without a lost sample. Both are taken in
+test mode: the samples are the kept samples that the health tests and
+`seed` would see, but the capture is not the operational output path.
+M23 was recorded by the meter beside the ring counts, with the hart
+running the capture payload's polling loop (die 24.09–24.83 °C); G23
+through `mnoise` by `test/dbg/board/getnoise_capture.py` (die
+24.09–24.31 °C). The tool input is one bit per byte. S23 comes through
+the operational path, `seed` ([§4.4](#44-restart-tests-314)).
 
-The burst captures (periods of 1–256 clocks) describe the physics; they are
-not datasets at the shipped spacing and are not used here.
+### 4.2 IID or non-IID track (§3.1.2)
 
-### 4.2 IID or non-IID track (§3.1.2, §5)
-
-All three datasets **pass** NIST's IID tests: chi-square independence and
-goodness of fit, the longest repeated substring test, and every
-permutation test (`ea_iid`, results `d20-sym4-iid.txt`, `d19-sym4-iid.txt`,
-`d18-sym4-iid.txt`). On the IID track the estimate would be the
-most-common-value figure, 3.94 bits per sample for D20.
-
-**The non-IID track applies nevertheless.** The IID track needs the
-submitter's rationale that the source is IID, and the physics says
-otherwise: at shorter spacings the same rings show strong serial
-correlation, a fitted jitter variance that grows faster than white noise,
-frequency wander, and on one bitstream coupling between two lanes. Passing
-the IID tests at 4,096 clocks per sample shows that these effects are small
-at that spacing, not that they are absent.
+No IID claim is made. The physics says otherwise: at shorter spacings
+the ring's bits are strongly correlated, its jitter grows faster than
+white noise, and its frequency wanders. The source is assessed on the
+non-IID track.
 
 ### 4.3 Initial entropy estimate (§3.1.3, §6.3)
 
-`ea_non_iid -a -v <file> 4` on the 4-bit samples, which also assesses the
-serialised bitstring (4 × 10⁶ bits). D20:
+`ea_non_iid -a -v <file> 1`:
 
-| Estimator (§6.3) | Per sample (of 4) | Per bit |
+| Estimator (§6.3) | M23 | G23 |
 | --- | --- | --- |
-| Most common value | 3.935 | 0.987 |
-| Collision | — | 0.949 |
-| Markov | — | 0.990 |
-| Compression | — | **0.889** |
-| t-tuple | **3.855** | 0.927 |
-| LRS | 3.983 | 0.998 |
-| MultiMCW prediction | 3.959 | 0.995 |
-| Lag prediction | 3.986 | 0.997 |
-| MultiMMC prediction | 3.954 | 0.987 |
-| LZ78Y prediction | 3.952 | 0.987 |
-| **H_original** | **3.855** | |
-| **H_bitstring** | | **0.889** |
-| **min(H_original, 4 × H_bitstring)** | **3.556** | |
+| Most common value | 0.963013 | 0.961253 |
+| Collision | 0.928380 | 0.883823 |
+| Markov | 0.966405 | 0.962838 |
+| Compression | **0.810451** | **0.838673** |
+| t-tuple | 0.934685 | 0.911890 |
+| LRS | 0.965639 | 0.965639 |
+| MultiMCW prediction | 0.973931 | 0.969879 |
+| Lag prediction | 0.994518 | 0.996204 |
+| MultiMMC prediction | 0.963387 | 0.961526 |
+| LZ78Y prediction | 0.963171 | 0.961285 |
+| **H_original** | **0.810451** | **0.838673** |
 
-The same on the earlier bitstreams:
+48.83 % of the bits of M23 and 48.77 % of G23 are 1, and the
+most-common-value estimate is that bias. The compression estimate is the
+lowest on both. Lane 0 of the three earlier bitstreams, the same ring
+with other routings, gave 0.864, 0.851 and 0.834.
 
-| Dataset | Bitstream | H_original | H_bitstring | min(H_original, 4 × H_bitstring) | Set by |
-| --- | --- | --- | --- | --- | --- |
-| D20 | `ddb168e1…` | 3.855 | 0.889 | **3.556** | compression, bitstring |
-| D19 | `85f07e58…` | 3.856 | 0.882 | 3.526 | compression, bitstring |
-| D18 | `d7ff00dc…` | 3.688 | 0.921 | 3.684 | t-tuple, sample |
-
-SP 800-90B defines H_I = min(H_submitter, H_original, 4 × H_bitstring).
-No H_submitter is established (§1), so no H_I. **NIST's statistical
-estimate on the current bitstream is 3.555965 bits per 4-bit sample**: a
-measurement, not a physical lower bound. A 16-bit `seed` word holds four
-samples.
-
-Per lane, as diagnostics only (`ea_non_iid` on each lane's binary stream):
-D19 0.851, 0.849, 0.814, 0.810 and D18 0.834, 0.863, 0.894, 0.847 bits per
-bit for lanes 0–3. Four times the smallest is not the sample's entropy.
+H_I = min(H_submitter, H_original). With the proposed H_submitter it is
+min(0.75, 0.810451) = **0.75 bit per sample**, and it stands once that
+proposal is justified ([§1.2](#12-technical-justification)). A `seed`
+word holds sixteen samples.
 
 ### 4.4 Restart tests (§3.1.4)
 
-**Operational restart data (S20).** §3.1.4.1 asks for samples collected
-*"as soon as the entropy source is ready to produce outputs for real-world
-use"*. `test/dbg/board/seed_restart.py` restarts the source 1,000 times by a
-debugger reset (`ndmreset`, with `haltreq` held). That resets the hart, the
-SoC and the entropy source through the same reset sequencer as the software
-reset at `0x1000_0800`; the rings are gated off while the reset lasts and
-start again. DDR calibration, the clocks and the Debug Module are not reset.
+**Operational restart data (S23).** §3.1.4.1 asks for samples collected
+"as soon as the entropy source is ready to produce outputs for real-world
+use". `test/dbg/board/seed_restart.py` restarts the source 1,000 times by
+a debugger reset (`ndmreset`, with `haltreq` held). That resets the hart,
+the SoC and the entropy source through the same reset sequencer as the
+software reset; the rings are gated off while the reset lasts and start
+again. DDR calibration, the clocks and the Debug Module are not reset.
 After each reset:
 
 1. the hart halts before its first instruction (checked: DPC is the reset
-   vector), so the boot ROM never runs and nothing reads `seed` before the
-   payload;
-2. the host points DPC at `test/dbg/board/seedcap.S`, already in DRAM, and
-   resumes the hart 5.2 to 8.3 ms (median 6.0 ms) after the reset was
-   released;
+   vector), so the boot ROM never runs and nothing reads `seed` before
+   the payload;
+2. the host points DPC at `test/dbg/board/seedcap.S`, already in DRAM,
+   and resumes the hart 5.3 to 15.1 ms (median 8.5 ms) after the reset
+   was released;
 3. `seedcap.S` reads `seed` in the reset configuration (no test mode, no
-   `mentropycfg` write), polling without a pause, and stores the first 250
-   words, 1,000 samples, that the source delivers.
+   `mentropycfg` write), polling without a pause, and stores the first 63
+   words that the source delivers, of which the first 1,000 bits are
+   kept.
 
 In every restart the payload polled `BIST` before the first `ES16`, so no
-word was delivered before it, and its longest gap between two polls was at
-most 161 clocks against 16,384 per word, so the source's buffer never filled
-and no sample was dropped. The first word came 48.6 to 51.6 ms after the
-payload started, about 56.7 ms after the reset: the start-up test of 1,024
-samples. No restart had to be repeated and none raised a health-test alarm.
-`make dbg-seedcap-test` shows on the simulation bench that the payload
-stores exactly the first samples after the start-up test, in order, and
-that a late start, `DEAD` and an alarm are reported. Collected on
-2026-11-20 in 189 s, die 24.6–25.0 °C.
+word was delivered before it, and its longest gap between two polls was
+161 clocks against 65,536 per word, so no sample was dropped. The first
+word came 58.9 to 59.9 ms after the reset was released (median 59.41 ms),
+which is the start-up test of 1,024 samples and one burst of four words:
+4,456,448 clocks, 59.4 ms, in simulation. No restart had to be repeated
+and none raised a health-test alarm. The rows were checked bit for bit
+against the words as `seed` delivered them. `make dbg-seedcap-test` shows
+on the simulation bench that the payload stores exactly the first samples
+after the start-up test, in order, and that a late start, `DEAD` and an
+alarm are reported.
 
-| `ea_restart -n -v s20-rows.bin 4 3.555965` | Result |
-| --- | --- |
-| Sanity check (§3.1.4.3): largest count of one value at one position, over rows and columns | X_max = 98, cutoff 132: passed |
-| H_r (row dataset), H_c (column dataset) | 3.688, 3.688 bits per sample |
-| Validation (§3.1.4.2): min(H_r, H_c) ≥ H_I / 2 | passed |
-| min(H_r, H_c, H_I) | 3.556 bits per sample |
+**Delayed warm restarts (W23).** The same restarts with the samples taken
+through GetNoise at least 150 ms after each reset, after a further
+digital restart by the payload's entry into test mode
+(`getnoise_restart.py`). A cross-check; no retries.
 
-With a trial value of 3.0, `ea_restart -n -v s20-rows.bin 4 3.0` passes as
-well: X_max 98 against the cutoff of 178, validation passed (and on R20,
-X_max 97 against 178).
+| `ea_restart -n -v <rows> 1 0.75` | S23 | W23 |
+| --- | --- | --- |
+| Sanity check (§3.1.4.3): largest count of one value at one position, over rows and columns | X_max = 565, cutoff 662: passed | X_max = 576, cutoff 663: passed |
+| H_r (row dataset), H_c (column dataset) | 0.816320, 0.851729 | 0.817418, 0.862506 |
+| Validation (§3.1.4.2): min(H_r, H_c) ≥ H_I / 2 | passed | passed |
+| min(H_r, H_c, H_I) | **0.75** | 0.75 |
 
-H_r and H_c are both set by the t-tuple estimator at t = 4, where the most
-common 4-tuple occurs just the 35 times that the estimator needs:
-p̂ = (35/999,997)^¼ = 0.0769. The same quantisation of that estimator gives
-R20's H_c the same value; it is not a property the datasets share.
+Both also pass with the measured 0.810451 as the trial value (cutoffs 639
+and 638). The tool simulates its cutoff, so a replay can give a slightly
+different one.
 
-**Delayed warm restarts (R20, R19).** The same restarts with the first
-samples taken through GetNoise at least 150 ms after each reset, after a
-further digital restart by the payload's `mentropycfg` write and its entry
-into test mode (`getnoise_restart.py`). Both pass as well:
+**Not covered:** restarts by power-on or reconfiguration at this count.
+In the session's six power-ons by reconfiguration with the source on, the
+first consumer had its words each time: the authentication ROM its nonce
+in four, U-Boot its `kaslr-seed` in three.
 
-| `ea_restart -n -v` with the dataset's own D estimate | X_max (cutoff) | H_r | H_c | Validation |
-| --- | --- | --- | --- | --- |
-| R20 (`ddb168e1…`, 3.555965) | 97 (130) | 3.873 | 3.688 | passed |
-| R19 (`85f07e58…`, 3.526340) | 100 (133) | 3.856 | 3.862 | passed |
+<a id="entropy-claim-for-the-first-word-after-reset"></a>
 
-**Not covered:** restarts by power-on or reconfiguration at this count. On
-`85f07e58…`, eight reconfiguration and reset runs of the burst capture gave
-the same ring frequencies and jitter within their run-to-run spread
-([record](../dbg/BOARD_ACCEPTANCE-2026-11-19.md#noise-capture-stage-d2)).
+### 4.5 The first word after a reset
 
-### 4.5 What the estimate does and does not establish
+Software that reads one word at boot gets the word that S23 records.
+Over the 1,000 restarts the first `seed` word took 995 distinct values,
+and the most frequent occurred twice. For a population word of maximum
+probability p_max, its count is Binomial(1000, p_max) if the restarts are
+independent draws from one distribution, and it can be no larger than the
+observed maximum of two. Inverting the one-sided binomial test at 1 %
+gives p_max ≤ 0.008380, so −log₂ p_max ≥ 6.89 bits at 99 % confidence.
+That is all that 1,000 restarts can show about a 16-bit word: it is a
+check that the first word is not a constant or one of a few values, and
+no more. It bounds a guess made from the test configuration alone; it
+does not establish independence of the resets, and it does not cover a
+predictor that observes clock phase, reset timing or other physical
+state.
 
-- It is a measurement for one board, one temperature (23.9–25.2 °C) and one
-  bitstream, not for the operating range SP 800-90B asks a claim to hold
+### 4.6 What the estimate does and does not establish
+
+- It is for one board, one bitstream and 23.7–24.8 °C at nominal supply,
+  not for the operating range that SP 800-90B asks a statement to hold
   over (§3.2.1 item 3, §4.3 item 9).
-- The ring frequencies relative to the clock depend on the routing:
-  between `85f07e58…` and `ddb168e1…`, with the rings in the same slices,
-  lane 0 moved from F ≈ 0.16 to 0.41 and lane 3 from 0.48 to 0.016
-  ([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#noise-capture-and-entropy-estimates)).
-  The estimates at the shipped spacing hardly moved (3.526 and 3.556), but a
-  characterisation belongs to a bitstream.
-- What scrambles the samples is mostly shared between the rings (§1.1):
-  phase noise of all four rings relative to the sampling clock, and on both
-  bitstreams it grows faster than white noise would. The estimate counts it
-  all; a claim may count only each ring's own noise.
-- The figures are statistical estimates on 10⁶ samples; SP 800-90B's own
-  estimators are the conservative part, not the physics.
+- The ring's frequency relative to the clock depends on the routing, and
+  with it how neighbouring samples relate. Over four bitstreams the
+  estimate for lane 0 at the shipped spacing stayed between 0.81 and 0.87
+  (0.834, 0.851, 0.864, 0.810), but a characterisation belongs to a
+  bitstream.
+- NIST's figures are statistical estimates on 10⁶ samples. They are the
+  conservative part of the method, not a physical bound, and they cannot
+  see a predictor that knows more than the bits.
+- The proposed 0.75 is about the bit sequence given its past. An
+  observer of the ring's phase, or one who can impose a frequency on the
+  ring, is outside it ([§7](#7-other-requirements-resilience-and-limits)).
 
 ## 5. Health tests (§4)
 
@@ -340,224 +419,179 @@ the same ring frequencies and jitter within their run-to-run spread
 
 | | `rtl/karu_entropy.v` |
 | --- | --- |
-| Tests on the 4-bit sample | repetition count (§4.4.1) and adaptive proportion with W = 512 (§4.4.2): the approved tests, on the noise-source sample |
-| Tests per lane | repetition count at lags 1 to 4 (a lane bit equal to the bit g samples earlier: lag 1 is a stuck lane, lags 2 to 4 are patterns of period 2 to 4), and adaptive proportion (W = 1024). Developer-defined tests for the source's failure modes (§4.3 item 8), in addition to the approved ones |
-| A running failure | the buffered words are wiped, the start-up test runs again, and `seed` reports `BIST` until one `seed` access has seen the failure: the alarm that the Zkr text requires to be "latched until polled at least once" |
-| A recurring failure | counted as strikes; the third without 2^24 clean samples in between is fatal (`DEAD`) |
+| Tests on the sample | The repetition count (§4.4.1) and the adaptive proportion test with W = 1024 (§4.4.2): the approved tests for a binary sample. The repetition count also runs at lags 2 to 4 (the bit equal to the bit g samples earlier), which catches patterns of period 2 to 4 such as `0101…`: developer-defined tests for the source's failure modes (§4.3 item 8), beside the approved ones |
+| Start-up | Both tests over 1,024 consecutive samples before the first word; those samples are not delivered |
+| A running failure | The buffered words are wiped, the start-up test runs again, and `seed` reports `BIST` until one `seed` access has seen the failure |
+| A recurring failure | Counted as strikes; the third without 2²⁴ clean samples in between is fatal (`DEAD`) |
 | A failure in a start-up test | `DEAD`, including the retest after a running failure |
-| Configuration | k, four cutoffs, the strike number and the clean-sample count are writable through `mentropycfg`; **the build's reset values are the weakest configuration by default**, so software can make the tests stricter and the spacing longer, not the reverse. A lock bit freezes the CSR until reset. Test mode takes any k, for characterisation; `seed` delivers nothing there |
-| GetNoise | a run never spans a stopped source or a change of spacing: the loss flag is set when the strap or the configuration changes, or when the burst block's sampling period (`0x1000_0848`) is written |
-| Status for the consumer | `OPST`, with the latched alarm; and `mentropystat` (`0x7CA`, M-mode, read-only): state, alarm, strikes (the fatal one included), which test, lanes and lags failed last, failures since reset |
+| Configuration | k, the two cutoffs, the strike number and the clean-sample count are writable through `mentropycfg`. **The reset values are the weakest configuration**: software can make the tests stricter and the spacing longer, not the reverse. A lock bit freezes the CSR and test mode until reset |
+| Test mode | Takes any k and any ring mask, for characterisation; `seed` delivers nothing there, and the tests do not run |
+| Status for the consumer | `OPST`, with the latched alarm; and `mentropystat` (M-mode, read-only): state, alarm, strikes, which test and lags failed last, failures since reset |
 
-The lane tests are needed beside the sample tests: a sample with one dead
-or periodic lane still varies in the other three, and the sample tests
-cannot tell that from a source that meets the target.
+### 5.2 Cutoffs and the false-alarm probability
 
-### 5.2 Cutoffs: the target, the false-alarm probability, and their choice in software
-
-A cutoff follows from a min-entropy and a false-alarm probability α per
-test (`test/dbg/board/entropy_health.py cutoffs`):
+A cutoff follows from a min-entropy H per sample and a false-alarm
+probability α per test (`test/dbg/board/entropy_health.py cutoffs`):
 
 - repetition count: C = 1 + ⌈−log₂α / H⌉ (§4.4.1);
 - proportion: the smallest C with P(1 + B(W−1, 2⁻ᴴ) ≥ C) ≤ α. The first
-  sample of a window always counts, so the count is 1 + B(W−1, p). The
-  formula printed in §4.4.2, 1 + CRITBINOM(W, 2⁻ᴴ, 1 − α), gives one less on
-  the sample test (123 for H = 3), whose alarm probability is 1.44 α: the
-  cutoffs here are the ones that meet α for the comparison the hardware
-  makes.
+  sample of a window always counts. The formula printed in §4.4.2,
+  1 + CRITBINOM(W, 2⁻ᴴ, 1 − α), gives the same cutoff here.
 
-The lane cutoffs use the same formulas with the entropy per lane bit: a bit
-with min-entropy h given the past equals any bit determined by the past
-with probability at most 2⁻ʰ, so the bound of §4.4.1 holds at every lag.
+A bit with min-entropy h given the past equals any bit determined by the
+past with probability at most 2⁻ʰ, so the bound of §4.4.1 holds at every
+lag.
 
-**The reset values are for H = 3 bits per 4-bit sample, h = 0.75 bit per
-lane bit and α = 2⁻⁴⁰ per test.** Three bits per sample is the rate of 0.75
-that the Zkr text asks of an SP 800-90B source. It is the target of this
-assessment, **not a claim** (§1). The lane cutoffs rest on a separate
-premise, 0.75 bit per lane bit, which no measurement establishes either:
-their false-alarm figures below hold under that premise.
+**The reset values are for H = 0.75 and α = 2⁻⁴⁰: 55 and 719.** They are
+the cutoffs of the proposed rate.
 
-| Test | Cutoff | Alarm probability of a source exactly at the target, in units of α | A healthy source trips it about every |
+| Test | Cutoff | Alarm probability of a source exactly at H = 0.75, in units of α | A healthy source trips it about every |
 | --- | --- | --- | --- |
-| Sample repetition | 15 | 0.25 per run | 116,000 years |
-| Sample proportion, W = 512 | 124 | 0.64 per window | 10²⁷ years |
-| Lane repetition, lags 1 to 4 | 55 | 0.71 per run | 3,100 years |
-| Lane proportion, W = 1024 | 719 | 0.77 per window | 10²⁶ years |
-| Any of them | | | 3,000 years |
+| Repetition, lags 1 to 4 | 55 | 0.71 per run | 10,500 years |
+| Proportion, W = 1024 | 719 | 0.77 per window | 10²⁶ years |
 
-α is a target per test. "Healthy" is four independent lanes of independent
-bits with the largest lane bias of the board captures (0.509), at 18,310
-samples per second. For that model the probability is exact for one lane at
-one lag (a repetition count reaches C when exactly C − 1 comparisons in a
-row match, which at lag g means g interleaved runs), for the sample
-repetition count, and for one window of a proportion test. The rows of the
-table add these up over lanes and lags, and the last row over the tests;
-the events overlap, so those rows are upper bounds on the alarm
-probability, and lower bounds on the interval, under the model. They say
-nothing about a real source's dependence. α = 2⁻⁴⁰ and not 2⁻²⁰ because of
-the sample rate: at 2⁻²⁰ (cutoffs 7 and 78 on the sample at the current
-estimate) a healthy source would trip the sample repetition test about
-every 15 minutes, and every false alarm costs a retest and a strike.
+"Healthy" is a source of independent bits with lane 0's measured bias,
+0.512, at 18,311 samples per second (`false_alarms` in
+`entropy_health.py`). The `cutoffs` command prints the figures for a bias
+of 0.509, 12,300 years and 10²⁷: the bias matters, 0.003 more of it
+raises the repetition alarm rate by 18 %. The row for the repetition
+count adds up the four lags, whose events overlap, so it is an upper
+bound on the alarm probability under that model. It says nothing about a real source's
+dependence. α is 2⁻⁴⁰ and not 2⁻²⁰ because of the sample rate: every
+false alarm costs a retest and a strike.
 
-The cutoffs are configuration, not constants: software that has an
-assessed claim sets the cutoffs for it and locks them.
-
-| Target | Sample repetition | Sample proportion | Lane repetition | Lane proportion |
-| --- | --- | --- | --- | --- |
-| H = 1.0, h = 0.5 | 41 | 337 | 81 | 824 |
-| H = 2.0, h = 0.5 | 21 | 202 | 81 | 824 |
-| H = 3.0, h = 0.75 (reset) | 15 | 124 | 55 | 719 |
-| H = 3.556, h = 0.889 (the D20 estimate) | 13 | 96 | 46 | 666 |
-
-All at α = 2⁻⁴⁰. With the default build limits the last row can be
-written, and nothing weaker than the reset row.
+The cutoffs are configuration. Software may write stricter ones, for
+example 51 and 695 for 0.81 bit at the same α
+(`entropy_health.py cutoffs --h 0.81`); nothing weaker than the reset
+values is accepted.
 
 ### 5.3 Failure handling (§4.3 item 2)
 
 - **Notification.** A running failure is the non-fatal alarm of the Zkr
-  text: `seed` reports `BIST` from the failure until one `seed` access has
-  seen it, however much later, and delivers nothing meanwhile. A fatal
-  failure is `DEAD` until reset, with the noise source switched off.
-  `mentropystat` tells M-mode which test, lanes and lags failed and how
-  often.
+  text: `seed` reports `BIST` from the failure until one `seed` access
+  has seen it, and delivers nothing meanwhile. A fatal failure is `DEAD`
+  until reset, with the noise source switched off. `mentropystat` tells
+  M-mode which test and lags failed and how often.
 - **Intermittent or persistent.** A failure during any start-up test,
   including the retest after a running failure, is fatal. A running
-  failure is a strike; 2^24 samples in a row without a failure (about 15
-  minutes) clear the strikes; the third strike is fatal. The samples are
-  counted from the failure, so the 1,024 of the retest are among them.
-  Both numbers are configuration (`strikes`, `calm`), with the same
-  one-sided limits. A `mentropycfg` write clears neither a strike nor the
-  alarm.
-- **Evidence for (a), "extremely likely intermittent".** A failure is
-  treated as intermittent only if the source then passes a full start-up
-  test and, for it to be forgotten, 2^24 further samples under all tests.
-  A strike records that a count crossed its cutoff, nothing more. Under
-  the model of 5.2 a healthy source does that less than once in 3,000
-  years, so three within the forgiveness time are taken as a fault and
-  end the source.
-- **Evidence for (b), "a permanent failure is detected and ends in an
+  failure is a strike; 2²⁴ samples in a row without a failure (15
+  minutes) clear the strikes; the third strike is fatal. Both numbers
+  are configuration (`strikes`, `calm`), with the same one-sided limits.
+  A `mentropycfg` write clears neither a strike nor the alarm.
+- **Evidence for "extremely likely intermittent".** A failure is treated
+  as intermittent only if the source then passes a full start-up test
+  and, for it to be forgotten, 2²⁴ further samples under both tests.
+  Under the model of 5.2 a healthy source fails about once in 10,500
+  years, so three failures within the forgiveness time are taken as a
+  fault and end the source.
+- **Evidence for "a permanent failure is detected and ends in an
   error".** A fault that stays fails the retest, which is fatal: for a
-  stuck or periodic lane within 58 samples of the first failure (3.2 ms).
-  A fault that goes away and comes back within 15 minutes is fatal at its
-  third occurrence. A fault that comes back less often than that is, by
-  this rule, intermittent; every occurrence still wipes the buffer and
-  raises the alarm.
+  stuck or periodic ring within 58 samples of the first failure
+  (3.2 ms). A fault that goes away and comes back within 15 minutes is
+  fatal at its third occurrence. A fault that comes back less often is,
+  by this rule, intermittent; every occurrence still wipes the buffer
+  and raises the alarm.
 
-### 5.4 §4.3 point by point
+### 5.4 §4.3 item by item
 
 | §4.3 item | Requirement (paraphrased) | Karu64 | State |
 | --- | --- | --- | --- |
-| 1 | Continuous tests: the approved tests of §4.4, or developer-defined tests meeting §4.5 | §4.4.1 and §4.4.2 on the 4-bit sample; lane tests in addition | **Met** |
+| 1 | Continuous tests: the approved tests of §4.4, or developer-defined tests meeting §4.5 | §4.4.1 and §4.4.2 on the binary sample; the repetition count at lags 2 to 4 in addition | **Met** |
 | 2 | On failure, notify the consuming application; intermittent-failure handling needs evidence; after a persistent failure, no output | Latched alarm, strikes, `DEAD` (5.3); shown on the board with induced failures (5.5) | **Met in mechanism**; how the real source fails has not been observed |
-| 3 | A documented false-positive probability, 2⁻²⁰ to 2⁻⁴⁰ recommended | 2⁻⁴⁰ per test, with the cutoffs derived for the target (5.2) | **Met for the target**; the claim itself is open |
-| 4 | Start-up tests run the continuous tests over at least 1,024 consecutive samples | Every test, sample and lane, over 1,024 kept samples before the first `ES16`; on the board the first output comes 56.7 ms after a reset | **Met** |
-| 5 | On-demand testing, at least the start-up tests | An accepted `mentropycfg` write restarts the start-up test, as does a reset; once locked, only a reset | **Possible**; to be named in an integration guide |
-| 6 | Health tests on noise-source samples before conditioning | There is no conditioning; the tests see the kept samples | **Met** |
-| 7 | Documentation of every test, its rate, conditions and rationale | The header of `rtl/karu_entropy.v` and this document | **Partly**: rates and rationale per failure mode from board data |
-| 8 | Known or suspected failure modes, with developer-defined tests for them | Lane repetition at lags 1 to 4 and lane proportion; see below | **Partly** |
+| 3 | A documented false-positive probability, 2⁻²⁰ to 2⁻⁴⁰ recommended | 2⁻⁴⁰ per test, with the cutoffs derived for the proposed rate (5.2) | **Met** |
+| 4 | Start-up tests run the continuous tests over at least 1,024 consecutive samples | Both tests over 1,024 samples before the first `ES16`; on the board the first output comes 59.4 ms after a reset | **Met** |
+| 5 | On-demand testing, at least the start-up tests | An accepted `mentropycfg` write from M-mode restarts the start-up test, as does a reset; once locked, only a reset ([§6](#6-software-post-processing)) | **Met** |
+| 6 | Health tests on noise-source samples before conditioning | There is no conditioning in hardware; the tests see the kept samples | **Met** |
+| 7 | Documentation of every test, its rate, conditions and rationale | The header of `rtl/karu_entropy.v` and this section | **Met** |
+| 8 | Known or suspected failure modes, with developer-defined tests for them | The table below | **Partly**: two failure modes have no test of their own |
 | 9 | Emphasis on detection near the edge of the operating environment | No data outside 24 °C and nominal supply | **Not met** |
 
 Failure modes of a ring-oscillator source and what detects them:
 
 | Failure mode | Detected by | Gap |
 | --- | --- | --- |
-| A ring stuck at 0 or 1 | lane repetition at lag 1 (55 samples); sample repetition | — |
-| A ring locked to the sampling clock in a short period (`0101…`, period 2 to 4) | lane repetition at lags 2 to 4 | longer periods |
-| A biased ring | lane proportion | — |
-| A dominant 4-bit value | sample proportion | — |
-| Rings locked to each other, or a shared disturbance (supply ripple, a tone) | the sample proportion only for gross coupling | no test for weak coupling |
-| Loss of jitter (temperature, supply, injection) that leaves no short period | lane proportion for strong bias only | no test of the jitter itself |
-| Software reconfiguration | one-sided limits; the lock | the boot chain sets no lock (§6) |
+| The ring stuck at 0 or 1 | repetition count at lag 1, at the 55th sample | — |
+| The ring locked to the sampling clock in a short period (`0101…`, period 2 to 4) | repetition count at lags 2 to 4, at the 56th to 58th sample | longer periods |
+| A biased ring | proportion test: a bias of 0.74 within four windows | — |
+| The ring locked to another ring or to a disturbance (supply ripple, an injected tone) | the tests above, if the lock leaves a short period or a bias | no test for a lock that leaves neither |
+| Loss of jitter (temperature, supply) that leaves no short period | the proportion test for a strong bias only | no test of the jitter itself |
+| Software reconfiguration | one-sided limits; the lock | the boot chain sets no lock ([§7](#7-other-requirements-resilience-and-limits)) |
 
 ### 5.5 Evidence
 
-**Simulation and replay** (`make entropy-test`):
+**Simulation and replay** (`make entropy-test`; passed on the current
+sources on 2026-11-24):
 
-- **The block against a reference model.** `test/dbg/board/entropy_health.py`
-  is the health logic in Python. `test/entropy_replay.py` feeds the same
-  symbols to the RTL (`test/tb_entropy_replay.sv`) and to the model and
-  compares every failure and the status register after it: healthy
-  symbols, every kind of fault on every lane and lag, strikes, forgiveness,
-  a failure during start-up, rows that each start from reset, and 60
-  random cases with random cutoffs and `seed` accesses (212 failures).
-  They agree everywhere, and a model that differs by one in any one
-  setting does not.
-- **Directed cases and mutants.** `test/tb_entropy.sv` has each test at its
-  cutoff and one sample short of it, the alarm and its owner, the strikes,
-  the limits and the status register (4,073 checks). 86 one-mechanism
-  mutants of the module are all caught.
-- **The criteria of §4.5**, at H = 3.0 and the reset cutoffs
+- **Directed cases and mutants.** `test/tb_entropy.sv` has each test at
+  its cutoff and one sample short of it, the alarm and its owner, the
+  strikes, the limits and the status register (12,894 checks). 108
+  one-mechanism mutants of the module are each caught by the check
+  written for them.
+- **The block against a reference model.** `entropy_health.py` is the
+  health logic in Python. `test/entropy_replay.py` feeds the same symbols
+  to the RTL and to the model and compares every failure, the status
+  register after it and every word delivered: healthy symbols, every
+  kind of fault at every lag, the same faults on the lanes that are not
+  the source (which must raise nothing), strikes, forgiveness, a failure
+  during start-up, and random cases with random cutoffs and `seed`
+  accesses (51 checks with the four board files below). A model that
+  differs by one in any one setting does not agree.
+- **The criteria of §4.5**, at H = 0.75 and the reset cutoffs
   (`entropy_health.py criteria`). They are supplementary: the block
-  implements the approved tests of §4.4. (a) More than 100/H = 33.3
-  identical samples: a repetition count with cutoff 15 trips by the 15th
-  of them, by construction; simulated with 34 and 35 repeats, 200 of 200
-  each, all detected by the 15th sample (a few earlier, where the healthy
-  samples before the fault happened to end with the repeated value). (b)
-  One value at P* = 0.354 for 50,000 samples: 20 of 20, the slowest after
-  3,926 samples. A case counts only if the healthy samples before the
-  fault raise no failure and the failure comes while the fault lasts.
-- **Failure modes** (same command, same rule): a lane stuck at 0 or 1 is
-  detected at its 55th sample, a lane with a pattern of period 2, 3 or 4
-  at its 56th to 58th, a lane biased to 0.74 within four windows, a stuck
-  sample at its 15th; none missed. 200,000 uniform samples raise no
-  failure.
-- **The board captures replayed** (`make entropy-test ENTROPY_DATA=…
-  ENTROPY_RESTART=…`), at the reset cutoffs, in the RTL and in the model:
+  implements the approved tests. (a) More than 100/H = 133.3 identical
+  samples: 200 of 200 runs of 134 and of 135 are detected, by the 55th
+  sample. (b) One value at P* = 0.771 for 50,000 samples: 20 of 20, the
+  slowest after 2,481 samples.
+- **Failure modes** (same command): the ring stuck at 0 or 1 is detected
+  at its 55th sample, a pattern of period 2, 3 or 4 at its 56th to 58th,
+  a bias of 0.741 within 3,559 samples; none missed in 40 trials each.
+- **The board captures replayed**, in the RTL and in the model, at the
+  reset cutoffs:
 
-  | Dataset | Failures | Longest sample repetition (cutoff 15) | Largest sample window count (124) | Largest lane repetition count, any lag (55) | Largest lane window count (719) |
-  | --- | --- | --- | --- | --- | --- |
-  | D20, 10⁶ consecutive samples | none; ends running | 6 | 52 | 24 (lag 1) | 572 |
-  | D19 | none; ends running | 6 | 55 | 24 (lag 2) | 578 |
-  | D18 | none; ends running | 6 | 53 | 25 (lag 1) | 586 |
-  | R20, 1,000 restarts of 1,000, each from reset | none | 5 | 56 | 22 | 561 |
-  | R19, the same | none | 5 | 55 | 21 | 578 |
+  | Dataset | Failures | Largest repetition count, any lag (cutoff 55) | Largest window count (cutoff 719) |
+  | --- | --- | --- | --- |
+  | M23, 10⁶ consecutive samples | none; ends running | 19 | 568 |
+  | G23, 10⁶ consecutive samples | none; ends running | 23 | 575 |
+  | S23, 1,000 restarts of 1,000, each from reset | none | 20 | 560 |
+  | W23, the same | none | 21 | 576 |
 
-  A row of R20 or R19 has 1,000 samples, fewer than the 1,024 of the
-  start-up test: those rows show no false alarm in the first 1,000 samples
-  after a restart, and S20 (below) covers what follows a completed
-  start-up test. At much tighter cutoffs (7, 79, 24 and 633) D20, D19 and
-  D18 give 2, 1 and 2 failures, at the same samples in RTL and model.
+  M23 and G23 raise no failure at much tighter cutoffs either (24 and
+  633). A row of S23 or W23 has 1,000 samples, fewer than the 1,024 of
+  the start-up test: those rows show no false alarm in the first 1,000
+  samples after a restart.
 
-**On the board, the healthy source.** `mentropystat` was read before most
-resets of the 2026-11-20 session, without a reset
-([record](../dbg/BOARD_ACCEPTANCE-2026-11-20.md#health-tests-on-the-board)):
-every interval read ended with zero failures, about 2.4 hours in all
-(an estimated 1.6 × 10⁸ samples), the longest 55 minutes. In S20 every one
-of the 1,000 start-up tests passed, and no restart raised an alarm in the
-1,000 samples after it.
+**On the board, the healthy source.** `mentropystat` was read without a
+reset before most resets of the session
+([record](../dbg/BOARD_ACCEPTANCE-2026-11-23.md#health-tests)): every
+reading was `0x1`, running with no failure since reset. The intervals
+read add up to 20.5 hours outside test mode, the longest 17 h 59 min: an
+estimated 1.35 × 10⁹ samples. In S23 every one of the 1,000 start-up
+tests passed.
 
-**On the board, induced failures** (`test/dbg/board/entropy_fault.py`).
-Software may make the tests stricter, and a cutoff far below its reset
-value makes the real rings fail that test within seconds. Each case starts
-from a debugger reset, with the hart halted, so nothing else reads `seed`:
+**On the board, induced failures** (`test/dbg/board/entropy_fault.py`,
+five cases, all pass). Software may make the tests stricter, and a cutoff
+far below its reset value makes the real ring fail that test within
+seconds. Each case starts from a debugger reset, with the hart halted, so
+nothing else reads `seed`:
 
-| Case | Set | What the board did |
-| --- | --- | --- |
-| Start-up failure | sample repetition cutoff 2: any two equal samples in a row | `DEAD` 21 ms after the write, during the start-up test: cause sample repetition, one failure, no alarm, no strike; `seed` read `DEAD`, and still did a second later |
-| Each test | one at a time: sample repetition 5, sample proportion 46, lane repetition 21, lane proportion 550 | each failed while running, after 10.6, 1.9, 4.3 and 1.1 s; `mentropystat` named that test alone, and for the lane tests the lane (lane 1 both times) and the lag (2); each raised the alarm and one strike |
-| Strikes | sample repetition 5 | the first running failure (0.21 s) raised the alarm and a strike; a `mentropycfg` write left both; one `seed` access returned `BIST` and cleared the alarm, not the strike; failures at 3.4 and 6.0 s; the third was fatal: `DEAD`, three strikes, and `seed` read `DEAD` |
-| Forgiveness | sample repetition 5 until the first failure (7.8 s), then the reset cutoffs | the strike survived the write and cleared 920.5 s after the failure; 2^24 samples take 916.3 s |
-| Limits | every field weaker than its reset value, and k = 1 | the cutoffs, the strike number and the clean-sample count read back as the build's limits; k read back as written, but `seed` delivered one word per 16,318 clocks, which is k = 16 (k = 1 would be 1,024); with the lock set a write changed nothing; a reset restored the reset value |
+| Case | What the board did |
+| --- | --- |
+| Start-up failure | fatal at once: `DEAD`, no alarm and no strike |
+| Each test | with a repetition cutoff of 18 the ring failed after 0.12 s, with a proportion cutoff of 550 after 2.7 s; `mentropystat` named the test, lane 0 and, for the repetition count, the lag; each raised the alarm and one strike |
+| Strikes | the alarm stayed until one `seed` access had seen it; a `mentropycfg` write cleared neither it nor the strike; the third running failure was fatal and `seed` read `DEAD` |
+| Forgiveness | 2²⁴ clean samples cleared a strike after 917 s; they take 916 s |
+| Limits | every field written weaker than its reset value, and k = 1: the cutoffs, the strike number and the clean-sample count read back as the build's limits, and a word through `seed` still took 65,536 clocks, which is k = 16; with the lock set a write changed nothing |
 
-These show the mechanism on real noise; the failures are of stricter tests
-on a healthy source, not of a failing source.
-
-**The cost** (Vivado 2026.1, out-of-context synthesis of `karu_entropy_src`
-for the VCU118 part, estimates before placement): `karu_entropy` uses 721
-CLB LUTs and 576 flip-flops in the hierarchical utilization report (907 LUT
-primitives before packing). The path from its registers to the value the
-core reads has ten logic levels, 3.1 ns; the loop check finds only the
-rings.
-
-**Not shown by any of this:** that the target is met, or how the real
-source fails.
+These show the mechanism on real noise. The failures are those of
+stricter tests on a healthy source, not of a failing source.
 
 ### 5.6 For software that writes `mentropycfg`
 
-The CSR has more fields than k and two cutoffs: the two sample cutoffs
-`[43:37]` and `[53:44]`, the strike number `[56:54]` and the clean-sample
-count `[61:57]`. A constant that leaves a cutoff field zero fails on the
-next kept sample, which during the start-up test is fatal: `seed` reports
+The fields are the interval `[15:0]` (k − 1), the repetition cutoff
+`[25:16]`, the proportion cutoff `[36:26]`, the strike number `[56:54]`,
+the clean-sample count `[61:57]` and the lock `[63]`; the rest read zero
+and ignore writes. A constant that leaves a cutoff field zero fails on
+the next sample, which during the start-up test is fatal: `seed` reports
 `DEAD` until reset. Change a field by read-modify-write:
 
 ```asm
@@ -571,123 +605,250 @@ next kept sample, which during the start-up test is fatal: `seed` reports
     csrs  0x7C9, t1
 ```
 
-The capture payloads (`test/dbg/board/getnoise.S`) do it this way. Nothing
-in the boot path (fu-boot, the island ROM, OpenSBI, U-Boot, Linux) writes
-`mentropycfg`.
+The capture payloads (`test/dbg/board/getnoise.S`) do it this way.
+Nothing in the boot path (fu-boot, the island ROM, OpenSBI, U-Boot,
+Linux) writes `mentropycfg`.
 
-## 6. Other requirements and architectural notes
+## 6. Software post-processing
 
-- **The configuration has one-sided limits.** The reset values are the
-  weakest the CSR accepts: a weaker value is replaced by the limit, and
-  outside test mode the source keeps at least the build's spacing whatever
-  k is written (both shown on the board, §5.5), and nothing in the boot
-  chain writes `mentropycfg`. A claim holds for the configuration it was
-  made for; the boot firmware should then write that configuration (a
-  longer spacing, if the claim needs one) and set the lock before any
-  consumer reads `seed`. Nothing in the boot chain sets it yet.
-- **The clock and the routing are part of the source.** Kept samples are
-  counted in clocks of the 75 MHz CPU clock; a different clock or divider
-  changes the sample spacing and invalidates the estimate, and so can a
-  new routing of the rings (§4.5).
-- **Test interfaces.** `mnoise` and the burst capture expose raw samples
-  only in test mode, during which `seed` delivers nothing, and leaving test
-  mode restarts the start-up test; no captured sample is ever delivered as
-  entropy. That is the separation SP 800-90B expects of raw-data access.
-- **One consumer.** `seed` is the only way out for a word, and a word is
-  wiped as it is read, so no word reaches two consumers. The
-  authentication ROM reads `seed` like any other M-mode software, and only
-  a `seed` access clears the alarm.
-- **Warm-up.** None beyond the start-up test; outputs appear about 57 ms
-  after reset.
-- **Operating range.** All data is from one board at 23.9–25.2 °C and
-  nominal supply. The die temperature and supply readout
-  (`flow/fpga/karu_sysmon.v`, `0x1000_0860`) makes captures at other
-  conditions recordable.
-- **FPGA versus ASIC.** The rings are LUTs with hand placement; an ASIC
-  source would be a different noise source with its own assessment. The
-  architecture (raw samples, sample-level tests, no conditioning, test
-  mode, the operational restart capture) carries over; the numbers do not.
+RISC-V puts the cryptographic conditioner on the software side of `seed`:
+"the `entropy` ES16 output must always be compressed 2:1 (or more) before
+being used as keying material or considered 'full entropy'". For the
+SP 800-90B route the software module and this source are assessed
+together. What the module has to do:
 
-## 7. Work to reach a claim (Z6)
+1. **Poll** with `csrrw rd, seed, x0` and take bits [15:0] only when
+   `OPST` is `ES16`. `WAIT` and `BIST` mean "no word yet": poll again.
+   After a reset `BIST` lasts 59.4 ms. A `BIST` that follows `WAIT` or
+   `ES16` is the non-fatal alarm: log it. `DEAD` is final until reset:
+   stop, and do not fall back to a weaker source.
+2. **Collect at least sixteen `ES16` words, 256 bits, for every 128 bits
+   of output.** They need not come from consecutive polls. At 1,144
+   words per second that is 14 ms per block.
+3. **Condition with a vetted conditioner** of SP 800-90B §3.1.5.1.1: an
+   approved hash, HMAC, CMAC, CBC-MAC, or one of the derivation
+   functions of SP 800-90A. The entropy of its output follows from
+   §3.1.5.1.2 with the chosen function's output length and its narrowest
+   internal width, and a digest that is truncated has a rule of its own,
+   so that figure belongs to the software's assessment. As one example,
+   AES-CMAC with its native 128-bit output (n_out = nw = 128) on 256 bits
+   of input that hold 192 bits of min-entropy gives 128 − 10⁻¹⁸ bits by
+   that section's formula, and the input meets the n + 64 bits that
+   SP 800-90C asks for a full-entropy block of n = 128 bits, with
+   nothing to spare. Taking more input per block gives a margin against
+   a rate lower than the one proposed; RISC-V recommends at least 512
+   bits to seed a DRBG of 256-bit strength.
+4. **Test the conditioner against known answers**, and whatever DRBG it
+   seeds.
+5. **Leave the configuration alone, or tighten and lock it.** The reset
+   configuration is the assessed one and needs no write. Boot firmware
+   may set the `mentropycfg` lock before the first consumer runs; set
+   outside test mode, the lock also keeps test mode off until reset. The
+   on-demand test of SP 800-90B is a `mentropycfg` write from M-mode,
+   which runs the start-up test again, or a reset.
+6. **Keep the source to one trusted consumer.** A word that one reader
+   takes is gone for the others, and polling by one delays another. Give
+   lower privilege modes a virtual source (a DRBG seeded from `seed`)
+   rather than `mseccfg.SSEED` or `USEED`, unless they are trusted.
 
-1. **Measure each ring's own jitter.** A new bitstream with counters that
-   time one ring against another (one ring's edges over N periods of the
-   other, many times, for N over several decades) and, for comparison,
-   against the system clock. What the rings share, the sampling clock and
-   the supply, cancels between two rings; the growth of the variance with N
-   separates thermal noise (linear) from flicker (quadratic); three pairs
-   give each ring's own thermal jitter. The counters are checked first in
-   simulation with the behavioural source, whose lanes have a shared and an
-   individual noise term.
-2. **Choose the fixed parameters from it.** The spacing at which each
-   ring's own thermal jitter alone gives the target, by the bound of §1.1
-   with that jitter credited (software may lengthen the spacing up to
-   k = 65,536 without new hardware); or, if no practical spacing does, a
-   change of the noise source. Then the non-IID estimate and the restart
-   test again at that spacing.
-3. **Make the claim**, and fix its configuration: the boot firmware writes
-   the spacing and sets the `mentropycfg` lock.
-4. **Documentation:** the on-demand test named in an integration guide;
-   the rates and rationale per failure mode (§4.3 items 5 and 7).
-5. **Coverage of locked or coupled rings and of a loss of jitter that
-   leaves no short period:** a test, or a rationale for why the existing
-   ones suffice (§4.3 item 8).
+**No such module is in this repository.** The software that reads `seed`
+on the board makes no entropy statement of its own: OpenSBI enables
+S-mode access when the device tree lists `zkr`; U-Boot takes a
+`kaslr-seed` for the kernel's address layout; Linux mixes `seed` words
+into its pool and, with the lab's `random.trust_cpu=off`, credits them
+with nothing; the debug-authentication ROM uses sixteen words as a
+nonce, which needs uniqueness and not secrecy.
 
-To widen a claim, and for an ASIC:
+## 7. Other requirements, resilience and limits
 
-6. Data over the operating range: temperature and supply corners, several
-   boards or placements, power-on restarts; repeat the jitter measurement,
-   the non-IID estimate and the restart test on each, per bitstream.
-7. Optionally, a vetted conditioning component after the noise source,
-   which would change a claim from per-sample entropy to full-entropy
-   output (§3.1.5).
+- **Operating range.** All data is from one board at 23.7–24.8 °C and
+  nominal supply (§3.2.1 item 3). The die temperature and supply readout
+  (`flow/fpga/karu_sysmon.v`, `0x1000_0860`) is recorded with every
+  capture, so that captures at other conditions can be compared.
+- **The clock and the routing are part of the source.** Samples are
+  counted in clocks of the 75 MHz CPU clock; a different clock, divider
+  or routing of the ring changes the spacing or the ring's frequency
+  relative to the clock, and the estimate with it. The lane, the spacing
+  floor and the ring mask are straps of the routed design and belong to
+  the assessed configuration.
+- **The security boundary** (§3.2.2). The noise source, the tests and
+  the buffer are inside the SoC; `seed` is the only way out for a word,
+  and a word is wiped as it is read. Raw samples and ring counts are
+  visible only in test mode, which only M-mode or a debugger can enter
+  and during which `seed` delivers nothing; leaving it restarts the
+  start-up test. The running counts of the tests cannot be read;
+  `mentropystat` shows M-mode which test failed last and how often, and
+  a reset clears it. A debugger with access to the hart has M-mode's
+  view: in lifecycle `OPEN`, as on the lab board, that is anyone on the
+  JTAG cable ([debug authentication](debug-auth-plan.md)).
+- **Observation and influence.** Not assessed: electromagnetic or power
+  observation of the ring's phase, and injection of a frequency through
+  the supply, which can lock a ring oscillator. The health tests catch a
+  lock only when it leaves a short period or a bias (5.4). The periodic
+  disturbance at 4,779.7 Hz that the meter sees on all rings is given
+  to the predictor in the argument of 1.2; its origin on the board is
+  not known.
+- **Configuration.** The reset values are the weakest that the CSR
+  accepts, and outside test mode the source keeps at least the strap's
+  spacing whatever is written (both shown on the board, 5.5). Nothing in
+  the boot chain writes `mentropycfg`, and nothing sets the lock.
+- **Warm-up.** None beyond the start-up test; the first word comes
+  59.4 ms after a reset.
+- **FPGA and ASIC.** The rings are LUTs with hand placement. An ASIC
+  source would be a different noise source with its own measurements
+  and assessment. The architecture carries over (raw samples, one ring
+  as the source, sample-level tests, no conditioning, test mode, the
+  operational restart capture, the meter); the numbers do not.
 
-A self-assessed claim is not a validation; that needs an accredited
-laboratory.
+## 8. Open items
 
-## 8. Reproduction
+In order of weight for the goal:
+
+1. **The rate justification**: a reason to credit at least 0.104
+   periods² per kept sample, an eighth of the meter's fitted linear term,
+   as fresh once the 4,779.7 Hz line and the drift are accounted for
+   ([§1.2](#12-technical-justification)). Until then 0.75 is a proposed
+   estimate. An analysis that models the line and the wander, or a
+   measurement in which they are absent or cancel, would close it; so
+   would a bound from the meter under its stated model.
+2. **The software module**: a vetted conditioner with its known-answer
+   tests and its handling of `BIST`, `WAIT` and `DEAD`
+   ([§6](#6-software-post-processing)), the entropy of its output for the
+   construction chosen, and the combined assessment that names its
+   version and configuration.
+3. **The operating range**: captures at other temperatures and supply
+   voltages, on other boards and placements, and restarts by power-on;
+   the non-IID estimate, the restart test and the jitter measurement on
+   each. Until then the proposal is for the conditions of §2
+   (§4.3 item 9).
+4. **The lock**: boot firmware that sets it before the first consumer.
+5. **Failure modes without a test of their own**: a lock that leaves no
+   short period, and a loss of jitter; a test, or a rationale for why
+   the existing ones suffice (§4.3 item 8).
+6. **The 4,779.7 Hz disturbance**: its origin.
+
+## 9. Reproduction
+
+Run from the repository root with the NIST tools (commit `87c104d`) on
+the path. The data is in `_build/dbg/board-accept-20261123-20f8b265/` on
+the lab host.
+
+M23: each 16-byte meter record holds two little-endian 64-bit words, and
+lane 0 is `DATA1[60]`.
 
 ```sh
-# NIST tools (commit 87c104d), with libdivsufsort and jsoncpp built locally
-make -C SP800-90B_EntropyAssessment/cpp iid non_iid restart
-# 4-bit samples: strip the run marker (bit 7) of a GetNoise capture
-python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(bytes(b&15 for b in d))" getnoise-k16.bin d20-sym4.bin
-ea_iid -v d20-sym4.bin 4
-ea_non_iid -a -v d20-sym4.bin 4
-ea_restart -n -v s20-rows.bin 4 3.555965      # operational restarts, the D20 estimate
-ea_restart -n -v s20-rows.bin 4 3.0           # the same with a trial value of 3.0
-ea_restart -n -v r20-rows.bin 4 3.555965      # delayed warm restarts
-# the bound of section 1.1 for credited shares, and the pairwise covariance
-python3 test/dbg/board/entropy_claim.py --analysis getnoise-analysis.json \
-    --samples d20-sym4.bin s20-rows.bin r20-rows.bin --credit 1 0.1 0.05
-python3 test/dbg/board/entropy_claim.py --analysis getnoise-analysis.json --pairs noise-run1/
-python3 test/dbg/board/entropy_claim.py --self-test
-# health tests: cutoffs, the criteria and failure modes on the model, replay
-python3 test/dbg/board/entropy_health.py cutoffs --h 3.0 --h-lane 0.75 --alpha 40
+A=_build/dbg/board-accept-20261123-20f8b265
+tmpdir=$(mktemp -d)
+python3 - "$A/rosc-full-1/rosc-count-p256-e16-m0f.bin" "$tmpdir/m23-lane0.bin" <<'PYTHON'
+from hashlib import sha256
+from pathlib import Path
+import sys
+
+records = Path(sys.argv[1]).read_bytes()
+assert len(records) == 1_000_000 * 16
+assert sha256(records).hexdigest() == "34ff40a54260af500b631385f81fe6826aafd1b49ac6ab946ecb8e5cc3ff62fd"
+samples = bytes((byte >> 4) & 1 for byte in records[15::16])
+assert sha256(samples).hexdigest() == "8fc17444534f21ab856a278c5ea70b0813801389c5fea4f99f68c34f3c2b0cb3"
+Path(sys.argv[2]).write_bytes(samples)
+PYTHON
+ea_non_iid -a -v "$tmpdir/m23-lane0.bin" 1
+```
+
+G23 and W23: lane 0 is bit 0 of every byte of a GetNoise capture.
+
+```sh
+lane0() { python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(bytes(b&1 for b in d))" "$1" "$2"; }
+lane0 "$A/noise-run1/getnoise-k16.bin" "$tmpdir/g23-lane0.bin"   # ff4dd9510f43f458c8a065d5c897809643dfdcb7eca7353f6884fe9a82799d51
+lane0 "$A/noise-run1/restart-rows.bin" "$tmpdir/w23-lane0.bin"   # 8c1101c22ed886e924411ab4b235b6c09e298b8b68f7a002db950c78479c38d6
+ea_non_iid -a -v "$tmpdir/g23-lane0.bin" 1
+```
+
+The restart tests:
+
+```sh
+rows=$A/seed-restart-1/seed-restart-rows.bin
+sha256sum "$rows"  # 1e0676a0df8d19984c9b01103da9f92181ca133bf2f72cdfacbdf6574d596b72
+ea_restart -n -v "$rows" 1 0.75
+ea_restart -n -v "$tmpdir/w23-lane0.bin" 1 0.75
+```
+
+The first-word bound of 4.5, from the same rows (one byte per bit, the
+first bit of a word first):
+
+```sh
+python3 - "$rows" <<'PYTHON'
+from collections import Counter
+from math import comb, log2
+from pathlib import Path
+import sys
+
+rows = Path(sys.argv[1]).read_bytes()
+assert len(rows) == 1_000_000 and set(rows) == {0, 1}
+counts = Counter(rows[i:i + 16] for i in range(0, len(rows), 1000))
+n, maximum = sum(counts.values()), max(counts.values())
+lo, hi = 0.0, 1.0
+for _ in range(60):
+    p = (lo + hi) / 2
+    tail = sum(comb(n, k) * p**k * (1 - p)**(n - k) for k in range(maximum + 1))
+    if tail > 0.01:
+        lo = p
+    else:
+        hi = p
+print(n, len(counts), maximum, hi, -log2(hi))
+PYTHON
+```
+
+The jitter of 1.2 and the health tests of §5:
+
+```sh
+# the ring's own jitter from the meter's counts (measurement 1), and the bound's table
+python3 test/dbg/board/rosc_own.py "$A/rosc-full-1/rosc-count-p256-e1-m0f.bin" --text
+python3 -c "import sys; sys.path.insert(0,'test/dbg/board'); import entropy_claim as e; print(e.variance_needed(0.513, 0.75))"
+# the bits: bursts and the k-sweep (measurements 2 and 3)
+python3 test/dbg/board/getnoise_analyze.py "$A"/noise-run1/getnoise-k*.bin "$A"/noise-run1/getnoise-burst-p*.bin
+# health tests: cutoffs, criteria and failure modes on the model; the block, its mutants, and the captures replayed
+python3 test/dbg/board/entropy_health.py cutoffs --h 0.75 --alpha 40
 python3 test/dbg/board/entropy_health.py criteria
-make entropy-test ENTROPY_DATA="d20-sym4.bin d19-sym4.bin d18-sym4.bin" ENTROPY_RESTART=r20-rows.bin
-make dbg-seedcap-test                          # the restart payload on the simulation bench
+make entropy-test ENTROPY_LANE=0 ENTROPY_DATA="$tmpdir/m23-lane0.bin $tmpdir/g23-lane0.bin" \
+    ENTROPY_RESTART="$rows $tmpdir/w23-lane0.bin"
+make zkr-test dbg-seedcap-test
 # board data (server.cfg, lifecycle OPEN, source on)
-python3 test/dbg/board/getnoise_capture.py     # k-sweep, includes k = 16
-python3 test/dbg/board/seed_restart.py         # operational restarts, 1,000 x 1,000
-python3 test/dbg/board/getnoise_restart.py     # delayed warm restarts, 1,000 x 1,000
+python3 test/dbg/board/rosc_count.py           # the meter: counts and M23
+python3 test/dbg/board/getnoise_capture.py     # k-sweep, includes G23
+python3 test/dbg/board/seed_restart.py         # S23
+python3 test/dbg/board/getnoise_restart.py     # W23
 python3 test/dbg/board/entropy_fault.py        # induced failures
 ```
+
+The recorded tool outputs are in `_build/nist-90b/results/`
+(`m23-lane0-non_iid.txt`, `g23-k16-lane0-non_iid.txt`,
+`s23-lane0-restart*.txt`, `w23-lane0-restart*.txt`).
 
 ## References
 
 - NIST SP 800-90B, *Recommendation for the Entropy Sources Used for Random
   Bit Generation*, January 2018,
-  <https://doi.org/10.6028/NIST.SP.800-90B>. Sections cited: 2.2, 3.1.1–3.1.6,
-  3.2, 4.3, 4.4, 4.5, 5, 6.3.
+  <https://doi.org/10.6028/NIST.SP.800-90B>. Sections cited: 2.2,
+  3.1.1–3.1.6, 3.2, 4.3, 4.4, 4.5, 6.3.
 - NIST SP 800-90B entropy assessment tools,
   <https://github.com/usnistgov/SP800-90B_EntropyAssessment>, commit `87c104d`.
+- *The RISC-V Instruction Set Manual, Volume I*, scalar cryptography
+  chapter: "Entropy Source" with "The seed CSR", "Entropy Source
+  Requirements" and "Access Control to seed"; and, non-normative,
+  "Checklists for Design and Self-Certification", "Security Controls and
+  Health Tests", "Cryptographic Conditioners" and "Suggested GetNoise
+  Test Interface"
+  (<https://docs.riscv.org/reference/isa/unpriv/scalar-crypto.html>;
+  source `src/unpriv/zk.adoc`, read 2026-11-24). Volume II for
+  `mseccfg`.
 - M.-J. O. Saarinen, *On Entropy and Bit Patterns of Ring Oscillator
   Jitter*, arXiv:2102.02196.
-- RISC-V Scalar Cryptography, Zkr (`seed`, `mseccfg`), and its GetNoise
-  rationale, as cited in the header of `rtl/karu_entropy.v`.
+- A. Hajimiri, S. Limotyrakis, T. H. Lee, *Jitter and Phase Noise in Ring
+  Oscillators*, IEEE Journal of Solid-State Circuits 34(6), 1999.
+- M. Baudet, D. Lubicz, J. Micolod, A. Tassiaux, *On the Security of
+  Oscillator-Based Random Number Generators*, Journal of Cryptology
+  24(2), 2011.
 - Karu64: [Zkr follow-up plan](zkr-followup-plan.md),
-  [board acceptance 2026-11-20](../dbg/BOARD_ACCEPTANCE-2026-11-20.md),
-  [2026-11-19](../dbg/BOARD_ACCEPTANCE-2026-11-19.md),
-  [2026-11-18](../dbg/BOARD_ACCEPTANCE-2026-11-18.md),
+  [board record 2026-11-23](../dbg/BOARD_ACCEPTANCE-2026-11-23.md),
+  [four-ring assessment 2026-11-20](sp800-90b-assessment-2026-11-20.md),
   [FPGA guide](fpga.md).

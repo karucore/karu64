@@ -12,9 +12,10 @@ file:
     --rct (41) and adaptive proportion over non-overlapping windows of 1024
     with cutoff --apt (821); a failure is counted as soon as a count reaches
     its cutoff, also in a final partial window, as that hardware does. The
-    tests of the current RTL are modelled in entropy_health.py;
+    tests of the current RTL, on one lane, are modelled in entropy_health.py;
   * the approved tests of SP 800-90B section 4.4 applied to the 4-bit symbol
-    (the noise source sample): repetition count with C = 1 + ceil(20/H) and
+    (the noise source sample of the images whose seed delivered all four
+    lanes): repetition count with C = 1 + ceil(20/H) and
     adaptive proportion with W = 512, C = 1 + CRITBINOM(512, 2^-H, 1 - 2^-20),
     for the per-symbol min-entropy given with --h;
 

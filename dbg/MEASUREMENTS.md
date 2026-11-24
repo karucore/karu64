@@ -209,6 +209,98 @@ likely explanation, not a proven one, and this mapped full-debug netlist
 fails 200 MHz by 1.08 ns as it stands. The 200 MHz ASIC goal remains open,
 as before.
 
+## FPGA image — 2026-11-21
+
+`make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8
+UBOOT_NETBOOT_DIR=$PWD/_build/u-boot-v2026.10-netboot`, with the default define
+list (`KARU_DBG_FULL KARU_DBG_AUTH KARU_ZKR`, 75 MHz, Vivado 2026.1).
+Bitstream `20f8b265bc6189d5a2428bfbc5bce586c92d0c474a6cc41550e6d66d7b6c630a`.
+Compared with `ddb168e1…` it has the one-ring entropy source of Z7
+([plan](../doc/zkr-followup-plan.md#z7-one-ring-for-seed-and-the-measurement-of-its-own-jitter)):
+`seed` from lane 0 with binary health tests, two reference rings, a counter
+behind a divider by two on every ring, the meter and the soft straps; and
+an island ROM that polls `seed` at most 2,000,000 times per word. The
+image was accepted on the board on November 23 and 24
+([record](BOARD_ACCEPTANCE-2026-11-23.md)), and its entropy source is
+assessed in the [SP 800-90B assessment](../doc/sp800-90b-assessment.md).
+
+- **Build.** 2026-11-21 16:26 to 18:08 UTC (1 h 42 min: synthesis 23,
+  `opt_design` 6, placement 34, routing 24 minutes, post-route
+  `phys_opt_design` 1, bitstream 2), from karudeb `db180ff` and the
+  karu64 sources of the commit that adds this section
+  (`git log --diff-filter=A -- dbg/BOARD_ACCEPTANCE-2026-11-23.md` names
+  it): every file of that commit other than a document (`*.md`) is as it
+  was built (snapshot with hashes in `_build/vcu118-2026-11-21-sources/`).
+  All 669 tracked files were identical before and after the build. The functional
+  gate passed on these sources at 16:02 UTC (475 inputs;
+  [README](README.md#current-combined-validation-record)). The image it
+  replaces on the build host, `ddb168e1…`, is archived in
+  `_build/fpga_archive/2026-11-20-ddb168e1/`.
+- **Final timing:** setup WNS +0.026 ns, TNS 0, over 279,526 endpoints;
+  hold WHS +0.010 ns; pulse width +0.005 ns; all 22 bus-skew constraints
+  met. The router ended at +0.009 ns, and the flow's post-route
+  `phys_opt_design` left +0.026 ns.
+- DRC at `write_bitstream`: 0 errors.
+- The self-checking constraints ran: `KARU_LOOP_CHECK no combinational loop
+  outside the ring oscillators and their dividers' latches`,
+  `KARU_ROSC_CONSTRAINTS rings=6` (counter clocks declared at 0.68, 0.92,
+  1.36 and 1.72 ns), six `KARU_ROSC_PLACED` lines (the lanes in
+  `SLICE_X100Y450` to `SLICE_X112Y451` with their counters beside them,
+  the references in rows 462 and 438), `KARU_STRAP lane=0 kshift=0 (k at
+  least 16) rings=0x0f`, and four `KARU_PRIVATE` lines.
+- **The routed check of the counters** (`flow/fpga/rosc_constraints.tcl`;
+  all six `KARU_ROSC_COUNT` lines end in `ok`). Divider conditions as the
+  worst share of their limit over the four uniform states (limit 80 %),
+  and the diagnostic with the corner's minimum and maximum mixed against
+  each condition; the counter clock in the fast corner as its period and
+  shorter pulse, and as multiples of the flip-flop's 0.550 and 0.275 ns:
+
+  | Ring | Period, slow / fast | Divider, worst | Mixed (diagnostic) | Counter clock | Pulse-width slack | Johnson slack | Spread, coarse late |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | lane 0 (3 stages) | 0.910 / 0.404 ns | 62 % | 116 % | 0.808 / 0.388 ns (1.47, 1.41) | 0.065 ns | 0.188 ns | 0.15, 0.51 |
+  | lane 1 (5) | 1.156 / 0.534 ns | 57 % | 93 % | 1.068 / 0.513 ns (1.94, 1.86) | 0.185 ns | 0.352 ns | 0.08, 0.36 |
+  | lane 2 (7) | 1.660 / 0.772 ns | 49 % | 173 % | 1.544 / 0.741 ns (2.81, 2.69) | 0.405 ns | 0.789 ns | 0.05, 0.23 |
+  | lane 3 (9) | 2.132 / 1.002 ns | 38 % | 142 % | 2.004 / 0.962 ns (3.64, 3.50) | 0.585 ns | 0.461 ns | 0.05, 0.17 |
+  | reference 0 | 0.918 / 0.412 ns | 62 % | 114 % | 0.824 / 0.396 ns (1.50, 1.44) | 0.065 ns | 0.145 ns | 0.10, 0.33 |
+  | reference 1 | 0.910 / 0.404 ns | 62 % | 117 % | 0.808 / 0.388 ns (1.47, 1.41) | 0.065 ns | 0.276 ns | 0.10, 0.55 |
+
+  Spread and lateness are in counter periods (limits 0.5 and 2.5); no
+  coarse counter arrives early. The 3-stage rings make 14.5 to 33.0
+  periods per 75 MHz clock (limit 56). In this image the rings are a
+  little slower than in the small design with pins (3-stage 0.40 to
+  0.92 ns against 0.37 to 0.83 ns), and every margin is wider. The pulse
+  width report's 60 checks per ring are at the declared clock; the routed
+  clock is at least as slow in both halves, with the duty allowance of
+  0.48.
+- Resources: 377,391 LUTs (31.9 %), 92,325 registers, 451.5 block-RAM
+  tiles, 29 DSPs, 1 SYSMONE4; 510 LUTs fewer and 568 registers more than
+  `ddb168e1…`. The entropy source (`karu_entropy_src`, with the burst
+  capture and the meter) has 911 LUTs and 1,195 registers, of which the
+  rings, dividers and counters (`karu_rosc_rng`) 198 and 298. Per-module
+  report: `_build/fpga_rpt/vcu118_ddr_utilization_hier.rpt`.
+- **Boot ROM.** `_build/vcu118_fuboot.hex` (`73df94eb…`) differs from the
+  ROM of `ddb168e1…` in 7 bytes, all in the build date that U-Boot prints
+  (`Nov 21 2026 - 16:27:09 +0000` here): fu-boot, OpenSBI, the device tree
+  (`784e2762…`) and every other byte of U-Boot are the same. fu-boot and
+  U-Boot were built by `$RISCV/bin/riscv64-unknown-elf-gcc` 16.1.0.
+- **Island ROM.** `_build/vcu118_auth_rom.hex` (`6f33eae4…`), with the
+  flags `-DTRNG_TRIES=2000000 -DWINDOW_CYCLES=1073741824ull
+  -DAUTH_ROM_NEXT=0x1000 -DAUTH_ROM_NO_MTVEC -DAUTH_ALG_SHA3` and the same
+  key as `ddb168e1…` (fingerprint `276bf6e96d8edecc`). It differs from
+  that image's island ROM (`f518b750…`) in the polling limit only.
+- **Records.** The boot ROM was hashed right after packing and
+  `_build/vcu118_ddr.rom.json` written after Vivado (bitstream
+  `20f8b265…`, ROM `73df94eb…`). The authentication record
+  `_build/vcu118_auth_record.json` was written after `rom_record.py fresh`
+  found the bitstream newer than the island ROM's hash and the ROM
+  unchanged, and after the ROM record was verified for the same bitstream.
+- **Bundle.** `_build/vcu118_programming.tgz`, SHA-256
+  `131acaeb9d503b69c747a9222662c49da544226e570e7eed1ac03f89e8cb6ceb`, mode
+  600: the bitstream, the `.ltx`, the ROM record, the ROM manifest, the
+  device tree to serve (`784e2762…`), the authentication record and the
+  key. The bundle rule verified the ROM record and the authentication
+  record before it packed them.
+
 ## FPGA image — 2026-11-20
 
 `make vcu118-ddr-sgmii-rom-rva23s64-dbg VIVADO_THREADS=8

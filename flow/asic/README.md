@@ -141,7 +141,7 @@ the combined functional gate passed on the sources of 2026-11-19
 ([record](../../dbg/README.md#current-combined-validation-record)).
 The mapped area and 200 MHz timing rows are of the RTL of 2026-11-18
 ([measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)),
-before the 2026-11-19 changes to the authentication and entropy blocks;
+before the later changes to the authentication and entropy blocks;
 200 MHz is still open.
 Technology-specific physical signoff has its own acceptance gate.
 
@@ -248,26 +248,52 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
   through the same raw interface (`rng_en`, `rng_fips`, a one-cycle
   `rng_val`, four `rng_b` lanes, no back-pressure), which is the one
   OpenTitan's entropy block expects from its analog sensor top.
-  The FPGA source has one more input, `rng_div_i`, the sampling period,
-  which only the FPGA's burst capture drives (`flow/fpga/
-  karu_noise_burst.v`, a characterisation aid that works in test mode
-  only). It is not part of the interface: an ASIC source has its own fixed
-  rate, and the capture block is left out.
+  `rtl/karu_entropy.v` takes one lane of that bus as the noise source,
+  the one its static input `lane_i` names: `seed` delivers that lane's
+  bits and the health tests run on them. The other three lanes reach the
+  GetNoise interface only and carry no entropy credit; a source with one
+  channel drives the selected lane.
+  The FPGA source has six more ports: the sampling period (`rng_div_i`),
+  an enable per ring, the bits of two reference rings, a count per ring
+  with its validity, and the counting mode. Only the FPGA's burst capture
+  and meter use them (`flow/fpga/karu_noise_burst.v`, `karu_rosc_meter.v`,
+  characterisation aids that work in test mode only). They are not part
+  of the interface: an ASIC source has its own fixed rate, and the
+  capture block, the meter and the FPGA's soft straps
+  (`flow/fpga/karu_softstrap.v`) are left out. The FPGA's counters, each
+  behind a divider by two made of look-up-table latches, are a way to
+  measure LUT rings on that part and carry nothing over to an ASIC
+  source, which needs its own physical measurements.
 - **`rtl/karu_entropy.v` unchanged in front of it**, so that the bits the
   health tests see, the bits `seed` delivers and the bits the GetNoise
   interface shows stay the same bits. Add `rtl/karu_entropy.v` to the file
   list.
 - **Parameters from an assessment.** The reset interval, the health-test
-  cutoffs, the strike number and the clean-sample count, and the limits
-  that software cannot go below (`INTERVAL_MIN`, `SRCT_MAX`, `SAPT_MAX`,
-  `RCT_MAX`, `APT_MAX`, `STRIKE_MAX`, `CALM_MIN`; each follows its reset
-  value unless set) are for the FPGA rings and a target of 3 bits per
-  4-bit sample that is not yet an established claim.
-  They have to come from raw data of the actual source, fitted per lane to
-  the stochastic model and checked for dependence between lanes;
-  `test/dbg/board/entropy_health.py cutoffs` turns a claim and a
-  false-alarm probability into cutoffs
-  ([assessment, section 5](../../doc/sp800-90b-assessment.md#5-health-tests-4)).
+  cutoffs, the strike number and the clean-sample count
+  (`INTERVAL_RESET`, `RCT_RESET`, `APT_RESET`, `STRIKE_RESET`,
+  `CALM_RESET`), and the limits that software cannot go below
+  (`INTERVAL_MIN`, `RCT_MAX`, `APT_MAX`, `STRIKE_MAX`, `CALM_MIN`; each
+  follows its reset value unless set) are for the FPGA's 3-stage ring and
+  the rate that the Zkr text requires, 0.75 bit per sample, a sample
+  being one bit of the selected lane. The two tests are SP 800-90B's
+  approved tests for a binary sample; the block has no test on the 4-bit
+  symbol and no parameters for one.
+  For an ASIC the values have to come from an assessment of the actual
+  source: its raw data, the jitter of the source's own noise at the
+  delivered spacing, and a technical justification of the rate
+  ([Zkr follow-up plan, Z7](../../doc/zkr-followup-plan.md#z7-one-ring-for-seed-and-the-measurement-of-its-own-jitter)).
+  `test/dbg/board/entropy_health.py cutoffs` turns an entropy rate and a
+  false-alarm probability into cutoffs. The
+  [SP 800-90B assessment](../../doc/sp800-90b-assessment.md#5-health-tests-4)
+  derives them in section 5 for VCU118 image `20f8b265…`: 55 and 719,
+  the ones the block uses.
+- **Three static inputs.** `en_i` switches the source on; `lane_i[1:0]`
+  names the lane that is the noise source; `kshift_i[1:0]` raises the
+  spacing floor: outside test mode the smallest k is (`INTERVAL_MIN` + 1)
+  << `kshift_i`, and the interval field of `mentropycfg` resets to that
+  floor or to `INTERVAL_RESET`, whichever is larger. `lane_i` and
+  `kshift_i` must not change after reset: tie them to constants, or to
+  straps that are stable from power-on. `mentropystat` shows both.
 - **A policy for the test interface.** `mnoise` gives M-mode raw samples
   and holds `seed` in `BIST` meanwhile. Firmware should set the lock bit of
   `mentropycfg` before leaving M-mode; a production device may want the
@@ -292,10 +318,12 @@ entropy source on its `zkr_*` ports. An ASIC that enables it must provide:
 *Estimates* (NanGate45 typical, the flow of
 [the measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18)):
 there are no ASIC area or timing figures for the current `karu_entropy`,
-whose health tests were redesigned on 2026-11-19; the FPGA build of it
-uses 721 CLB LUTs and 576 flip-flops, and its path from its registers to
-the value the core reads has ten logic levels
-([SP 800-90B assessment](../../doc/sp800-90b-assessment.md)). The CSR-side
+which delivers one lane and has the two binary tests only, and no FPGA
+utilisation figures for it alone are recorded. The four-lane block before
+it, the one in VCU118 image `ddb168e1…`, uses 721 CLB LUTs and 576
+flip-flops in an out-of-context FPGA synthesis, and its path from its
+registers to the value the core reads has ten logic levels
+([its assessment](../../doc/sp800-90b-assessment-2026-11-20.md#55-evidence)). The CSR-side
 logic in the core is below the resolution of the area mapping.
 `zkr_fire_o` has to wait for the decision that the access takes effect. On
 the bare core of 2026-11-18 it has +1.34 ns against the generic output

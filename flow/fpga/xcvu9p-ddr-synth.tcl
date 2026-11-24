@@ -231,15 +231,16 @@ if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KA
 source [karu_repo_path flow fpga sysmon_constraints.tcl]
 karu_constrain_sysmon
 #	Combinational loops are refused at bitstream generation, two hours from
-#	here. Look for them now. The ring oscillators are loops by design and are
-#	marked as allowed, so they are not among these violations.
+#	here. Look for them now. The ring oscillators and the latches of their
+#	counters' dividers are loops by design and are marked as allowed (24: six
+#	rings, three per divider), so they are not among these violations.
 report_drc -checks {LUTLP-1} -name karu_loops -file [karu_rpt_path vcu118_ddr_loops.rpt]
 set karu_loop_violations [get_drc_violations -quiet -name karu_loops]
 if {[llength $karu_loop_violations] > 0} {
 	foreach v $karu_loop_violations { puts "KARU_LOOP [get_property DESCRIPTION $v]" }
-	error "combinational loop in the synthesised design (not a ring oscillator): see vcu118_ddr_loops.rpt"
+	error "combinational loop in the synthesised design (not a ring oscillator or a divider latch): see vcu118_ddr_loops.rpt"
 }
-puts "KARU_LOOP_CHECK no combinational loop outside the ring oscillators"
+puts "KARU_LOOP_CHECK no combinational loop outside the ring oscillators and their dividers' latches"
 
 if {$eth_sgmii} {
 	puts "=== SGMII clock check (post-synth): expect the 625 MHz refclk + 125 MHz GMII ==="
@@ -322,6 +323,17 @@ report_timing -max_paths 30 -nworst 30 -path_type full_clock_expanded \
 report_timing -max_paths 100 -nworst 100 -sort_by slack -path_type full_clock_expanded \
                                 -file [lindex $route_reports 3]
 report_bus_skew                 -file [lindex $route_reports 4]
+#	By module, two levels down: which block a change in the totals belongs to.
+report_utilization -hierarchical -hierarchical_depth 2 -file [karu_rpt_path vcu118_ddr_utilization_hier.rpt]
+#	The entropy source as routed: each ring's period from its loop delays and
+#	its counter's paths against it (the build stops if a counter is outside
+#	its limits), and the straps this image has (strap_variant.tcl makes an
+#	image with other straps from the checkpoint written below).
+if {[info exists ::env(KARU_DEFINES)] && [lsearch -exact $::env(KARU_DEFINES) KARU_ZKR] >= 0} {
+	karu_check_rosc_count [get_property PERIOD [get_clocks cpu_clk]]
+	source [karu_repo_path flow fpga strap_variant.tcl]
+	karu_strap_report
+}
 write_checkpoint -force [karu_build_path vcu118_ddr_route.dcp]
 karu_private_file [karu_build_path vcu118_ddr_route.dcp]
 write_debug_probes -force [karu_build_path vcu118_ddr.ltx]

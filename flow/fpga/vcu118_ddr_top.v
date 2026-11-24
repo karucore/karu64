@@ -361,8 +361,9 @@ module vcu118_ddr_top (
 	//	The debug authentication ROM draws its nonce from seed, like any
 	//	other M-mode software: there is no other port.
 	//	The registers of its burst capture (karu_noise_burst.v) are in the
-	//	xbar's system-control block, at 0x1000_0840..0x1000_0858. Register 4,
-	//	0x1000_0860, is the die temperature and supply readout
+	//	xbar's system-control block, at 0x1000_0840..0x1000_0858, and those
+	//	of the ring meter (karu_rosc_meter.v) at 0x1000_0868..0x1000_0878.
+	//	Register 4, 0x1000_0860, is the die temperature and supply readout
 	//	(karu_sysmon.v), in every image: the noise captures record it.
 	wire		sysreg_re, sysreg_we;
 	wire [2:0]	sysreg_raddr, sysreg_waddr;

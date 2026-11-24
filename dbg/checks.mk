@@ -96,6 +96,11 @@ dbg-functional-gates: dbg-getnoise-test
 # with decode mutants; the burst payload and phase on that SoC simulation;
 # and the analysis of burst captures on generated data with known parameters.
 dbg-functional-gates: noise-burst-test ddr-noise-burst-test dbg-getnoise-burst-test dbg-burst-analysis-test
+#	the ring counters and the meter (flow/fpga/rosc.mk), the meter capture, and
+#	the analysis of its records on generated rings with known own noise
+dbg-functional-gates: rosc-meter-test dbg-rosc-count-test dbg-rosc-own-test dbg-entropy-claim-test
+#	the checks of a strap variant's bitstream and of its provenance
+dbg-functional-gates: strap-flow-test
 
 DBG_GATE_JOBS ?= 3
 dbg-test:

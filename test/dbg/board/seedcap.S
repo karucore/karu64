@@ -11,16 +11,16 @@
 //	start-up test ran (bist > 0; otherwise the status is LATE).
 //
 //	seed_restart.py resets the SoC through the debugger and starts the hart
-//	here a few milliseconds later; the start-up test takes about 57 ms on the
-//	VCU118. The routine polls without a pause, so the source's buffer of
-//	eight words never fills and no sample is dropped between two stored
-//	words: max_gap, the longest time between two polls, shows it (one word
-//	takes 16,384 clocks at the reset spacing).
+//	here a few milliseconds later; the first word is there about 59 ms after
+//	the reset on the VCU118 (k = 16). The routine polls without a pause, so
+//	the source's buffer of eight words never fills and no sample is dropped
+//	between two stored words: max_gap, the longest time between two polls,
+//	shows it (one word takes 65,536 clocks at k = 16).
 //
 //	The code is position independent and linked at 0, like getnoise.S.
 //
 //	Parameter block (seedcap_params, 64-bit words, written by the host):
-//	  0  count      words wanted (four samples each)
+//	  0  count      words wanted (sixteen samples each)
 //	  1  buffer     address of the buffer, two bytes per word
 //	  2  idle       polls allowed without a word before giving up (not zero)
 //
@@ -39,8 +39,9 @@
 //	  11 mepc       of that trap
 //
 //	Buffer: one 16-bit word per stored seed word, in the order read. Each
-//	word holds four consecutive samples, the first in bits [15:12] and the
-//	last in bits [3:0] (rtl/karu_entropy.v packs them so).
+//	word holds sixteen consecutive samples, one bit each, of the lane that
+//	is the noise source: the first in bit 15 and the last in bit 0
+//	(rtl/karu_entropy.v packs them so).
 //
 //	Status:
 //	  0  OK        count words stored, BIST seen before the first

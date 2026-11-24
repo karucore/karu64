@@ -6,9 +6,442 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ## [Unreleased]
 
+### Changed — the SP 800-90B assessment covers the one-ring source and proposes the Zkr rate
+
+- **The goal** is the RISC-V Zkr requirement for a physical source: all
+  SP 800-90B components and health tests, and 192 bits of min-entropy in
+  each 256 bits from `seed` (0.75 bit per bit), so that software with a
+  vetted conditioner gets full-entropy output and the two are assessed
+  together. A lower bound from the meter's stochastic model is not a
+  condition; a reason to credit the fresh part of the jitter is.
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md) is rewritten
+  for image `20f8b265…`. It proposes 0.75 bit per delivered bit as the
+  developer's estimate, for this board under the tested lab conditions.
+  The two sequential captures gave non-IID estimates of 0.810451 and
+  0.838673 bits per sampled bit, and both restart datasets pass at 0.75.
+  0.75 bit needs 0.104 ring periods² of fresh jitter per kept bit; the
+  meter fits a linear term of lane 0's own jitter of 0.84 at its lower
+  end, but cannot say how much of it is fresh (a periodic line, and a
+  constant term 25 standard errors off). **Open:** the justification of
+  the fresh-jitter contribution at that rate, and the software
+  conditioner, which is not in this repository.
+- The assessment also lists the RISC-V requirements at `seed` with their
+  tests, SP 800-90B §4.3 item by item for the binary health tests, what
+  the consuming software has to do, and the limits: one board,
+  23.7–24.8 °C, nominal supply, no assessment of active attacks.
+- The assessment of the four-ring source of image `ddb168e1…` is now the
+  dated record
+  [doc/sp800-90b-assessment-2026-11-20.md](doc/sp800-90b-assessment-2026-11-20.md);
+  earlier entries below link to it.
+- README, the FPGA guide, the board test plan, the debug README, the
+  harness README, the authentication plan and contract and the ASIC
+  obligations name `20f8b265…` as the current debug image, with
+  `ddb168e1…` as the fallback. The board test plan's sections 1 to 6 are
+  for the current image; its section 7 is the entropy source's part.
+
+### Tested — VCU118 board session, 2026-11-23 and 24
+
+- Image `20f8b265…` is accepted with documented exceptions: translation
+  fails with the six known OpenOCD walker results; phase 12's OpenSSL
+  matrix hit its time limit and was completed by phase 13 (92 pairs); the
+  authentication cases `open`, `fresh-nonce`, `no-hold`, `reboot-locked`
+  and `disabled` and stage A's own boot (lifecycle `OPEN`, the source
+  off) were not run; the boot with the source off passed in lifecycle
+  `AUTH`. The record is
+  [dbg/BOARD_ACCEPTANCE-2026-11-23.md](dbg/BOARD_ACCEPTANCE-2026-11-23.md).
+- The meter is qualified on all six rings (the divider divides by two,
+  no flagged count). Its model gives no lower bound on lane 0's own
+  jitter: a disturbance at 4,779.7 Hz common to the rings and a growth
+  faster than white noise fail its checks.
+- Lane 0 at the shipped spacing: NIST's non-IID estimate is 0.810451 bits
+  per bit on 10⁶ bits from the meter and 0.838673 through GetNoise. 1,000
+  operational restarts through `seed` and 1,000 delayed warm restarts
+  pass NIST's restart test at 0.75 and at 0.810451 (X_max 565 and 576).
+  The first word comes 59.4 ms after a reset, as simulated.
+- Health tests on the real ring: every `mentropystat` reading ended with
+  zero failures, 20.5 hours in all, the longest 17 h 59 min. Induced
+  failures (stricter cutoffs) show a fatal start-up failure, each of the
+  two tests firing and named, the latched alarm, strikes to `DEAD`,
+  forgiveness after 2²⁴ samples (917 s), and the limits and lock.
+- Seven SHA3 authentication cases pass with the nonce from the one-ring
+  `seed` and reconfiguration as the power-on: unlock 0.19 s after the
+  request, the window closed at 14.3 s, and a software reboot keeps the
+  grant. With the source off the window closes without a challenge and
+  Linux boots.
+- `make entropy-test` (12,894 checks, 108 of 108 mutants, the RTL against
+  its model on the session's four datasets) and `make zkr-test` (17 of 17
+  mutants) pass on the current sources.
+
+### Measured — lane 0 of the 2026-11-20 data passes the screen (acceptance step 1 of Z7)
+
+- [Board test plan, 7.2](dbg/BOARD_TEST_PLAN.md#72-before-the-build-and-before-the-session)
+  step 2, on the lab host, no board: lane 0 (the 3-stage ring) of D20 as a
+  binary source is 0.864 bit per bit by `ea_non_iid -a` (the compression
+  estimate is the lowest). `ea_restart` at that value passes on lane 0 of
+  S20 (X_max 563, cutoff 618; H_r 0.898, H_c 0.844) and of R20 (561; 0.828,
+  0.812). So the board trial used the default `k = 16`. A pass supports the
+  candidate and no more: the data are lane 0 of `ddb168e1…`, whose routing
+  differs.
+
+### Changed — `seed` delivers the bits of one ring; reference rings, ring counters, a meter and soft straps to measure its own jitter (breaking)
+
+Z7 of the [Zkr follow-up plan](doc/zkr-followup-plan.md#z7-one-ring-for-seed-and-the-measurement-of-its-own-jitter);
+the hardware is in the [FPGA guide](doc/fpga.md), the board steps in
+[the board test plan, section 7](dbg/BOARD_TEST_PLAN.md#7-the-next-image-one-ring-for-seed).
+The rings' jitter is mostly shared (entry below). An entropy statement
+for four rings would need each ring's own share and independence between
+them; for one ring it needs only that ring's own jitter, which the new
+counters measure. Built into image `20f8b265…` (2026-11-21) and measured
+on the board on 2026-11-23 (entries above).
+
+- **One ring for `seed`** (`rtl/karu_entropy.v`).
+  - The noise-source sample is one bit: the lane of the 4-bit raw bus that
+    the new static input `lane_i[1:0]` names (on the FPGA lane 0, the
+    3-stage ring). A `seed` word is 16 consecutive kept bits, the first in
+    bit 15; before, it was four 4-bit symbols of the four rings. No bit is
+    combined with another. The other lanes reach GetNoise (`mnoise`), in
+    test mode, and nothing else. At k = 16 the source delivers 1,144 words
+    per second (4,578 before), and the first `ES16` comes 4,456,448 clocks
+    after reset, 59.4 ms at 75 MHz (about 238 ms at k = 64).
+  - Health tests on that bit only: the repetition count at lags 1 to 4
+    (cutoff `rct`, reset value 55) and the adaptive proportion test over a
+    window of 1,024 (cutoff `apt`, 719), SP 800-90B's approved tests for a
+    binary sample at 0.75 bit and a false-alarm probability of 2⁻⁴⁰ per
+    test. The tests on the 4-bit symbol and on the other lanes are
+    removed. The start-up test of 1,024 kept samples, the alarm, the
+    strikes, `DEAD` and forgiveness are unchanged.
+  - `mentropycfg` (breaking): the field positions are unchanged; `[53:37]`,
+    the former symbol cutoffs, and `[62]` read zero and ignore writes. With
+    the default parameters the reset value is `0x30c0000b3c37000f`; it was
+    `0x30c7c1eb3c37000f`.
+  - `mentropystat` (breaking): `[9:8]`, the causes of the symbol tests,
+    read zero; `[15:12]` is the one-hot of the source lane, recorded with
+    the last failure (zero until one); new are `[21:20]`, the lane strap,
+    and `[23:22]`, the spacing strap.
+  - A spacing floor that a platform can raise: the new static input
+    `kshift_i[1:0]`. Outside test mode the smallest k is 16 << `kshift_i`
+    with the default parameters (16, 32, 64 or 128), and the interval
+    field resets to that floor (`mentropycfg` then resets to `…001f`,
+    `…003f` or `…007f`). Software can still only lengthen the spacing, and
+    in test mode the written interval is used, as before.
+  - Removed parameters (breaking for an integration): `SRCT_RESET`,
+    `SRCT_MAX`, `SAPT_RESET` and `SAPT_MAX` of `karu_entropy` and
+    `karu_entropy_src`.
+  - `TRNG_TRIES` of the authentication ROM is 2,000,000
+    (`test/dbg/auth_rom/window.c`, `dbg/fpga.mk`); the ROM of `ddb168e1…`
+    was built with 200,000 and is unchanged. One poll takes 53 to 77
+    clocks in simulation and the longest wait of a working source for one
+    word is 35.7 million clocks (a start-up test and one burst at
+    k = 128), so the limit is 3 to 4.3 times that wait and the deadline of
+    2³⁰ clocks comes 7 to 10 times later. `window.c` refuses a limit under
+    twice that wait or over a quarter of a production window.
+    `dbg-auth-rom-host-test` and `dbg-auth-window-test` gain cases and
+    mutants for the limit and measure the poll.
+  - Board scripts: `seed_restart.py`, `entropy_fault.py`,
+    `getnoise_capture.py` and the payload `seedcap.S` follow the one-lane
+    block and need an image with it. They do not work as before on
+    `ddb168e1…`; for that image they are the scripts of commit `ace91d5`.
+- **Rings, counters and the meter** (`flow/fpga/karu_rosc_rng.v`,
+  `flow/fpga/karu_rosc_meter.v`).
+  - Six rings: the four lanes (3, 5, 7 and 9 inverters) and two reference
+    rings of 3 inverters, built and loaded like lane 0. Only lane 0, by
+    default, supplies `seed`; the others carry no entropy credit and exist
+    to characterise it. The reference rings are off outside test mode by
+    default. A reference ring has a sampling flip-flop like a lane; its
+    bit never reaches the raw bus, and its sampled bits are a cross-check
+    that does not depend on the counters.
+  - A counter on every ring, behind a divider by two (`karu_rosc_cnt`). No
+    flip-flop is clocked by a ring: a slice flip-flop of this part needs a
+    clock period of at least 0.550 ns and pulses of at least 0.275 ns, and
+    the 3-stage rings run at 0.37 to 0.83 ns. The divider is two
+    look-up-table latches (`LUT3` cells `div_m` and `div_s`) and a
+    selector (`div_x`), whose output clocks the counter: an 8-stage
+    Johnson counter, with nothing between its flip-flops but one inverter,
+    and two 2-bit coarse counters clocked half a cycle apart. They are
+    sampled into the clock domain in every clock and decoded to a count
+    modulo 64, with an indication when a sample is not a valid code. A
+    count is two ring periods. The counter always runs, and each ring has
+    an enable and a clear.
+  - Direct counting, a diagnostic mode of test mode (meter CTRL bit 28):
+    the ring itself clocks the counter and a count is one ring period.
+    That is outside the flip-flop's guaranteed range for the fastest
+    rings, so the mode is a diagnostic and a cross-check of the divider
+    only, and a capture in it cannot carry a bound. The mode changes only
+    with every ring off, which the noise source does itself.
+  - The meter, in test mode only, with registers at `0x1000_0868` (CTRL),
+    `0x1000_0870` (DATA0) and `0x1000_0878` (DATA1) in the system-control
+    block. At every n-th raw sample (CTRL `[15:0]` is n − 1) it records
+    the six rings' running totals modulo 2^20, in counts, and the four
+    lane bits of one clock edge; a record is held until read and never
+    overwritten. CTRL also sets the rings that run in test mode
+    (`[21:16]`) and how the counters count, and `[31]` starts a run; a
+    read adds the ring-mask strap (`[37:32]`), valid (`[40]`) and loss
+    (`[41]`). The meter checks every enabled ring on every clock: CTRL
+    `[63:48]` counts the clocks in which a ring's count was unreadable or
+    its increment differed from the one before by more than 2, and
+    `[47:42]` has a sticky flag per ring. The start bit clears both, and
+    the check holds off for 12 clocks after a ring is switched on, after a
+    mode write and after test mode is entered. For the burst capture:
+    CTRL `[22]` one ring's count (the ring in `[25:23]`), with `[27]` its
+    upper four bits `cnt[5:2]` instead of `cnt[3:0]`; `[26]` the two
+    reference rings' bits beside those of lanes 0 and 1.
+- **Soft straps, strap variants and provenance records.**
+  - `flow/fpga/karu_softstrap.v`: the lane (default 0), the spacing floor
+    (default k = 16) and the rings that run outside test mode (default
+    `0x0f`: the four lanes) are constants in look-up tables.
+    `make vcu118-strap-variant STRAP_KSHIFT=2` (or `STRAP_LANE=`,
+    `STRAP_RINGS=0x3f`; `flow/fpga/strap_variant.tcl`) writes a second
+    bitstream from the routed design without placing or routing again.
+    It refuses a ring mask without the delivering lane before it writes
+    anything, and the conversion writes the checkpoint's own bitstream
+    again. The image build prints the straps (`KARU_STRAP`).
+  - `flow/strap_diff.py` parses the `.bit` header and the configuration
+    packets: frame data is what is written to FDRI, a CRC word what is
+    written to the CRC register, and the other dies' streams are inside
+    the write to BOUT. The rewritten bitstream must have the image's
+    payload byte for byte. The variant may differ only in whole strap
+    tables (four 16-bit parts in consecutive frames) or half tables (a
+    strap that shares a look-up table: four 8-bit parts), in the check
+    bits of those frames, and in CRC words behind them. The check bits are
+    the 48 of a frame in word 45 and the low half of word 46; the checker
+    recomputes them in every frame that differs, with the code of Project
+    X-Ray, which matched every frame of five bitstreams that Vivado wrote
+    (215,460 frames each), and they must be right in both files. A record,
+    `vcu118_ddr<tag>.strap.json`, names image, checkpoint, variant and log
+    by hash.
+  - `flow/rom_record.py` (new) ties the boot ROM to the bitstream. The
+    four recipes that run the image build (`vcu118_ddr.bit`,
+    `vcu118-ddr-sgmii-rom`, `-rom-gc` and `-rom-vec`, through which
+    `-rva23s64` and `-rva23s64-dbg` run) hash the boot ROM right after
+    packing it, before Vivado, and write `_build/vcu118_ddr.rom.json`
+    after Vivado. A bitstream counts as written by the build only if it is
+    strictly newer, to the nanosecond, than the hash. A synthesis-only run
+    writes neither and leaves the previous image and record. The debug
+    image hashes its island ROM before the build and writes its
+    authentication record only after `rom_record.py fresh` has found a new
+    bitstream and an unchanged island ROM, and the ROM record has been
+    checked to name the same bitstream. An image built before the records
+    existed (`ddb168e1…`) is tied to its ROM by time stamp only.
+  - The programming bundle and a strap variant's bundle take the manifest
+    and the device tree from the boot ROM image only after its hash
+    matches that record, and check any record present before they look at
+    the ROM's size, so a missing or cut ROM is refused rather than giving
+    a bundle without its manifest and device tree.
+    `make vcu118-strap-bundle` requires the strap record, the ROM record
+    and the image's authentication record, and writes member names
+    relative under `_build/`. `make prog_vcu118_ddr` with
+    `KARU_BITFILE=vcu118_ddr-k2.bit` checks the file it will program.
+  - The strap flow was run from end to end, with the present tools and
+    constraints, on a small real design of the entropy source: the image,
+    the same payload from the checkpoint in a later session, two variants
+    with records (one that changes one strap, which the tool had put in
+    half a look-up table, the check bits of its four frames recomputed and
+    right; and one that changes three, each a whole table), a wrong
+    variant refused, and a mask without lane 0 refused before anything was
+    written. Not yet run on a full image.
+- **Constraints and routed checks** (`flow/fpga/rosc_constraints.tcl`).
+  - Every ring stage, every divider table and every counter flip-flop is
+    placed by hand. The counter's clock is declared with a period of 0.68,
+    0.92, 1.36 or 1.72 ns by ring length, under twice the ring's fastest
+    period less the duty allowance. The latches' loops are marked as
+    allowed (`ALLOW_COMBINATORIAL_LOOPS`, set in Tcl): the attribute in
+    the RTL does not reach those nets, and without it the build's loop
+    check refuses the design. 24 loops are allowed (six rings, eighteen
+    latch loops); a refused loop stops the build after synthesis.
+  - Routed checks in every image build (`KARU_ROSC_COUNT` lines; the build
+    stops otherwise), each in four uniform states with every delay from
+    one column of the timing model: slow maximum, slow minimum, fast
+    maximum, fast minimum. The checks: the six conditions under which the
+    two latches divide by exactly two, each at the edge where it acts,
+    with the ring's halves summed edge by edge round its loop following
+    each arc's sense, each at most 80 % of its limit (an engineering
+    allowance for neighbouring cells to differ); the counter clock's
+    period and shorter pulse at least the declared period and half of it,
+    and at least 1.1 times what the flip-flop needs; the tool's own
+    pulse-width report at every counter clock pin (12 pins, 60 checks per
+    ring) without negative slack, the flip-flop's limits (0.550 ns period,
+    0.275 ns pulse) read from that report; no negative slack between the
+    Johnson flip-flops at the declared period; the spread of the sampled
+    bits' routes at most half a counter period; a coarse counter at most
+    2.5 counter periods early or late at its sampler; and fewer than 56
+    ring periods per system clock in the fast corner.
+  - The duty allowance. The timing model of this part gives every
+    look-up-table arc the same rising and falling delay and a route one
+    delay for both edges, so the model's ring has halves of exactly half
+    its period. The check takes each half as at least 0.48 of the period
+    (`KARU_ROSC_DUTY_MIN`) and each pulse of the divided clock as at least
+    0.96 of a ring period: an engineering allowance, twice what lane 0
+    showed on the board (duty 0.511), not a measured bound for every ring.
+  - The divider conditions with a corner's minimum and maximum mixed
+    against each other, cell by cell, are printed as a diagnostic, not
+    required: up to 127 % of the limit (3-stage rings) and 171 % (the skew
+    condition of the 7-stage ring) in the slow corner. The two latches
+    share a slice, but their clock inputs are distinct route endpoints.
+  - What the routed check cannot show: that the divider divides by two on
+    the device. That rests on a look-up table not glitching when a single
+    input changes, which Xilinx engineers have stated for its function
+    generators (older data books and application note XAPP024), but which
+    is not in this part's data sheet. So both ratio checks of the board
+    (below) are mandatory on every running ring of the final image before
+    any of its counts is used for a claim.
+  - Numbers so far, from the timing model, no board: an out-of-context
+    place and route of the entropy source, and a small real design of it
+    with pins under the present constraints. The 3-stage rings have
+    periods of 0.37 to 0.83 ns, 16 to 36 per 75 MHz clock (0.43 to
+    0.98 ns in `ddb168e1…`); lanes 1 to 3, out of context, 0.50 to 1.07,
+    0.73 to 1.56 and 0.92 to 1.93 ns (lane 3 in the small design 0.97 to
+    2.05 ns). In the small design every divider condition is at 68 % of
+    its limit or less in all four states (the 3-stage rings; lanes 1 to 3
+    at most 53, 49 and 28 %). The counter clock of the 3-stage rings has a
+    period of at least 0.752 ns and pulses of at least 0.361 ns, 1.37 and
+    1.31 times the flip-flop's limits, against 0.680 and 0.340 ns
+    declared; the pulse-width report's smallest slack is 0.065 ns. The
+    Johnson paths have at least 0.22 ns of slack at the declared period.
+    Timing is met (setup slack 0.050 ns, hold 0.012 ns), the 24 loops are
+    allowed and none is refused, and the bitstream was written after its
+    design-rule check passed.
+- **Capture and analysis** (`test/dbg/board/`).
+  - `rosc_count.S` and `rosc_count.py` write the meter's records to files.
+    The default captures are divided (`count_unit` 2 in the sidecar):
+    1,000,000 records at each spacing and 400,000 at settings of 16,384
+    clocks or more, with one direct-mode cross-check capture per ring mask
+    (`rosc-direct-…`; 100,000 records, `KARU_BOARD_ROSC_DIRECT_COUNT`),
+    count bursts in an upper and a lower view, and bursts of the reference
+    bits under `refbits/`. The default set takes about 1 h 45 min. Flagged
+    clocks are reported for every capture and never used by the analysis.
+    Each sidecar says whether its capture can carry a bound (`for_bound`:
+    false for direct captures and for those planned under 300,000
+    records; the console says so).
+  - `rosc_own.py` computes each ring's own phase variance from pairs of
+    rings, with a one-sided 99 % lower bound on the part that grows in
+    proportion to time, and a verdict per spacing: `pass`, `fail`,
+    `not established` or `cross-check only`. A pass needs the bound to be
+    at least twice the variance that 0.75 bit needs at the measured
+    duty-cycle bound, a divided capture taken with the operating ring mask
+    (the rings of normal operation), no flagged count, every assumption
+    check passing, and at least 300,000 usable records: those in the
+    blocks that enter the fit (blocks times records per block), after
+    exclusions; the records of the runs kept are reported beside them.
+    `--min-records` is for tests only. The exit status is 0 when the
+    captures were analysed, whatever the verdict, and 2 when they could
+    not be.
+  - The divider's ratio, on the board: `rosc_own.py --pair` checks that
+    the counts of the two counting modes are in the ratio two, and
+    `--bits` that each ring's count rate agrees with the frequency of its
+    sampled bits; `--bits` requires a usable fit for every mapped ring
+    that runs. `--bits` sees only the folded frequency (the fraction of
+    periods per clock), so a count wrong by a whole number of periods per
+    clock passes it; `--pair` catches that.
+  - `entropy_claim.py --own` takes the own variance of rings of one kind
+    from the reference bits: a cross-check that reaches a few hundred
+    clocks.
+  - Validation on generated rings with counts of two ring periods, as the
+    meter gives them: the bound was at or below the truth in 17,364 of
+    17,400 trials (99.8 %, no scenario under 99.0 %), and none of 6,000
+    controls without the ring's own white noise passed. With counts of one
+    period: 19,340 of 19,400; counts of two periods give a standard error
+    1.5 to 2 times larger. A capture that is to carry a bound needs at
+    least 300,000 records: with 30,000 the checks of the assumptions miss
+    small violations. With two rings sharing a tenth of their own noise,
+    the four rings of normal operation and 300,000 records, 199 of 200
+    trials were not established at 16,384 clocks and 1 passed, all 200
+    bounds below the truth; with six rings all 200 were flagged. So the
+    physical argument for the rings' independence stays part of the
+    sign-off.
+- **Fixed, before any image was built.**
+  - A count could be wrong by 16 with no error indication. The first
+    decode read a coarse counter right up to the Johnson state at which
+    that counter changes. When the coarse counter's new value reached the
+    sampler before the Johnson bits, the count was wrong by 16
+    (reproduced: 23 instead of 7 or 8). The decode now reads each coarse
+    counter only well away from its own change, at least three counts
+    after it and four before. The routed check limits how early or late a
+    coarse counter may be at its sampler, and the meter flags an increment
+    that differs from the one before by more than 2.
+  - A ring clocked its counter's flip-flops directly. At the fast corner
+    the 3-stage rings, at 0.37 ns, are faster than a slice flip-flop's
+    minimum clock period (0.550 ns), and their pulses shorter than its
+    minimum pulse (0.275 ns). The divider by two is between ring and
+    counter now, and direct counting is a diagnostic mode.
+  - `make dbg-test` failed at commit `ace91d5`. The harness self-test
+    (`make dbg-board-harness-test`) requires the scripts in
+    `test/dbg/board/` to set a process exit status, and `test_seedcap.py`,
+    added in that commit, did not. It does now.
+- **Tests.** `make dbg-test` passed on 2026-11-21 16:02 UTC in 904.99 s
+  with all 475 captured input hashes unchanged (the inputs now include
+  `flow/strap_diff.py` and `flow/rom_record.py`;
+  [record](dbg/README.md#current-combined-validation-record)). The new
+  targets are in its list.
+  - `make entropy-test`: 12,894 checks, 108 of 108 mutants, each caught by
+    the check written for it, and 45 of 45 replay checks;
+    `ENTROPY_LANE=<0..3>` names the lane of replayed captures that is the
+    source. `make zkr-test` (4 runs, 2 controls, 17 of 17 mutants) and
+    `zkr-loop-test` pass.
+  - `make rosc-meter-test` (new, `flow/fpga/rosc.mk`): 113 of 113 mutants;
+    seven meter runs of 2,105 to 2,107 checks, a million-clock soak in
+    each counting mode with nothing flagged, three divider sweeps of 3,000
+    delay combinations in which every combination inside the six
+    conditions divides correctly, and five counter runs.
+  - `make noise-burst-test`, now the entropy source with burst capture,
+    meter and straps: 110,079 checks, 54 of 54 mutants.
+    `make ddr-noise-burst-test` reaches the meter's registers through the
+    SoC's bus decode too (8 decode mutants).
+  - `make dbg-rosc-count-test` (new): 844 checks, 123 bench runs;
+    `make dbg-rosc-count-model-test` runs its model part alone (456
+    checks). `make dbg-rosc-own-test` (new): 176 checks.
+    `make dbg-entropy-claim-test` (new) passes. `make strap-flow-test`
+    (new): 70 checks, with dry runs of all six image targets in both
+    modes, with stand-ins for the boot files from beside the repository,
+    that check the order of the steps.
+  - `dbg-board-harness-test` passes (244 checks, 41 scripts), as do
+    `dbg-getnoise-test`, `dbg-getnoise-burst-test`,
+    `dbg-burst-analysis-test` (72 checks) and `dbg-auth-test`.
+  - Outside the gate, on the same RTL and firmware: `dbg-seedcap-test` (27
+    checks) and `image-boot-test` (open, with authentication, and with the
+    entropy source off; the no-Zkr control fails as it must) passed. Not
+    rerun on these changes: `uboot-boot-test`; the formal suite and the
+    composition, whose inputs are unchanged.
+  - `TOHOST_ADDR` in `flow/spike.ld`: a program whose code and data
+    outgrow the first 4 KiB moves the `.tohost` page with
+    `-Wl,--defsym=TOHOST_ADDR=0x80002000` and gives the bench
+    `+tohost=2000`; the burst test firmware does.
+- **Open.** The justification of the fresh-jitter contribution at 0.75,
+  the software module that conditions `seed`, and data over a wider
+  operating range
+  ([plan, sign-off](doc/zkr-followup-plan.md#zkr-and-software-sign-off)).
+
+### Built — VCU118 image `20f8b265…` (2026-11-21)
+
+- `make vcu118-ddr-sgmii-rom-rva23s64-dbg` from the sources this entry is
+  committed with (karudeb `db180ff`), 1 h 42 min. Timing met: setup
+  +0.026 ns, hold +0.010 ns,
+  pulse width +0.005 ns; no DRC errors. All six `KARU_ROSC_COUNT` checks
+  `ok`: divider conditions at 62 % of their limit or less, the 3-stage
+  counter clocks at 1.47 and 1.41 times the flip-flop's limits.
+- Straps `lane=0`, k at least 16, rings `0x0f`. Boot ROM that of
+  `ddb168e1…` but for U-Boot's build date; island ROM with the same key
+  and at most 2,000,000 polls of `seed` per word.
+- Bundle `131acaeb…` with the ROM record and the authentication record.
+  Details in [measurements](dbg/MEASUREMENTS.md#fpga-image--2026-11-21).
+
+### Changed — debug authentication: the production signature candidates are ML-DSA-87 and SLH-DSA
+
+- The [contract](doc/debug-auth-contract.md) (§5.1) gives algorithm
+  `0x01` to ML-DSA-87 (FIPS 204, 4627-byte signatures) and `0x02` to
+  SLH-DSA (FIPS 205) in the one parameter set the production ROM is built
+  for. Ed25519 and the ML-DSA-44 hybrid are no longer candidates; `0x03` is
+  reserved. `0x04` (the FPGA image's SHA3-256 MAC) and `0x80` (`TEST`) are
+  unchanged, so no ROM, RTL or test changes.
+- `MAX_SIG_BYTES` is 49856, the largest FIPS 205 parameter set, and
+  `MAX_RESPONSE_WORDS` 12466; the 16-bit length field allows 65535. Nothing
+  in the hardware limits a frame's length. A signature larger than the
+  island SRAM (16 KiB) is verified as it arrives, which SLH-DSA allows.
+- D3, the choice between the two and of SLH-DSA's parameter set, stays
+  open in the [plan](doc/debug-auth-plan.md).
+
 ### Measured — the rings' jitter is mostly shared; no entropy claim yet
 
-- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md) section 1:
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment-2026-11-20.md) section 1:
   the argument for a min-entropy claim (the ring model of arXiv:2102.02196,
   the predictor given each ring's previous phase, the frequencies and
   every shared influence, worst case over the phase) needs each ring's own
@@ -41,7 +474,7 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 
 ### Changed — the documentation states the current status only
 
-- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md) is an
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment-2026-11-20.md) is an
   assessment of the current design. Its verdict had described image
   `85f07e58…` (approved tests on the sample "not met"), with the redesign
   appended as section 9; the analysis of the earlier per-lane tests is in
@@ -188,7 +621,7 @@ yet; unreleased changes appear first, followed by merged checkpoints.
 ### Changed — Zkr health tests on the 4-bit sample, alarm latch, strikes, configuration limits (in bitstream `ddb168e1…`)
 
 Items 1 to 3 of the work list of the
-[SP 800-90B assessment](doc/sp800-90b-assessment.md#5-health-tests-4).
+[SP 800-90B assessment](doc/sp800-90b-assessment-2026-11-20.md#5-health-tests-4).
 Tested in simulation, by replay of board captures, and on the board in
 bitstream `ddb168e1…` on 2026-11-20, where every interval read between
 resets ended with zero failures. Induced health-test failures (detection,
@@ -211,7 +644,7 @@ the old tests.
   number `[56:54]` and the clean-sample count `[61:57]`; a write that
   leaves them zero stops the source, so change a field by
   read-modify-write
-  ([example](doc/sp800-90b-assessment.md#56-for-software-that-writes-mentropycfg)).
+  ([example](doc/sp800-90b-assessment-2026-11-20.md#56-for-software-that-writes-mentropycfg)).
   The reset values are for a target of 3 bits per 4-bit sample at a
   false-alarm probability of 2⁻⁴⁰ per test (15 and 124 on the symbol, 55
   and 719 per lane; before, 41 and 821 per lane) and are by default the
@@ -243,7 +676,7 @@ the old tests.
 
 ### Added — SP 800-90B assessment of the entropy source
 
-- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment.md): the `seed`
+- [doc/sp800-90b-assessment.md](doc/sp800-90b-assessment-2026-11-20.md): the `seed`
   source is not SP 800-90B compliant. NIST's non-IID estimators give a
   statistical estimate of 3.53 bits per 4-bit sample at the shipped spacing
   (k = 16), not an established H_I. A delayed warm-restart experiment

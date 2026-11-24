@@ -40,6 +40,11 @@ The core is split into IFU, decoder, ALU, M (multiply/divide), FPU (single- and 
   implemented mandatory features, deliberate limits and remaining release gates.
 - [DIEL validation](doc/diel-review-2026-09-14.md) — Zkt/Zvkt and vector
   crypto source audit plus the reproducible shipping-profile latency probe.
+- [SP 800-90B self-assessment](doc/sp800-90b-assessment.md) — the Zkr
+  entropy source on the VCU118: the measured estimates, the proposed
+  entropy rate and what its justification still needs, the RISC-V
+  requirements at `seed`, the health tests, and what the consuming
+  software has to do.
 - [doc/keccak-throughput.md](doc/keccak-throughput.md) — ideal Verilator
   absorb/squeeze results at SHAKE128/256 rates, changes and validation.
 - [doc/keccak-software-comparison.md](doc/keccak-software-comparison.md) —
@@ -373,13 +378,14 @@ access checks remain active. Opt-in execution-based debug is documented in
 selectable autoexec, address triggers and SBA extend the base DM. The plan
 records the current source-hashed functional gate, six-configuration mapped
 comparison and remaining acceptance gates. The VCU118 debug image, bitstream
-`ddb168e1…`, has the full two-trigger debug configuration with Zkr,
+`20f8b265…`, has the full two-trigger debug configuration with Zkr,
 authentication, the 2 MiB boot ROM and software reboot, and meets routed
-timing at 75 MHz. Its [board acceptance](dbg/BOARD_ACCEPTANCE-2026-11-20.md)
-on 2026-11-20 passes run control, FP/vector state, triggers, SBA/coherence,
-GDB, a ten-minute soak and post-detach Linux/KVM acceptance; OpenOCD's
-software address translation fails with known walker results, and the
-OpenOCD and boot/detach findings are documented in
+timing at 75 MHz. Its [board acceptance](dbg/BOARD_ACCEPTANCE-2026-11-23.md)
+on 2026-11-23 and 24 passes run control, FP/vector state, triggers,
+SBA/coherence, GDB, a ten-minute soak, post-detach Linux/KVM acceptance
+and the authentication cases that were run; OpenOCD's software address
+translation fails with known walker results, and the OpenOCD and
+boot/detach findings are documented in
 [the campaign record](dbg/BOARD_ACCEPTANCE.md). See also
 [FPGA programming and acceptance](doc/fpga.md).
 
@@ -397,19 +403,29 @@ the [plan](doc/debug-auth-plan.md), the
 [ASIC obligations](flow/asic/README.md#debug-authentication-obligations-karu_dbg_auth).
 
 The opt-in `KARU_ZKR` build adds the Zkr `seed` CSR and an entropy source:
-one sampled ring oscillator per raw bit on the FPGA, health tests, and a
-GetNoise test interface for raw samples. Bits are never combined, so that
-the source can be assessed against a stochastic model of ring-oscillator
-jitter. The health tests are SP 800-90B's approved tests on the 4-bit
-sample, with lane tests beside them, a latched alarm and a strike count; a
-burst capture samples the rings every 1 to 256 clocks in test mode, for
-characterisation. The VCU118 debug image has it, and Linux uses `seed`
-without crediting it (`random.trust_cpu=off`). No min-entropy is claimed:
-NIST's statistical estimate is 3.556 bits per 4-bit sample and the restart
-tests pass, but most of the jitter the board shows is shared between the
-four rings, and how much of it is each ring's own has not been measured
-([assessment](doc/sp800-90b-assessment.md), which has the plan to a
-claim). The board results are in the
-[acceptance record](dbg/BOARD_ACCEPTANCE-2026-11-20.md).
-See [the FPGA guide](doc/fpga.md) and the
-[Zkr follow-up plan](doc/zkr-followup-plan.md).
+on the FPGA, `seed` delivers the sampled bits of one ring oscillator, with
+health tests and a GetNoise test interface for raw samples. Bits are never
+combined in hardware, so that the source can be assessed as a ring
+oscillator; conditioning is left to software, as the Zkr text provides.
+The health tests are SP 800-90B's approved tests
+for a binary sample, with a latched alarm and a strike count. Five more
+rings, a counter on every ring behind a divider by two, a meter and a
+burst capture serve characterisation and carry no entropy credit; the
+lane, the sample spacing and the rings that run are straps that can be
+changed in a routed design.
+
+The goal is the RISC-V requirement for a physical source: 192 bits of
+min-entropy in every 256 bits from `seed`, so that software with a vetted
+conditioner obtains full-entropy output and the two together can be
+assessed under SP 800-90B. On VCU118 image `20f8b265…`, the two
+sequential captures gave non-IID estimates of **0.810451 and 0.838673
+bits per sampled bit**. Both restart datasets passed at 0.75, including
+the first outputs delivered through `seed` after 1,000 resets, and the
+health tests raised no alarm in 20.5 hours of running. We propose 0.75
+bit per delivered bit for this board under the tested lab conditions.
+The remaining work for the joint hardware and software self-assessment
+is to justify the fresh-jitter contribution at that rate and to assess
+the selected software conditioner, which is not in this repository. The
+lab kernel uses `random.trust_cpu=off`. See the
+[SP 800-90B self-assessment](doc/sp800-90b-assessment.md) and
+[the FPGA guide](doc/fpga.md).

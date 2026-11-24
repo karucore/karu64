@@ -21,7 +21,9 @@ for that result and its scope.
 after the boot map in the access permissions changed (2 MiB ROM), together
 with the first rows for the opt-in `KARU_ZKR`. They predate the redesign of
 the entropy block's health tests and the removal of the authentication
-block's TRNG port (2026-11-19), which have not been mapped:
+block's TRNG port (2026-11-19), and the entropy block's change to one
+lane with the two binary tests and the inputs `lane_i` and `kshift_i`.
+None of these has been mapped:
 
 | Configuration | kGE | Register-to-register WNS | TNS |
 | --- | ---: | ---: | ---: |
@@ -32,7 +34,7 @@ block's TRNG port (2026-11-19), which have not been mapped:
 The core is 0.15 kGE larger than on October 26 and its timing is the
 October 26 result to the digit. Zkr's CSR-side logic is below the
 resolution of the area mapping, and adds no register-to-register path; the
-entropy block was about 5 kGE before the redesign. The debug and
+entropy block was about 5 kGE before both changes. The debug and
 authentication rows, the IO groups and the output strobe `zkr_fire_o`, which
 misses the output budget in the debug tops, are in
 [karudbg measurements](../../dbg/MEASUREMENTS.md#mapped-area-and-200-mhz-timing--2026-11-18).

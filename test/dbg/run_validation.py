@@ -32,6 +32,8 @@ def input_hashes():
     # sources, mutant list and linker script.
     paths.extend(path for path in (ROOT / "test/fw").iterdir() if path.is_file())
     paths.append(ROOT / "flow/spike.ld")
+    # The checks of a strap variant and of its boot ROM, run by strap-flow-test.
+    paths += [ROOT / "flow/strap_diff.py", ROOT / "flow/rom_record.py"]
     return {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(set(paths))}
 

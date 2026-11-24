@@ -16,7 +16,7 @@
 //	   four within the 100 polls that Linux allows itself.
 //	4. The custom M-mode CSRs mnoise (0x7C8, GetNoise), mentropycfg
 //	   (0x7C9) and mentropystat (0x7CA, read-only), with -DZKR_TEST_CUSTOM:
-//	   reset value, restart on a write,
+//	   reset value, restart on a write, the reserved fields,
 //	   test mode, raw symbols with the loss flag, and the lock.
 //
 //	-DZKR_TEST_H adds the VS/VU rows (core built with KARU_H).
@@ -43,10 +43,11 @@
 	.equ	M_VS,			5
 	.equ	M_VU,			4
 	//	reset value of mentropycfg in the test bench: the default cutoffs
-	//	(calm 24, 3 strikes, 124 and 15 on the symbol, 719 and 55 per lane)
-	//	and k = 2
-	.equ	CFG_CUT,		(24 << 57) | (3 << 54) | (124 << 44) | (15 << 37) | (719 << 26) | (55 << 16)
+	//	(calm 24, 3 strikes, proportion 719, repetition 55) and k = 2
+	.equ	CFG_CUT,		(24 << 57) | (3 << 54) | (719 << 26) | (55 << 16)
 	.equ	CFG_RESET,		CFG_CUT | 1
+	//	the reserved fields of mentropycfg: [62] and [53:37]
+	.equ	CFG_RESERVED,	(1 << 62) | (0x1ffff << 37)
 
 #ifndef ZKR_TEST_H
 #define ZKR_TEST_H 0
@@ -227,6 +228,12 @@ rows_done:
 	bnez	a0, fail					//	BIST, no entropy
 	csrr	t0, CSR_MENTROPYSTAT
 	bnez	t0, fail					//	the start-up test again, no alarm, no failure
+	csrr	t0, CSR_MENTROPYCFG
+	bne		t0, t1, fail
+	li		s0, 114						//	ones written to the reserved fields read back as zero
+	li		t2, CFG_RESERVED
+	or		t2, t2, t1
+	csrw	CSR_MENTROPYCFG, t2
 	csrr	t0, CSR_MENTROPYCFG
 	bne		t0, t1, fail
 	jal		ra, m_collect8

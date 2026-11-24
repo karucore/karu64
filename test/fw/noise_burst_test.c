@@ -15,8 +15,10 @@
 //    3  accesses that must not be passed on: 32-, 16- and 8-bit reads and
 //       writes, and U-mode accesses (made with mstatus.MPRV); a read that is
 //       not passed on returns zero and does not move the index
-//    4  neighbours: the registers beyond the block's four, the reset
-//       register and the UART
+//    4  neighbours: the temperature readout, the meter's three registers
+//       (karu_rosc_meter.v: its control register, a record, and the same
+//       rules for narrow and U-mode accesses), the reset register and the
+//       UART
 //    5  leaving test mode: nothing is held, the period is the build's again
 //
 //  The mutants of the decode (test/fw/noise_burst_mutants.txt) must each
@@ -38,6 +40,10 @@
 #define NB_INDEX        R64(NB_BASE + 16)
 #define NB_DATA         R64(NB_BASE + 24)
 #define NB_SYSMON       R64(NB_BASE + 32)   /* temperature and supplies, karu_sysmon.v */
+#define MT_BASE         (NB_BASE + 40)      /* the meter, karu_rosc_meter.v */
+#define MT_CTRL         R64(MT_BASE + 0)
+#define MT_DATA0        R64(MT_BASE + 8)
+#define MT_DATA1        R64(MT_BASE + 16)
 #define NB_MAGIC        0x4b4e4231UL
 
 #define ST_BUSY         1UL
@@ -133,7 +139,7 @@ static void user_write(uint64_t addr, uint64_t v)
 
 int main(void)
 {
-    uint64_t v, i, nonzero = 0, differ = 0;
+    uint64_t v, w, i, nonzero = 0, differ = 0;
 
     csr_write(mtvec, (uint64_t)&trap_entry);
 
@@ -230,11 +236,41 @@ int main(void)
         ;
     if ((NB_SYSMON >> 48) == (v >> 48) || (NB_SYSMON & 0xffffffffffffUL) != (v & 0xffffffffffffUL))
         fail(46, "the readout does not update", NB_SYSMON);
-    for (i = 5; i < 8; i++) {
-        R64(NB_BASE + 8 * i) = ~0UL;
-        if (R64(NB_BASE + 8 * i) != 0)
-            fail(40, "register beyond the four reads nonzero", i);
-    }
+    //  The meter has the three registers after the readout. In test mode
+    //  its control register shows the rings of normal operation, here the
+    //  four lanes, as the strap and as the mask, and a record at every symbol.
+    v = MT_CTRL;
+    if (((v >> 32) & 0x3f) != 0x0f || ((v >> 16) & 0x3f) != 0x0f || (v & 0xffff) != 0)
+        fail(40, "meter control register in test mode", v);
+    if (user_read(MT_BASE) != 0 || user_read(MT_BASE + 8) != 0 || user_read(MT_BASE + 16) != 0)
+        fail(47, "U-mode read of the meter returned data", 0);
+    if (R32(MT_BASE) != 0 || R32(MT_BASE + 8) != 0 || R16(MT_BASE + 16) != 0)
+        fail(47, "narrow read of the meter returned data", 0);
+    user_write(MT_BASE, 3);
+    R32(MT_BASE) = 3;
+    if ((MT_CTRL & 0xffff) != 0)
+        fail(47, "U-mode or narrow write changed the meter", MT_CTRL);
+    //  a record, at every 256th symbol with the mask as it is (far enough
+    //  apart for the reads below to fall between two records): held until
+    //  a full-width M-mode read of the second word takes it
+    MT_CTRL = (1UL << 31) | (0x0fUL << 16) | 255;
+    for (i = 0; i < 20000 && !(MT_DATA0 >> 63); i++)
+        ;
+    v = MT_DATA0;
+    if (!(v >> 63) || ((v >> 62) & 1))
+        fail(48, "no meter record, or one with loss", v);
+    (void)user_read(MT_BASE + 16);
+    (void)R32(MT_BASE + 16);
+    if (MT_DATA0 != v)
+        fail(48, "a U-mode or narrow read took the meter's record", MT_DATA0);
+    w = MT_DATA1;
+    if (((w >> 20) & 0xffffffffffUL) != 0)
+        fail(48, "the reference rings are off, yet their totals moved", w);
+    for (i = 0; i < 20000 && (!(MT_DATA0 >> 63) || ((MT_DATA0 >> 60) & 3) == ((v >> 60) & 3)); i++)
+        ;
+    w = MT_DATA0;
+    if (!(w >> 63) || ((w >> 60) & 3) == ((v >> 60) & 3) || (w & 0xfffff) == (v & 0xfffff))
+        fail(48, "the meter's next record: not taken before, or lane 0 did not count", w);
     R64(SYSCTL_BASE + 8) = 0;                   //  would be the period register if the block were not decoded
     R64(SYSCTL_BASE + 0x88) = 0;
     R64(SYSCTL_BASE + 0x48 + 0x400) = 0;
@@ -262,6 +298,8 @@ int main(void)
         fail(50, "mnoise after test mode", csr_read(0x7C8));
     if (flags() != ST_SOURCE || NB_PERIOD != build_period || NB_INDEX != 0 || NB_DATA != 0)
         fail(51, "state held after test mode", NB_CTRL);
+    if (MT_CTRL != 0 || MT_DATA0 != 0 || MT_DATA1 != 0)
+        fail(51, "the meter answers outside test mode", MT_CTRL);
     csr_write(0x7C8, NOISE_TEST);
     if (flags() != (ST_SOURCE | ST_ALLOW | ST_TEST) || NB_DATA != 0 || NB_PERIOD != build_period)
         fail(52, "old recording or period back in test mode", NB_CTRL);

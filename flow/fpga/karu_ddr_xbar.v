@@ -132,11 +132,13 @@ module karu_ddr_xbar #(
 	//	that also resets this block (karu_soft_reset.v).
 	output wire			sys_reset_req_o,
 	//	Eight 64-bit registers of the same block, at 0x1000_0840..0x1000_087f:
-	//	the burst capture of the entropy source (karu_noise_burst.v), which
-	//	lives next to the noise source at the top level. Only privileged
+	//	the burst capture of the entropy source (karu_noise_burst.v), the
+	//	temperature readout and the ring meter (karu_rosc_meter.v), which
+	//	live next to the noise source at the top level. Only privileged
 	//	64-bit accesses are passed on. Every other read of the range returns
 	//	zero and every other write has no effect; a read of the capture's
-	//	data register has a side effect, so a narrower read must not reach it.
+	//	data register, or of the meter's second data register, has a side
+	//	effect, so a narrower read must not reach it.
 	output wire			sysreg_re_o,		//	a read of sysreg_raddr_o is taken in this cycle
 	output wire [2:0]	sysreg_raddr_o,
 	input  wire [63:0]	sysreg_rdata_i,		//	combinational from sysreg_raddr_o

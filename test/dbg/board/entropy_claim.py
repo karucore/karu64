@@ -5,6 +5,11 @@
 # spacing. doc/sp800-90b-assessment.md section 1 has the argument; this
 # computes its numbers.
 #
+# The default mode is the bound for the four-lane source of image ddb168e1…,
+# whose seed word held four consecutive 4-bit samples. The current source
+# delivers one lane, sixteen kept bits per word: rosc_own.py measures it,
+# with --own below as a cross-check.
+#
 # Model (arXiv:2102.02196, the model of getnoise_analyze.py): each ring's
 # phase, in ring periods, advances between two samples by a known amount plus
 # Gaussian jitter, and the sampled bit is 1 while the phase mod 1 lies in
@@ -21,7 +26,7 @@
 # independent white jitter in the four rings the guess of the whole sample
 # succeeds with at most the product of the four p, so
 #     H_inf(sample | past) >= sum over lanes of -log2 p.
-# A seed word holds four consecutive samples; the bound holds for each given
+# A seed word of that image held four consecutive samples; the bound holds for each given
 # the ones before, so a word has at least four times it.
 #
 # w per lane: the lower end of the shortest-lag determined jitter fit of each
@@ -39,13 +44,73 @@
 # |c| / sqrt(sA sB) (the sign follows the folding of the frequencies).
 # --self-test checks that estimator on generated rings of known correlation.
 #
+# --own: lane 0's own jitter from the reference bits. rosc_count.py takes
+# bursts in which a sample is {reference 1, reference 0, lane 1, lane 0}
+# (refbits/getnoise-burst-p<P>.bin): lane 0 and the two reference rings are
+# three rings of one kind, 3 inverters each, sampled at the same clock edge.
+# For two of them the difference of the phase increments loses what the two
+# share, and the (1, -1) component of the product of their bits decays with
+# its variance, sA + sB - 2c, which the fit of --pairs gives per burst. With
+# v(A, B) that variance per clock, and the own jitter of the three rings
+# independent of each other,
+#     v(A, B) = own(A) + own(B),
+#     own(0)  = (v(0, r0) + v(0, r1) - v(r0, r1)) / 2,
+# and likewise for each reference. --own reports v for the three pairs and the
+# own variance of each ring, per sampling period, with the standard error
+# over the bursts, and their mean over the periods at which all three pairs
+# could be fitted; then, for lane 0, that own variance at 4,096 and at 16,384
+# clocks as a ratio to the variance that --target bits per bit need (p_max
+# above, with the duty's upper end over the bursts at z standard errors).
+# What it assumes, and what it cannot see:
+#   - the three rings are alike enough that what they share cancels in a
+#     difference. A shared influence that moves ring A by g(A) times what it
+#     moves ring 0 leaves (g(A) - g(B))^2 of its variance in v(A, B), and
+#     (1 - g(r0)) (1 - g(r1)) of it in own(0): with g within 3 % of 1 and a
+#     shared variance 20 times the own, at most 2 % of an own variance, of
+#     either sign;
+#   - the own jitter of a ring is independent of the other rings', and white
+#     over the spans that are fitted: v per clock is then the same at every
+#     sampling period, which the per-period values show or refute;
+#   - the rings move together, and most of their jitter is shared, so that
+#     the difference is the component with the smaller variance: v is taken
+#     as sA + sB - 2 |rho| sqrt(sA sB) in every burst. The sign of the fitted
+#     rho says nothing (it follows the folding of the frequencies, and at the
+#     longer periods the fit may place the component at the sum of the two
+#     frequencies as well as at their difference). For rings that share
+#     little, |rho| near zero, this takes v too low; the mean |rho| of each
+#     pair is in the output;
+#   - the spans fitted are 64 samples, at most a few thousand clocks at the
+#     longest period, and most of the weight is at a few hundred: nothing is
+#     seen of what happens to the own jitter at longer spans, where flicker
+#     noise would make it grow faster than this rate, and a lock or a bound
+#     would make it grow slower. The multiplication to 4,096 and 16,384
+#     clocks is an extrapolation.
+# It is a cross-check of the meter's analysis (rosc_own.py), which measures
+# at the spacing itself; it is not a second claim.
+# The estimator's bias. With few lags the fit tends to put rho too low and v
+# too high: on the generated rings of --self-test (bursts of 32,768 samples,
+# a shared variance of 20 times the own) and the 24 lags that --pairs would
+# choose at these values, rho came out 0.1 to 0.5 % low and v 2 to 12 % high
+# over 32 bursts (standard errors 4 to 7 %). So --own always fits 64 lags.
+# With them, for each case of the self-test, the three v were within 3.5 %
+# of the truth at 2e-4 per sample and within 1.5 % at 8e-4, 3e-3 and 1.3e-2,
+# and ring 0's own variance was within 4 % of an own variance at 1e-4 per
+# sample (standard error 2 to 4 %) and within 2 % at 4e-4, 1.6e-3 and 6.4e-3
+# (standard error 0.4 to 3 %); 192 bursts each, 48 at the last value. That is
+# nothing beyond the standard errors, and nothing is corrected. The
+# self-test prints how far each of its cases is from the truth. A pair whose
+# two frequencies differ by nearly 0 or nearly 1/2 cycle per sample is
+# fitted with more scatter, which the standard error over the bursts shows.
+#
 # Usage:
 #   entropy_claim.py --analysis getnoise-analysis.json --samples d20-sym4.bin s20-rows.bin ...
 #                    [--spacing 4096] [--credit 0.05 ...] [--target 3.0] [--z 2.576]
 #   entropy_claim.py --analysis getnoise-analysis.json --pairs DIR [--periods 1,2,4,8,16,32,64]
-#   entropy_claim.py --self-test
+#   entropy_claim.py --analysis refbits/getnoise-analysis.json --own refbits
+#                    [--periods 1,2,4,8,16,32,64] [--target 0.75] [--z 2.576] [--samples ...]
+#   entropy_claim.py --self-test [DIR]
 # SPDX-License-Identifier: BSD-2-Clause
-import argparse, itertools, json, math, sys
+import argparse, itertools, json, math, os, sys
 
 def p_max(D, s2, grid=8192):
     """max over u of max(q, 1-q), q = P(N(u, s2) mod 1 in [0, D))."""
@@ -184,8 +249,162 @@ def pairs(analysis, directory, periods):
                                 se=round(sd / math.sqrt(len(rhos)), 4)))
     return out
 
-def self_test():
-    """The estimator on generated rings: two lanes, known F, variances and correlation."""
+# ---- lane 0's own jitter from the reference bits ----
+OWN_BITS = (0, 2, 3)                                         # of a reference-bit sample: lane 0, reference 0, reference 1
+OWN_NAMES = ('lane 0', 'reference 0', 'reference 1')
+OWN_PAIRS = ((0, 1), (0, 2), (1, 2))                         # of the three rings
+OWN_LAGS = 64
+OWN_SPACINGS = (4096, 16384)
+
+def mean_se(values):
+    m = sum(values) / len(values)
+    return m, math.sqrt(sum((x - m) ** 2 for x in values) / (len(values) - 1) / len(values))
+
+def own_period(windows, start, clocks, bits=OWN_BITS, lags=OWN_LAGS):
+    """One capture. windows: the bursts; start(w, bit): (F, sigma^2 per sample) to start the fit of burst w from, or
+    None if that ring's phase cannot be followed in it. Per pair of the three rings the variance per clock of the
+    difference of their phase increments, per ring its own variance per clock, each with the standard error over the
+    bursts in which all three pairs were fitted; None with fewer than eight such bursts."""
+    fits = []
+    for w, sym in enumerate(windows):
+        first = [start(w, b) for b in bits]
+        if any(f is None or f[0] is None or not f[1] or f[1] > 0.2 for f in first):
+            continue                                         # no phase left to see in this burst
+        fits.append([fit_pair(sym, bits[i], bits[j], first[i][0], first[j][0], first[i][1], first[j][1], lags) for i, j in OWN_PAIRS])
+    if len(fits) < 8:
+        return None
+    # The rings move together, so the difference is the component of smaller variance. The sign of the fitted rho
+    # says nothing: it follows the folding of the frequencies, and where a ring's own autocorrelation is gone after
+    # a lag the fit may put the one long-lived component at the sum of two frequencies as well as at their difference.
+    v = [[(f[k]['sA'] + f[k]['sB'] - 2 * abs(f[k]['rho']) * math.sqrt(f[k]['sA'] * f[k]['sB'])) / clocks for f in fits] for k in range(3)]
+    own = [[(v[0][w] + v[1][w] - v[2][w]) / 2 for w in range(len(fits))],
+           [(v[0][w] + v[2][w] - v[1][w]) / 2 for w in range(len(fits))],
+           [(v[1][w] + v[2][w] - v[0][w]) / 2 for w in range(len(fits))]]
+    return dict(windows=len(fits), pairs=[mean_se(x) for x in v], own=[mean_se(x) for x in own],
+                abs_rho=[sum(abs(f[k]['rho']) for f in fits) / len(fits) for k in range(3)])
+
+def variance_needed(D, target):
+    """The smallest variance of the phase between two samples that gives `target` bits per bit at duty D; None if none does."""
+    if -math.log2(p_max(D, 4.0, 2048)) < target:
+        return None
+    lo, hi = 0.0, 4.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if -math.log2(p_max(D, mid, 2048)) >= target: hi = mid
+        else: lo = mid
+    return hi
+
+def own(analysis, directory, periods, target, z, samples=None):
+    """--own: see the header."""
+    caps = {c['period']: c for c in analysis['captures'] if c.get('kind') == 'burst'}
+    files = {P: os.path.join(directory, os.path.basename(c['file'])) for P, c in caps.items()}
+    out = dict(source=directory, rings=list(OWN_NAMES), bits=list(OWN_BITS), lags=OWN_LAGS, periods=[],
+               unit='ring periods^2 per clock',
+               note='a cross-check of rosc_own.py at spans of at most a few hundred clocks, not a claim: see the header of entropy_claim.py')
+    for P in periods:
+        if P not in caps:
+            continue
+        lanes = {l['lane']: l['windows'] for l in caps[P]['lanes']}
+        res = own_period(burst_runs(files[P]), lambda w, b: (lanes[b]['F'][w], lanes[b]['sigma2'][w]), caps[P]['clocks'])
+        if res is None:
+            out['periods'].append(dict(period=P, fitted=False, why='fewer than eight bursts in which all three rings could be followed'))
+            continue
+        out['periods'].append(dict(period=P, fitted=True, windows=res['windows'],
+            difference=[dict(rings=[OWN_NAMES[i], OWN_NAMES[j]], variance=m, se=e, abs_rho=r)
+                        for (i, j), (m, e), r in zip(OWN_PAIRS, res['pairs'], res['abs_rho'])],
+            own=[dict(ring=n, variance=m, se=e) for n, (m, e) in zip(OWN_NAMES, res['own'])]))
+    done = [p for p in out['periods'] if p['fitted']]
+    if not done:
+        out['mean'] = None
+        return out
+    out['mean'] = []
+    for i, name in enumerate(OWN_NAMES):                     # the unweighted mean over the periods, which are separate captures
+        ms, es = [p['own'][i]['variance'] for p in done], [p['own'][i]['se'] for p in done]
+        m = sum(ms) / len(ms)
+        out['mean'].append(dict(ring=name, variance=m, se=math.sqrt(sum(e * e for e in es)) / len(es), periods=[p['period'] for p in done],
+                                between_periods_sd=math.sqrt(sum((x - m) ** 2 for x in ms) / (len(ms) - 1)) if len(ms) > 1 else None))
+    D = duty(samples or [files[p['period']] for p in done], z)[OWN_BITS[0]]
+    need, m, e = variance_needed(D, target), out['mean'][0]['variance'], out['mean'][0]['se']
+    out['lane0'] = dict(duty=D, target_bits=target, z=z, variance_needed=need, at=[
+        dict(clocks=n, variance=m * n, variance_low=(m - z * e) * n, bits=-math.log2(p_max(D, max(m, 0.0) * n)),
+             ratio=None if need is None else m * n / need, ratio_low=None if need is None else (m - z * e) * n / need)
+        for n in OWN_SPACINGS])
+    return out
+
+def generated_rings(rng, n, F, gain, shared, own_variance, D=0.5):
+    """Samples of three rings, ring i in bit OWN_BITS[i]: increments F + gain * (a shared value) + its own noise."""
+    import numpy as np
+    common = rng.normal(0, math.sqrt(shared), n)
+    sym = np.zeros(n, dtype=np.int64)
+    for i in range(3):
+        inc = F[i] + gain[i] * common + (rng.normal(0, math.sqrt(own_variance[i]), n) if own_variance[i] else 0.0)
+        sym |= (((rng.random() + np.cumsum(inc)) % 1) < D).astype(np.int64) << OWN_BITS[i]
+    return sym
+
+def self_test_own(work, z=2.576, bursts=32):
+    """--own on generated rings: three rings of nearly one frequency, a shared increment of 20 times the variance of
+    an own one, which acts on each ring in proportion to its frequency, and known own variances per clock. Three cases
+    at one sample per clock; the first of them again from files, as rosc_count.py writes them, through
+    getnoise_analyze.py; and again at one sample per 64 clocks, where a ring's own autocorrelation is gone after a
+    lag and the fit is free in the sign of rho."""
+    import hashlib, subprocess
+    import numpy as np
+    rate = (20.12, 20.12 * 1.025, 20.12 * 0.985)             # periods per clock: within 3 % of each other
+    gain, unit = [r / rate[0] for r in rate], 1e-4
+    shared, ok = 20 * unit, True
+    leak = shared * (gain[0] - gain[1]) * (gain[0] - gain[2])               # what the unequal sharing leaves in ring 0's value
+    for name, own_variance, clocks, bursts in (('all three equal', (unit, unit, unit), 1, bursts), ("ring 0's zero", (0.0, unit, unit), 1, bursts),
+                                               ("ring 0's four times the others'", (4 * unit, unit, unit), 1, bursts),
+                                               ('all three equal, a sample every 64 clocks', (unit, unit, unit), 64, bursts // 2)):
+        rng = np.random.default_rng(20261121)
+        F = [(r * clocks) % 1 for r in rate]
+        windows = [generated_rings(rng, 32768, F, gain, shared * clocks, [o * clocks for o in own_variance]) for _ in range(bursts)]
+        first = [(min(f, 1 - f), (g * g * shared + o) * clocks) for f, g, o in zip(F, gain, own_variance)]
+        res = own_period(windows, lambda w, b: first[OWN_BITS.index(b)], clocks)
+        m, e = res['own'][0]
+        if own_variance[0]:
+            good = abs(m - own_variance[0]) <= z * e and e <= 0.2 * own_variance[0]
+        else:
+            good = m <= z * e and e <= 0.2 * unit
+        ok &= good
+        print(f"{'ok  ' if good else 'FAIL'} own variance, {name}: ring 0 has {own_variance[0]:.3e}, found {m:.3e} +- {e:.1e} "
+              f"(standard error over {res['windows']} bursts): {(m - own_variance[0]) / e:+.2f} standard errors or {(m - own_variance[0]) / unit:+.1%} "
+              f"of an own variance from the truth ({leak / unit:+.1%} is expected from the unequal sharing); "
+              f"pairs {', '.join(f'{pm:.3e}' for pm, _ in res['pairs'])}, |rho| {', '.join(f'{r:.3f}' for r in res['abs_rho'])}")
+        if own_variance[0] != unit or clocks != 1:
+            continue
+        # the same bursts as files: what rosc_count.py writes, getnoise_analyze.py for the starting values, then --own
+        (work / 'refbits').mkdir(parents=True, exist_ok=True)
+        path = work / 'refbits' / 'getnoise-burst-p1.bin'
+        data = bytearray()
+        for sym in windows:
+            burst = bytearray(sym.astype(np.uint8).tobytes())
+            burst[0] |= 0x80
+            data += burst
+        path.write_bytes(data)
+        path.with_suffix('.json').write_text(json.dumps(dict(format='karu64-getnoise-burst-1', kind='burst', source='refbits',
+            lanes=['lane 0', 'lane 1', 'reference 0', 'reference 1'], period=1, k=1, clock_hz=75000000, bursts=bursts, symbols_per_burst=32768,
+            stored=len(data), runs=bursts, run_lengths=[32768] * bursts, sha256=hashlib.sha256(data).hexdigest()), indent=1) + '\n')
+        tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'getnoise_analyze.py')
+        r = subprocess.run([sys.executable, tool, str(path)], capture_output=True, text=True)
+        out = own(json.load(open(path.with_name('getnoise-analysis.json'))), str(path.parent), [1, 2], 0.75, z) if r.returncode == 0 else None
+        if out is None or not out['mean']:
+            good, text = False, f"getnoise_analyze.py exit {r.returncode}: {r.stderr[-200:]}" if out is None else str(out['periods'])
+        else:
+            m, e, lane0 = out['mean'][0]['variance'], out['mean'][0]['se'], out['lane0']
+            need, at = lane0['variance_needed'], lane0['at'][0]
+            good = (abs(m - unit) <= z * e and e <= 0.2 * unit and out['mean'][0]['periods'] == [1] and need is not None and 0.09 < need < 0.12
+                    and at['clocks'] == 4096 and abs(at['ratio'] - m * 4096 / need) < 1e-9 and at['ratio_low'] < at['ratio'] < 1.5 * unit * 4096 / need)
+            text = (f"found {m:.3e} +- {e:.1e} over {out['periods'][0]['windows']} bursts; duty at most {lane0['duty']:.4f}, 0.75 bit needs "
+                    f"{need:.4f}, at 4096 clocks the own variance is {at['ratio']:.2f} times that (lower end {at['ratio_low']:.2f}), "
+                    f"at 16384 clocks {lane0['at'][1]['ratio']:.2f} times")
+        ok &= good
+        print(f"{'ok  ' if good else 'FAIL'} own variance, {name}, from files through getnoise_analyze.py and --own: {text}")
+    return ok
+
+def self_test(work=None):
+    """The estimator on generated rings: two lanes, known F, variances and correlation. Then --own. `work` is a
+    directory for the files of its last case; without one a temporary directory is used."""
     import numpy as np
     rng = np.random.default_rng(1)
     ok = True
@@ -203,6 +422,14 @@ def self_test():
         good = abs(med - rho) < 0.05
         ok &= good
         print(f"{'ok  ' if good else 'FAIL'} generated rho {rho}: fitted median {med:+.3f}")
+    if work:
+        from pathlib import Path
+        ok &= self_test_own(Path(work))
+    else:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temporary:
+            ok &= self_test_own(Path(temporary))
     print('entropy_claim self-test: ' + ('PASS' if ok else 'FAIL'))
     return ok
 
@@ -211,20 +438,29 @@ def main():
     ap.add_argument('--analysis')
     ap.add_argument('--samples', nargs='+', help='4-bit samples, one per byte (bit 7 of a GetNoise capture is ignored)')
     ap.add_argument('--pairs', metavar='DIR', help='directory of the burst captures named in the analysis')
+    ap.add_argument('--own', metavar='DIR', help="directory of the reference-bit bursts named in the analysis (rosc_count.py's refbits): "
+                    "lane 0's own jitter from the three rings of its kind")
     ap.add_argument('--periods', default='1,2,4,8,16,32,64')
-    ap.add_argument('--self-test', action='store_true')
+    ap.add_argument('--self-test', nargs='?', const='', metavar='DIR', help='run the self-test; DIR is where it may write the capture '
+                    'that it generates for --own (default: a temporary directory)')
     ap.add_argument('--spacing', type=int, default=4096, help='clocks between kept samples (k = 16: 4096)')
     ap.add_argument('--credit', type=float, nargs='*', default=[1.0, 0.1, 0.05])
-    ap.add_argument('--target', type=float, default=3.0)
+    ap.add_argument('--target', type=float, help='bits wanted: per 4-bit sample for the bound (3.0), per bit of lane 0 for --own (0.75)')
     ap.add_argument('--z', type=float, default=2.576)
     a = ap.parse_args()
-    if a.self_test:
-        sys.exit(0 if self_test() else 1)
+    if a.self_test is not None:
+        sys.exit(0 if self_test(a.self_test) else 1)
     if not a.analysis:
         ap.error('--analysis is needed')
     if a.pairs:
         print(json.dumps(pairs(json.load(open(a.analysis)), a.pairs, [int(p) for p in a.periods.split(',')]), indent=1))
         return
+    if a.own:
+        print(json.dumps(own(json.load(open(a.analysis)), a.own, [int(p) for p in a.periods.split(',')],
+                             0.75 if a.target is None else a.target, a.z, a.samples), indent=1))
+        return
+    if a.target is None:
+        a.target = 3.0
     if not a.samples:
         ap.error('--samples is needed for the bound')
     rates = white_rates(json.load(open(a.analysis)))
